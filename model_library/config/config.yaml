@@ -1,0 +1,397 @@
+# MLKit model hyperparameter configuration.
+# All 60 models (30 classifiers + 30 regressors).
+# No hardcoding in code — all defaults live here.
+# DataBundle.hyperparameters overrides these at runtime.
+
+models:
+
+  # -----------------------------------------------------------------------
+  # CLASSIFIERS (30)
+  # -----------------------------------------------------------------------
+
+  LogisticRegression:
+    C: 1.0
+    max_iter: 1000
+    solver: lbfgs
+    random_state: 42
+
+  RidgeClassifier:
+    alpha: 1.0
+    max_iter: 1000
+    solver: auto
+
+  SGDClassifier:
+    loss: hinge
+    alpha: 0.0001
+    max_iter: 1000
+    tol: 0.001
+    random_state: 42
+
+  SVC:
+    C: 1.0
+    kernel: rbf
+    gamma: scale
+    probability: true
+    random_state: 42
+
+  LinearSVC:
+    C: 1.0
+    max_iter: 2000
+    random_state: 42
+
+  NuSVC:
+    nu: 0.5
+    kernel: rbf
+    gamma: scale
+    probability: true
+    random_state: 42
+
+  DecisionTreeClassifier:
+    max_depth: null
+    min_samples_split: 2
+    min_samples_leaf: 1
+    random_state: 42
+
+  RandomForestClassifier:
+    n_estimators: 100
+    max_depth: null
+    min_samples_split: 2
+    random_state: 42
+    n_jobs: -1
+
+  ExtraTreesClassifier:
+    n_estimators: 100
+    max_depth: null
+    min_samples_split: 2
+    random_state: 42
+    n_jobs: -1
+
+  GradientBoostingClassifier:
+    n_estimators: 100
+    learning_rate: 0.1
+    max_depth: 3
+    random_state: 42
+
+  AdaBoostClassifier:
+    n_estimators: 50
+    learning_rate: 1.0
+    random_state: 42
+
+  HistGradientBoostingClassifier:
+    max_iter: 100
+    learning_rate: 0.1
+    max_depth: null
+    random_state: 42
+
+  KNeighborsClassifier:
+    n_neighbors: 5
+    weights: uniform
+    algorithm: auto
+    n_jobs: -1
+
+  RadiusNeighborsClassifier:
+    radius: 1.0
+    weights: uniform
+    algorithm: auto
+    outlier_label: most_frequent
+
+  GaussianNB:
+    var_smoothing: 1.0e-9
+
+  MultinomialNB:
+    alpha: 1.0
+    fit_prior: true
+
+  ComplementNB:
+    alpha: 1.0
+    norm: false
+
+  BernoulliNB:
+    alpha: 1.0
+    binarize: 0.0
+    fit_prior: true
+
+  CategoricalNB:
+    alpha: 1.0
+    fit_prior: true
+
+  MLPClassifier:
+    hidden_layer_sizes: [100]
+    activation: relu
+    solver: adam
+    alpha: 0.0001
+    learning_rate: constant
+    max_iter: 500
+    random_state: 42
+
+  PassiveAggressiveClassifier:
+    C: 1.0
+    max_iter: 1000
+    tol: 0.001
+    random_state: 42
+
+  QuadraticDiscriminantAnalysis:
+    solver: eigen
+    shrinkage: auto
+    reg_param: 0.0
+    tol: 1.0e-4
+
+  LinearDiscriminantAnalysis:
+    solver: svd
+    tol: 1.0e-4
+
+  BaggingClassifier:
+    base_estimator: DecisionTreeClassifier
+    n_estimators: 10
+    max_samples: 1.0
+    max_features: 1.0
+    bootstrap: true
+    random_state: 42
+    n_jobs: -1
+
+  DummyClassifier:
+    strategy: most_frequent
+    random_state: 42
+
+  NearestCentroid:
+    metric: euclidean
+    shrink_threshold: null
+
+  CalibratedClassifierCV:
+    base_estimator: LinearSVC
+    cv: 5
+    method: sigmoid
+
+  XGBClassifier:
+    n_estimators: 100
+    max_depth: 6
+    learning_rate: 0.3
+    subsample: 1.0
+    colsample_bytree: 1.0
+    use_label_encoder: false
+    eval_metric: mlogloss
+    random_state: 42
+    n_jobs: -1
+    verbosity: 0
+
+  PyTorchFCNNClassifier:
+    hidden_layers: [512, 256, 128]
+    activation: relu
+    learning_rate: 0.001
+    epochs: 20
+    batch_size: 64
+    dropout: 0.3
+    num_classes: 10
+    weight_decay: 1.0e-4
+
+  PyTorchCNNClassifier:
+    conv_channels: [32, 64]
+    kernel_size: 3
+    fc_layers: [256, 128]
+    learning_rate: 0.001
+    epochs: 10
+    batch_size: 64
+    dropout: 0.3
+    conv_dim: 2
+    num_classes: 10
+    weight_decay: 1.0e-4
+
+  # -----------------------------------------------------------------------
+  # REGRESSORS (30)
+  # -----------------------------------------------------------------------
+
+  LinearRegression:
+    fit_intercept: true
+    n_jobs: -1
+
+  Ridge:
+    alpha: 1.0
+    max_iter: 1000
+    solver: auto
+    random_state: 42
+
+  Lasso:
+    alpha: 1.0
+    max_iter: 1000
+    tol: 1.0e-4
+    random_state: 42
+
+  ElasticNet:
+    alpha: 1.0
+    l1_ratio: 0.5
+    max_iter: 1000
+    tol: 1.0e-4
+    random_state: 42
+
+  Lars:
+    n_nonzero_coefs: 500
+
+  LassoLars:
+    alpha: 1.0
+    max_iter: 500
+
+  OrthogonalMatchingPursuit:
+    n_nonzero_coefs: null
+    tol: null
+
+  BayesianRidge:
+    max_iter: 300
+    tol: 1.0e-3
+    alpha_1: 1.0e-6
+    alpha_2: 1.0e-6
+    lambda_1: 1.0e-6
+    lambda_2: 1.0e-6
+
+  ARDRegression:
+    max_iter: 300
+    tol: 1.0e-3
+    alpha_1: 1.0e-6
+    alpha_2: 1.0e-6
+    lambda_1: 1.0e-6
+    lambda_2: 1.0e-6
+
+  SGDRegressor:
+    loss: squared_error
+    alpha: 0.0001
+    max_iter: 1000
+    tol: 1.0e-3
+    random_state: 42
+
+  PassiveAggressiveRegressor:
+    C: 1.0
+    max_iter: 1000
+    tol: 1.0e-3
+    random_state: 42
+
+  SVR:
+    kernel: rbf
+    C: 1.0
+    gamma: scale
+    epsilon: 0.1
+
+  NuSVR:
+    nu: 0.5
+    C: 1.0
+    kernel: rbf
+    gamma: scale
+
+  LinearSVR:
+    C: 1.0
+    max_iter: 2000
+    epsilon: 0.0
+    random_state: 42
+
+  KNeighborsRegressor:
+    n_neighbors: 5
+    weights: uniform
+    algorithm: auto
+    n_jobs: -1
+
+  RadiusNeighborsRegressor:
+    radius: 1.0
+    weights: uniform
+    algorithm: auto
+
+  DecisionTreeRegressor:
+    max_depth: null
+    min_samples_split: 2
+    min_samples_leaf: 1
+    random_state: 42
+
+  RandomForestRegressor:
+    n_estimators: 100
+    max_depth: null
+    min_samples_split: 2
+    random_state: 42
+    n_jobs: -1
+
+  ExtraTreesRegressor:
+    n_estimators: 100
+    max_depth: null
+    min_samples_split: 2
+    random_state: 42
+    n_jobs: -1
+
+  GradientBoostingRegressor:
+    n_estimators: 100
+    learning_rate: 0.1
+    max_depth: 3
+    random_state: 42
+
+  AdaBoostRegressor:
+    n_estimators: 50
+    learning_rate: 1.0
+    loss: linear
+    random_state: 42
+
+  HistGradientBoostingRegressor:
+    max_iter: 100
+    learning_rate: 0.1
+    max_depth: null
+    random_state: 42
+
+  MLPRegressor:
+    hidden_layer_sizes: [100]
+    activation: relu
+    solver: adam
+    alpha: 0.0001
+    learning_rate: constant
+    max_iter: 500
+    random_state: 42
+
+  BaggingRegressor:
+    base_estimator: DecisionTreeRegressor
+    n_estimators: 10
+    max_samples: 1.0
+    max_features: 1.0
+    bootstrap: true
+    random_state: 42
+    n_jobs: -1
+
+  XGBRegressor:
+    n_estimators: 100
+    max_depth: 6
+    learning_rate: 0.3
+    subsample: 1.0
+    colsample_bytree: 1.0
+    random_state: 42
+    n_jobs: -1
+    verbosity: 0
+
+  PyTorchFCNNRegressor:
+    hidden_layers: [128, 64, 32]
+    activation: relu
+    learning_rate: 0.001
+    epochs: 30
+    batch_size: 32
+    dropout: 0.2
+    weight_decay: 1.0e-4
+
+  PyTorchCNNRegressor:
+    conv_channels: [16, 32]
+    kernel_size: 3
+    fc_layers: [64, 32]
+    learning_rate: 0.001
+    epochs: 20
+    batch_size: 32
+    dropout: 0.2
+    conv_dim: 1
+    weight_decay: 1.0e-4
+
+  DummyRegressor:
+    strategy: mean
+    constant: null
+    quantile: null
+
+  HuberRegressor:
+    epsilon: 1.35
+    max_iter: 100
+    alpha: 0.0001
+    tol: 1.0e-5
+
+  TheilSenRegressor:
+    n_subsamples: 50
+    max_iter: 300
+    tol: 1.0e-3
+    random_state: 42
+    n_jobs: -1
