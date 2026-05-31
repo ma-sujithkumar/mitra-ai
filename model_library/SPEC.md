@@ -133,3 +133,111 @@ metrics = model.test()
 2. It should run end-to-end without any errors. Shape mismatches (e.g., for 1D vs 2D inputs in PyTorch vs Sklearn) must be handled internally by the wrappers before fitting.
 
 
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+## Additional Improvements:
+1. Enforce the inputs schema, write a schema.md which will explain the interface and args clearly and link it in README.md
+2. In every .py, Put this at the top
+```
+@Authored by <model_name>, Co-Authored by Sujith M A, Created <>, Last Updated <>'
+```
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+## AI Review and Sujith M A's answer
+
+ Ambiguities \u2014 Need Your Answers Before Planning
+  
+  1. data parameter contract \u2014 what type/shape?
+  The spec shows data=data but never defines its structure. Is it a plain dict with keys X_train, y_train, X_test, y_test? A dataclass? A NamedTuple? What dtypes \u2014 numpy arrays, pandas
+  DataFrames, or torch Tensors? This is the most critical ambiguity since every model depends on it.
+Ans: it's a dictionary which has all the args and hyperparameters, keep nested dict, common: , hyperparameters: 
+
+  2. preloaded_model behavior \u2014 does train() still run?
+  If a path to model.pkl is given, should .train() skip training entirely, fine-tune the loaded model, or raise? The spec is silent. This has silent failure potential.
+Ans: take a type argument as full_train, fine_tune, default it to fine_tune
+ 
+
+  3. What does test() return exactly?
+  The acceptance criteria says "report all standard metrics" but never lists them. Should test() return a dict? What keys \u2014 accuracy, f1, auc, mse, r2? Are multi-class F1 scores
+  macro/micro/weighted? This affects the evaluators.py design completely.
+Ans: test() should run the inference and return y - that's it. Keep the metrics in metrics.py
+  
+  4. PyTorchCNNClassifier / PyTorchCNNRegressor \u2014 what input shape is expected?
+  CNNs expect spatial/image input. PyTorchCNNClassifier on MNIST (28×28) is reasonable. But PyTorchCNNRegressor is listed for house price prediction \u2014 tabular data has no spatial
+  structure. Should the CNN treat the 1D feature vector as a 1D signal (Conv1D)? Or is a CNN for regression intentionally included even if architecturally unusual?
+Ans: Take whether to use Conv2D, or 1D as an arg. All the model arguments must be well-documented in schema.md and linked in README.md
+
+
+  5. Dataset sources for test files
+  test_mnist.py and test_house_price.py need data. Where do these come from \u2014 torchvision.datasets, sklearn.datasets.fetch_openml, a local file, or auto-downloaded? The spec says "no
+  data splitting" is the library's job, but the test files must split it themselves \u2014 is that correct?
+Ans: torchvision.datasets, sklearn.datasets.fetch_openml. test_suite can split
+
+
+  6. Are the test files pytest tests or standalone runner scripts?
+  The word "tests" and the .py convention imply pytest, but the acceptance criteria says "run all 60 models sequentially (or distributed) and report metrics" \u2014 that reads more like a
+  runner script. Which is intended?
+Ans: No pytest. 
+
+
+  7. <model_name> in the authorship header \u2014 which model?
+  @Authored by <model_name> \u2014 is <model_name> the AI model that generates the code (e.g., Claude Sonnet 4.6)? The Created <> and Last Updated <> are blank placeholders \u2014 should these
+  be auto-filled at generation time?
+Ans: yes
+
+  8. Meta-estimators \u2014 what base estimator?
+  CalibratedClassifierCV, BaggingClassifier, and BaggingRegressor wrap other estimators. What base estimator should they default to? The spec says "keep defaults," but sklearn's
+  default for BaggingClassifier base is DecisionTreeClassifier \u2014 is that acceptable, and should this be configurable in config.yaml?
+Ans: Should be given in config.yaml. Also, All the model arguments must be well-documented in schema.md and linked in README.md
+  
+
+  ---
+  Risks \u2014 Will Break Without Mitigation
+
+  1. PyTorchCNNRegressor on tabular data
+  A 2D CNN on house price features (e.g., 13 flat features) will crash. The shape-mismatch handling requirement in section 8 covers sklearn vs. PyTorch, but doesn't address CNN vs.
+  tabular input. Needs an explicit architectural decision (Conv1D? Treat as FCN?).
+Ans: Should be given as an arg. Should support all the dimensions. All the model arguments must be well-documented in schema.md and linked in README.md
+  
+
+  2. RadiusNeighborsClassifier / RadiusNeighborsRegressor
+  These raise ValueError at inference time if no training samples fall within the radius for a given test point. This is a known sklearn pitfall that will break the end-to-end run
+  requirement.
+Ans: Add try-except and log the error properly in tests 
+
+  3. MultinomialNB, ComplementNB, CategoricalNB
+  Require strictly non-negative input. MNIST pixels (0\u2013255) are fine, but if the test suite ever normalizes features to zero-mean, these will crash silently.
+Ans: Add try-except and log the error properly in tests   
+
+  4. TheilSenRegressor
+  Has O(n² ·  n_subsamples) complexity. On even a modest house price dataset, this can time out unless n_subsamples is capped in config.yaml.
+Ans: Cap it. default it to very small size even in config.yaml
+
+  5. Ray serialization of PyTorch models
+  PyTorch models that use GPU tensors (CUDA) cannot be trivially pickled. The spec says "should be serializable," but if a worker uses a different CUDA device than the main process,
+  deserialization will fail. Needs a CPU-safe serialization path.
+Ans: Yes, should be picke-able
+
+  6. No error handling specified for invalid model_name
+  An LLM agent is the primary caller (section 4.1). If the agent passes a misspelled model name, there is no spec for the error response \u2014 silent None, ValueError, or a typed exception
+  with a "did you mean X?" message.
+Ans: Yes, Also, Create a input validation layer using Pydantic. A list of ML models should be available in README.md
+
+  7. config.yaml as the sole source of truth \u2014 fragile bootstrap
+  The constraint "no hardcoding" means PyTorch training loop parameters (learning rate, epochs, batch size, hidden layer sizes) must all live in YAML. If config.yaml is missing a key,
+  every model using that key will throw a KeyError. A schema validator for the config is not in scope but is a real risk.
+Ans: Go for it. implement it.
+
+  ---
+  Suggested Improvements (Non-blocking) 
+
+  1. Define a DataBundle dataclass \u2014 makes the data contract explicit and enables IDE/agent autocomplete.
+  2. Return a typed MetricsResult from test() instead of a raw dict \u2014 prevents key errors downstream in the agent.
+  3. Add a model.save(path) / MLKit.load(path) API \u2014 the preloaded_model param implies this need but doesn't expose a clean save path.
+  4. README.md as machine-readable YAML front-matter \u2014 since the primary consumer is an LLM agent, a structured header (model names, input schema, output schema) is more useful than
+  prose.
+Ans: ALL APPROVED except 4. Apply it for schema.md and link it in README.md
+
+------
+
