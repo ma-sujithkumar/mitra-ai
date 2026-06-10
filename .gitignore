@@ -1,1 +1,4 @@
 meeting_transcripts/original
+
+# CLAUDE.md conventions: intermediate scripts and session docs are not tracked
+claude_scripts/
