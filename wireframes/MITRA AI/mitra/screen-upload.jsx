@@ -17,6 +17,8 @@ function UploadScreen({ go, startRun }) {
   const [target, setTarget] = useState('species');
   const [desc, setDesc] = useState('Iris flower measurements — classify the species from sepal and petal dimensions. 150 labelled samples across 3 classes.');
   const [provider, setProvider] = useState('anthropic');
+  const [apiKey, setApiKey] = useState('');
+  const [gatewayUrl, setGatewayUrl] = useState('');
   const [phase, setPhase] = useState('idle'); // idle | validating | done
   const [revealed, setRevealed] = useState(0);
 
@@ -34,21 +36,6 @@ function UploadScreen({ go, startRun }) {
 
   return (
     <div className="page page-in">
-      {/* stepper */}
-      <div className="row gap-8" style={{marginBottom:20}}>
-        {[['Upload dataset', true],['Describe & configure', true],['Validate', passed]].map(([t,active],i)=>(
-          <React.Fragment key={i}>
-            <div className="row gap-8" style={{opacity: active?1:0.5}}>
-              <div style={{width:24,height:24,borderRadius:99, display:'grid', placeItems:'center', flex:'none',
-                background: active?'var(--accent)':'var(--panel-3)', color: active?'#fff':'var(--ink-3)',
-                border: active?'none':'1px solid var(--line-3)', fontSize:12, fontWeight:700}} className="mono">{i+1}</div>
-              <span style={{fontSize:13, fontWeight:600, color: active?'var(--ink)':'var(--ink-3)'}}>{t}</span>
-            </div>
-            {i<2 && <div style={{width:34,height:2,background:'var(--line-3)',borderRadius:2}}/>}
-          </React.Fragment>
-        ))}
-      </div>
-
       <div style={{display:'grid', gridTemplateColumns:'1.35fr 1fr', gap:18}}>
         {/* left: dropzone + samples */}
         <div className="col gap-18">
@@ -120,9 +107,31 @@ function UploadScreen({ go, startRun }) {
             ]}/>
           </Field>
 
-          <button className="btn btn-secondary" style={{width:'100%', marginTop:6, justifyContent:'center'}}
+          <Field label="API Key" hint="Paste your API key from .env or your provider account">
+            <input 
+              className="focusable" 
+              type="password"
+              value={apiKey} 
+              onChange={e=>setApiKey(e.target.value)} 
+              placeholder={`Enter your ${provider.charAt(0).toUpperCase() + provider.slice(1)} API key`}
+              style={inputStyle}
+            />
+          </Field>
+
+          <Field label="Gateway URL" hint="Optional · e.g. https://my-gateway.example.com">
+            <input
+              className="focusable"
+              type="url"
+              value={gatewayUrl}
+              onChange={e=>setGatewayUrl(e.target.value)}
+              placeholder="Where is your model running? (leave blank to use default)"
+              style={inputStyle}
+            />
+          </Field>
+
+          <button className="btn btn-primary" style={{width:'100%', marginTop:18, justifyContent:'center', padding:'12px 16px', fontSize:14, fontWeight:600}}
             onClick={validate} disabled={phase==='validating'}>
-            {phase==='validating' ? <><span className="spinner"/>Validating…</> : <><Icons.checkCircle size={16}/>Run Data Validator</>}
+            {phase==='validating' ? <><span className="spinner"/>Validating your data…</> : <><Icons.checkCircle size={18}/>Validate & Review</>}
           </button>
         </div>
       </div>

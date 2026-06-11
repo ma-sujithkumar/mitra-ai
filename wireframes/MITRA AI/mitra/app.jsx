@@ -43,31 +43,34 @@ function App() {
 
   // ---- run state ----
   const [runState, setRunState] = useState('idle'); // idle | running | done
+  const [isPaused, setIsPaused] = useState(false);
   const [cursor, setCursor] = useState(0);           // events revealed
   const [elapsed, setElapsed] = useState(0);
   const speedRef = useRef(t.speed);
   speedRef.current = t.speed;
 
   function startRun() {
-    setCursor(0); setElapsed(0); setRunState('running'); setRoute('pipeline');
+    setCursor(0); setElapsed(0); setIsPaused(false); setRunState('running'); setRoute('pipeline');
   }
+  function togglePause() { setIsPaused(p => !p); }
+  function abortRun() { setCursor(0); setElapsed(0); setIsPaused(false); setRunState('idle'); setRoute('dashboard'); }
   function go(r) { setRoute(r); }
 
   // reveal engine
   useEffect(() => {
-    if (runState !== 'running') return;
+    if (runState !== 'running' || isPaused) return;
     if (cursor >= FLAT.length) { setRunState('done'); return; }
     const interval = Math.max(140, Math.round(540 / (speedRef.current || 1)));
     const id = setTimeout(() => setCursor(c => c + 1), cursor === 0 ? 250 : interval);
     return () => clearTimeout(id);
-  }, [runState, cursor]);
+  }, [runState, isPaused, cursor]);
 
   // elapsed timer
   useEffect(() => {
-    if (runState !== 'running') return;
+    if (runState !== 'running' || isPaused) return;
     const id = setInterval(() => setElapsed(e => e + 1), 1000);
     return () => clearInterval(id);
-  }, [runState]);
+  }, [runState, isPaused]);
 
   // apply tweaks → CSS vars
   useEffect(() => {
@@ -92,7 +95,7 @@ function App() {
   const stageProgress = cur ? (cur.lineInStage + 1) / cur.stageLineCount : 0;
   const logs = FLAT.slice(0, cursor).map(e => ({ level: e.level, msg: e.msg, ts: e._ts || (e._ts = nowTs()) }));
   const verdict = FLAT.slice(0, cursor).some(e => e.stageKey === 'judge' && e.level === 'ok') || runState === 'done';
-  const run = { state: runState, stageIndex, stageProgress, logs, elapsed, verdict };
+  const run = { state: runState, isPaused, stageIndex, stageProgress, logs, elapsed, verdict };
 
   const meta = ROUTE_META[route];
   const RightActions = (
@@ -102,8 +105,6 @@ function App() {
           <span className="spinner" style={{ width: 11, height: 11 }} />Run in progress
         </button>
       )}
-      <button className="btn btn-ghost btn-sm" style={{ padding: '0 9px' }} title="Notifications"><Icons.bell size={18} /></button>
-      {route !== 'upload' && <button className="btn btn-primary btn-sm" onClick={() => go('upload')}><Icons.plus size={15} />New run</button>}
     </>
   );
 
@@ -115,7 +116,7 @@ function App() {
         <div style={{ flex: 1 }}>
           {route === 'dashboard'   && <Dashboard go={go} startRun={startRun} />}
           {route === 'upload'      && <UploadScreen go={go} startRun={startRun} />}
-          {route === 'pipeline'    && <PipelineScreen go={go} run={run} startRun={startRun} />}
+          {route === 'pipeline'    && <PipelineScreen go={go} run={run} startRun={startRun} togglePause={togglePause} abortRun={abortRun} />}
           {route === 'leaderboard' && <LeaderboardScreen go={go} startRun={startRun} />}
         </div>
       </main>

@@ -22,7 +22,6 @@ function Dashboard({ go, startRun }) {
           background:'radial-gradient(circle, rgba(108,71,255,.10), transparent 70%)'}}/>
         <div className="row" style={{justifyContent:'space-between', alignItems:'flex-start', gap:20, position:'relative'}}>
           <div className="col gap-10" style={{maxWidth:560}}>
-            <span className="pill pill-run" style={{alignSelf:'flex-start'}}><span className="dot"/>8 agents online · Ray head healthy</span>
             <h1 style={{fontSize:25, fontWeight:780}}>A team of agents, one optimized model.</h1>
             <p className="muted" style={{margin:0, fontSize:14, lineHeight:1.55}}>
               Upload a dataset and minimal metadata. MITRA's specialist agents profile, engineer,
@@ -33,18 +32,7 @@ function Dashboard({ go, startRun }) {
               <button className="btn btn-secondary" onClick={()=>go('leaderboard')}><Icons.trophy size={16}/>View last leaderboard</button>
             </div>
           </div>
-          {/* mini pipeline glyph */}
-          <div className="col gap-8" style={{flex:'none'}}>
-            <div className="mono faint" style={{fontSize:10.5, letterSpacing:'.06em'}}>PIPELINE</div>
-            <div className="row gap-6">
-              {['validator','metadata','feature','model','classification','judge'].map((id,i,arr)=>(
-                <React.Fragment key={id}>
-                  <AgentAvatar agent={AGENT[id]} size={32} state={i<5?'done':'running'}/>
-                  {i<arr.length-1 && <div style={{width:14,height:2,borderRadius:2,background: i<4?'var(--accent)':'var(--accent-line)'}}/>}
-                </React.Fragment>
-              ))}
-            </div>
-          </div>
+
         </div>
       </div>
 

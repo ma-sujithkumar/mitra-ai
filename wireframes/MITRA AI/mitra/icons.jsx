@@ -37,6 +37,7 @@ const Icons = {
   database:(p)=> <Icon {...p}><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></Icon>,
   download:(p)=> <Icon {...p}><path d="M12 4v11m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/></Icon>,
   plus:    (p)=> <Icon {...p}><path d="M12 5v14M5 12h14"/></Icon>,
+  pause:   (p)=> <Icon {...p}><rect x="6" y="4" width="3" height="16" rx="0.5"/><rect x="15" y="4" width="3" height="16" rx="0.5"/></Icon>,
   dot:     (p)=> <Icon {...p} fill={true}><circle cx="12" cy="12" r="4"/></Icon>,
 };
 

@@ -10,8 +10,8 @@ const STAGE_ICON = { encode:'layers', scale:'scale', eval:'spark' };
 
 function fmtElapsed(s){ const m=Math.floor(s/60), ss=s%60; return `${m}:${String(ss).padStart(2,'0')}`; }
 
-function PipelineScreen({ go, run, startRun }) {
-  const { state, stageIndex, stageProgress, logs, elapsed, verdict } = run;
+function PipelineScreen({ go, run, startRun, togglePause, abortRun }) {
+  const { state, isPaused, stageIndex, stageProgress, logs, elapsed, verdict } = run;
   const logRef = useRef(null);
   useEffect(()=>{ if(logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [logs]);
 
@@ -58,7 +58,16 @@ function PipelineScreen({ go, run, startRun }) {
             <Metric label="Models" value={stageIndex>=6?'6':'—'}/>
             {done
               ? <button className="btn btn-primary" onClick={()=>go('leaderboard')}><Icons.trophy size={16}/>View leaderboard</button>
-              : <StatusPill status="running" label="Pipeline running" spin/>}
+              : <div className="row gap-8">
+                  <button className="btn btn-ghost" onClick={togglePause} title={isPaused?'Resume pipeline':'Pause pipeline'}>
+                    {isPaused ? <Icons.play size={16}/> : <Icons.pause size={16}/>}
+                    {isPaused ? 'Resume' : 'Pause'}
+                  </button>
+                  <button className="btn btn-ghost" onClick={abortRun} title="Abort pipeline">
+                    <Icons.x size={16}/>Abort
+                  </button>
+                  <StatusPill status="running" label={isPaused?'Paused':'Pipeline running'} spin={!isPaused}/>
+                </div>}
           </div>
         </div>
         <div className="row gap-12" style={{marginTop:14, alignItems:'center'}}>
