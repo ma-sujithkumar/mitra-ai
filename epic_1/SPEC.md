@@ -64,7 +64,7 @@ FastAPI backend (Python)
     +--> .mitra/<session_id>/
             data/
                 data.csv           (raw upload, copied as-is)
-                mini_data.csv      (pandas describe(include="all") stats, chunk-sampled)
+                mini_data.csv      (pandas describe(include="all") stats, Drop columns the user explicitly listed in their description (parse for "exclude X" or "ignore column Y" intent), chunk-sampled)
             reports/
                 validation_report.json
                 metadata.json
@@ -440,7 +440,7 @@ access ONLY to `mini_data.csv`. Do not call any tool that reads the full dataset
 ### 12.2 System prompt (agents/prompts/metadata_gen.md)
 
 The system prompt instructs the agent to:
-1. Read `mini_data.csv` using pandas describe().
+1. Read `mini_data.csv` using pandas describe(include="all").
 2. Infer column types: if a column has <= N unique values relative to row count,
    classify as `categorical`; else `numeric`. N is configurable.
 3. Determine `problem_type`:
@@ -450,7 +450,7 @@ The system prompt instructs the agent to:
      If no target column, classify as `unsupervised`.
 4. Extract input columns = all columns except the target column.
 5. Drop columns the user explicitly listed in their description (parse for
-   "exclude X" or "ignore column Y" intent).
+   "exclude X" or "ignore column Y" intent). Figure out PII columns and call it out in the metadata.json
 6. Produce `metadata.json` strictly conforming to the JSON Schema in Section 12.4.
 
 ### 12.3 Agent tools
