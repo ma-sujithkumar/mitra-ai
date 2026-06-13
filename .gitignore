@@ -2,15 +2,3 @@ meeting_transcripts/original
 
 # CLAUDE.md conventions: intermediate scripts and session docs are not tracked
 claude_scripts/
-docs/
-
-# Environment and secrets
-.env
-
-# MITRA session workspaces
-.mitra/
-
-# Frontend build artifacts
-mitra-ui/node_modules/
-mitra-ui/dist/
-

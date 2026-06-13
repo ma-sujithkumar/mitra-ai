@@ -31,8 +31,7 @@ The two artifacts produced by Epic 1 flow into all downstream epics:
 - Dashboard page (overview cards, recent runs table, agent roster, accuracy trend).
 - New Run page (Page 1): file upload, dataset picker, metadata form, BYOM credentials.
 - `.env` configuration schema and LLM smoke-test on startup.
-- `config.ini` — single global config file for all controllable parameters. Should contain defaults for all necessary configs if user does not specify
-- Client of anthropic, open ai, gemini compatible APIs to connect to the BYOM LLM (no LLM involved in this step)
+- `config.ini` — single global config file for all controllable parameters. Should contain defaults for all necessary configs if user does  not specify
 - Backend API (Python/FastAPI) for file upload and session workspace management.
 - Data Validator (Python, deterministic, no LLM): 6 checks, produces
   `validation_report.json`.
@@ -137,7 +136,6 @@ SESSION_LOG_DIR=.mitra/logs
 
 [upload]
 MAX_FILE_SIZE_MB=2000
-
 ALLOWED_EXTENSIONS=.csv,.xls,.xlsx,.zip
 MINI_DATA_SAMPLE_ROWS=1000
 CHUNK_SIZE_ROWS=50000
