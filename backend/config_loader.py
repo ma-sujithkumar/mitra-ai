@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import configparser
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+@dataclass(frozen=True)
+class PythonConfig:
+    python_binary: str
+
+
+@dataclass(frozen=True)
+class PathConfig:
+    workspace_root: Path
+    session_log_dir: Path
+
+
+@dataclass(frozen=True)
+class UploadConfig:
+    max_file_size_mb: int
+    allowed_extensions: list[str]
+    mini_data_sample_rows: int
+    chunk_size_rows: int
+    recent_upload_limit: int
+    min_rows: int
+    null_threshold: float
+    pii_patterns: list[str]
+
+
+@dataclass(frozen=True)
+class PipelineConfig:
+    train_test_split: float
+    max_ml_models: int
+    max_hpt_trials: int
+
+
+@dataclass(frozen=True)
+class LlmModelsConfig:
+    openai_base_model: str
+    anthropic_base_model: str
+    gemini_base_model: str
+
+    def as_provider_map(self) -> dict[str, str]:
+        return {
+            "openai": self.openai_base_model,
+            "anthropic": self.anthropic_base_model,
+            "gemini": self.gemini_base_model,
+        }
+
+
+@dataclass(frozen=True)
+class MetadataAgentConfig:
+    classification_unique_threshold: float
+    categorical_unique_ratio: float
+    llm_max_retries: int
+    metadata_context_char_limit: int
+
+
+class ConfigLoader:
+    required_sections = [
+        "python",
+        "paths",
+        "upload",
+        "pipeline",
+        "llm_models",
+        "metadata_agent",
+    ]
+
+    def __init__(
+        self,
+        config_path: Path | None = None,
+        repo_root: Path | None = None,
+    ) -> None:
+        self.repo_root = repo_root or Path(__file__).resolve().parents[1]
+        self.config_path = config_path or self.repo_root / "config.ini"
+        self.parser = configparser.ConfigParser()
+        loaded_files = self.parser.read(self.config_path)
+        if not loaded_files:
+            raise FileNotFoundError(f"Config file not found: {self.config_path}")
+        self._validate_required_sections()
+
+        self.python = PythonConfig(
+            python_binary=self.parser.get("python", "PYTHON", fallback=""),
+        )
+        self.paths = PathConfig(
+            workspace_root=self._resolve_repo_path(
+                self.parser.get("paths", "WORKSPACE_ROOT")
+            ),
+            session_log_dir=self._resolve_repo_path(
+                self.parser.get("paths", "SESSION_LOG_DIR")
+            ),
+        )
+        self.upload = UploadConfig(
+            max_file_size_mb=self.parser.getint("upload", "MAX_FILE_SIZE_MB"),
+            allowed_extensions=self._parse_csv_list(
+                self.parser.get("upload", "ALLOWED_EXTENSIONS")
+            ),
+            mini_data_sample_rows=self.parser.getint(
+                "upload", "MINI_DATA_SAMPLE_ROWS"
+            ),
+            chunk_size_rows=self.parser.getint("upload", "CHUNK_SIZE_ROWS"),
+            recent_upload_limit=self.parser.getint("upload", "RECENT_UPLOAD_LIMIT"),
+            min_rows=self.parser.getint("upload", "MIN_ROWS"),
+            null_threshold=self.parser.getfloat("upload", "NULL_THRESHOLD"),
+            pii_patterns=self._parse_json_string_list(
+                self.parser.get("upload", "PII_PATTERNS")
+            ),
+        )
+        self.pipeline = PipelineConfig(
+            train_test_split=self.parser.getfloat("pipeline", "TRAIN_TEST_SPLIT"),
+            max_ml_models=self.parser.getint("pipeline", "MAX_ML_MODELS"),
+            max_hpt_trials=self.parser.getint("pipeline", "MAX_HPT_TRIALS"),
+        )
+        self.llm_models = LlmModelsConfig(
+            openai_base_model=self.parser.get("llm_models", "OPENAI_BASE_MODEL"),
+            anthropic_base_model=self.parser.get(
+                "llm_models", "ANTHROPIC_BASE_MODEL"
+            ),
+            gemini_base_model=self.parser.get("llm_models", "GEMINI_BASE_MODEL"),
+        )
+        self.metadata_agent = MetadataAgentConfig(
+            classification_unique_threshold=self.parser.getfloat(
+                "metadata_agent", "CLASSIFICATION_UNIQUE_THRESHOLD"
+            ),
+            categorical_unique_ratio=self.parser.getfloat(
+                "metadata_agent", "CATEGORICAL_UNIQUE_RATIO"
+            ),
+            llm_max_retries=self.parser.getint("metadata_agent", "LLM_MAX_RETRIES"),
+            metadata_context_char_limit=self.parser.getint(
+                "metadata_agent",
+                "METADATA_CONTEXT_CHAR_LIMIT",
+            ),
+        )
+
+    def base_model_for_provider(self, provider: str) -> str:
+        provider_models = self.llm_models.as_provider_map()
+        normalized_provider = provider.strip().lower()
+        if normalized_provider not in provider_models:
+            raise ValueError(f"Unsupported LLM provider: {provider}")
+        return provider_models[normalized_provider]
+
+    def _validate_required_sections(self) -> None:
+        missing_sections = [
+            section_name
+            for section_name in self.required_sections
+            if not self.parser.has_section(section_name)
+        ]
+        if missing_sections:
+            raise ValueError(f"Missing config section(s): {missing_sections}")
+
+    def _resolve_repo_path(self, raw_path: str) -> Path:
+        candidate_path = Path(raw_path).expanduser()
+        if candidate_path.is_absolute():
+            return candidate_path
+        return self.repo_root / candidate_path
+
+    @staticmethod
+    def _parse_csv_list(raw_value: str) -> list[str]:
+        return [
+            item.strip()
+            for item in raw_value.split(",")
+            if item.strip()
+        ]
+
+    @staticmethod
+    def _parse_json_string_list(raw_value: str) -> list[str]:
+        parsed_value: Any = json.loads(raw_value)
+        if not isinstance(parsed_value, list):
+            raise ValueError("Expected JSON array")
+
+        string_values = [
+            item
+            for item in parsed_value
+            if isinstance(item, str)
+        ]
+        if len(string_values) != len(parsed_value):
+            raise ValueError("Expected JSON array of strings")
+        return string_values
