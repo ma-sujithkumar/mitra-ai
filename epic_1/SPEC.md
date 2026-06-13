@@ -31,11 +31,11 @@ The two artifacts produced by Epic 1 flow into all downstream epics:
 - Dashboard page (overview cards, recent runs table, agent roster, accuracy trend).
 - New Run page (Page 1): file upload, dataset picker, metadata form, BYOM credentials.
 - `.env` configuration schema and LLM smoke-test on startup.
-- `config.ini` — single global config file for all controllable parameters.
+- `config.ini` — single global config file for all controllable parameters. Should contain defaults for all necessary configs if user does  not specify
 - Backend API (Python/FastAPI) for file upload and session workspace management.
 - Data Validator (Python, deterministic, no LLM): 6 checks, produces
   `validation_report.json`.
-- Metadata Generation Agent (LLM via Google ADK): reads mini-data statistics,
+- Metadata Generation Agent (LLM via Google ADK): reads mini-data statistics + the user input for data description + system level prompt on what needs to be acheived,
   produces `metadata.json` against a fixed JSON schema.
 - Session workspace: `.mitra/<session_id>/` directory layout.
 
@@ -64,7 +64,7 @@ FastAPI backend (Python)
     +--> .mitra/<session_id>/
             data/
                 data.csv           (raw upload, copied as-is)
-                mini_data.csv      (pandas describe() stats, chunk-sampled)
+                mini_data.csv      (pandas describe(include="all") stats, chunk-sampled)
             reports/
                 validation_report.json
                 metadata.json
@@ -104,6 +104,8 @@ LLM_GATEWAY_URL=            # optional: LiteLLM proxy / company gateway URL
                             # leave blank to use the provider default endpoint
 ```
 
+### IMPORTANT NOTE: The GUI should hide the API key once user enters it. Use masking. It should not be visible anywhere in the DOM or console or UI.
+
 ### LLM smoke test
 
 On FastAPI startup (`lifespan` handler), send a minimal test prompt to the
@@ -133,7 +135,7 @@ WORKSPACE_ROOT=.mitra
 SESSION_LOG_DIR=.mitra/logs
 
 [upload]
-MAX_FILE_SIZE_MB=200
+MAX_FILE_SIZE_MB=2000
 ALLOWED_EXTENSIONS=.csv,.xls,.xlsx,.zip
 MINI_DATA_SAMPLE_ROWS=1000
 CHUNK_SIZE_ROWS=50000
