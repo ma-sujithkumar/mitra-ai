@@ -1,0 +1,74 @@
+[
+  {
+    "id": "validator",
+    "name": "Data Validator",
+    "short": "DV",
+    "hue": 14,
+    "type": "Python",
+    "role": "Gates bad data before any LLM is touched",
+    "owner": "sebin"
+  },
+  {
+    "id": "metadata",
+    "name": "Metadata Gen",
+    "short": "MG",
+    "hue": 262,
+    "type": "LLM",
+    "role": "Builds the metadata.json contract every agent reads",
+    "owner": "vidhi"
+  },
+  {
+    "id": "feature",
+    "name": "Feature Selection",
+    "short": "FS",
+    "hue": 212,
+    "type": "LLM",
+    "role": "Ranks and prunes features for downstream models",
+    "owner": "team"
+  },
+  {
+    "id": "model",
+    "name": "Model Selection",
+    "short": "MS",
+    "hue": 286,
+    "type": "LLM",
+    "role": "Chooses candidate model families for the task",
+    "owner": "team"
+  },
+  {
+    "id": "classification",
+    "name": "Classification",
+    "short": "CL",
+    "hue": 158,
+    "type": "LLM",
+    "role": "Trains and tunes classifier candidates",
+    "owner": "team"
+  },
+  {
+    "id": "regression",
+    "name": "Regression / USL",
+    "short": "RU",
+    "hue": 188,
+    "type": "LLM",
+    "role": "Regression and unsupervised model family",
+    "owner": "team"
+  },
+  {
+    "id": "judge",
+    "name": "Judge",
+    "short": "JD",
+    "hue": 38,
+    "type": "LLM",
+    "role": "Weighs every proposal and converges on a verdict",
+    "owner": "team"
+  },
+  {
+    "id": "hpt",
+    "name": "HPT",
+    "short": "HP",
+    "hue": 330,
+    "type": "Python",
+    "role": "Guided hyperparameter search within budget",
+    "owner": "team"
+  }
+]
