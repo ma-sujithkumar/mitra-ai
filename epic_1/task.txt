@@ -7,5 +7,7 @@ ReactJS application
 python for backend application
 Basic UI for the entire application
 
+User can upload metadata.csv and/or describe medata data in description column. Combined bouth inputs and a "prompt" 
+to give more context on what needs to be acheived and call the LLM/Agent to get the metadata.json
 
 
