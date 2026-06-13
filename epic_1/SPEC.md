@@ -23,9 +23,9 @@ The two artifacts produced by Epic 1 flow into all downstream epics:
 
 ---
 
-## 2. SCOPE
+## 2. SCOPE 
 
-### In scope
+### In scope only confied to epic-1 changes
 - Global app shell: sidebar navigation, top bar, routing between pages (Dashboard,
   New Run, Pipeline, Leaderboard).
 - Dashboard page (overview cards, recent runs table, agent roster, accuracy trend).
