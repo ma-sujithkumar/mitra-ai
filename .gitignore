@@ -2,3 +2,16 @@ meeting_transcripts/original
 
 # CLAUDE.md conventions: intermediate scripts and session docs are not tracked
 claude_scripts/
+docs/*
+!docs/README.md
+
+# Python/runtime artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+.mitra/
+.env
+
+# Frontend/runtime artifacts
+frontend/node_modules/
+frontend/dist/
