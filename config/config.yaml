@@ -1,0 +1,32 @@
+imputation:
+  null_drop_threshold: 0.50
+  knn_neighbors: 5
+  iterative_max_iter: 10
+
+outlier:
+  iqr_multiplier: 1.5
+  zscore_threshold: 3.0
+  isolation_contamination: 0.05
+  default_action: scale
+
+feature_creation:
+  max_created_features: 50
+  equal_width_bins: 5
+  quantile_bins: 5
+
+feature_selection:
+  correlation_threshold: 0.90
+  mi_threshold: 0.01
+  variance_threshold: 0.01
+  lasso_alpha: 0.01
+  rf_n_estimators: 100
+  pca_variance_retained: 0.95
+  top_k_features: 20
+
+scaling:
+  power_transformer_method: yeo-johnson
+
+pipeline:
+  max_tool_retries: 3
+  random_state: 42
+  max_workers: 8

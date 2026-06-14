@@ -12,17 +12,20 @@ The model is only called where a human looking at column names and sample values
 
 ## 2. PACKAGES TO BE USED
 
+- google-adk (agent harness — owns all model calls and tool dispatch)
 - pandas
 - numpy
 - scikit-learn
 - scipy
-- any OpenAI compatible model client (user supplied)
+- ray
+- mrmr-selection
 - pyyaml
 - pydantic
-- concurrent.futures (stdlib)
 - dataclasses (stdlib)
 - logging (stdlib)
 - ast (stdlib)
+
+**Bring-your-own model.** The pipeline is model-provider-agnostic. The caller supplies a model string (e.g., `gemini/gemini-2.0-flash`, `openai/gpt-4o`) and sets the corresponding API key as an environment variable. ADK resolves the provider from the model string. No model client library is bundled — the caller installs whatever their provider requires.
 
 ---
 
@@ -103,7 +106,7 @@ The model is called once at the end to write the report from the structured pipe
 
 ## 4. APPLICATION
 
-**How it gets called.** The caller passes a dataset path, task type, and target column name. The pipeline runs end to end and returns the engineered dataset and the artifact file. Three arguments, working result, no manual configuration needed.
+**How it gets called.** The caller passes a dataset path, task type, target column name, and a model string. The corresponding API key must be set as an environment variable before the pipeline starts. The pipeline runs end to end and returns the engineered dataset and the artifact file. No other configuration is needed.
 
 **Imputation decisions.** The model looks at the null pattern, the column's correlation with other features, and the null rate before picking a strategy. A column with random low rate nulls gets median. A column where nulls correlate with other columns gets KNN because the surrounding structure carries signal. A column with more than 50% nulls is dropped (`null_drop_threshold: 0.50` in config.yaml). Whether missingness is random or tied to other variables (MCAR vs MAR vs MNAR) changes the right answer, and a fixed rule can't detect that — the model reads the profile and decides.
 
@@ -123,9 +126,11 @@ The model is called once at the end to write the report from the structured pipe
 
 ## 5. CONSTRAINTS
 
-The pipeline does not depend on any specific model provider. The caller passes in a `model_fn` — any callable that takes a prompt string and returns a response string. This could wrap OpenAI, Anthropic, a local Ollama instance, or anything else. A `model_fn` is required. The pipeline only starts if all agent steps clear a smoke test at startup. There is no offline fallback mode.
+**Agent harness: Google ADK.** The orchestrator is a `google.adk.agents.Agent`. The caller supplies a model string; the pipeline is model-provider-agnostic. ADK resolves the provider and handles all model calls. There is no `model_fn` callable anywhere in the codebase. A model string is required — the pipeline refuses to start without one. There is no offline fallback mode.
 
-The model is called in three places. Each works differently.
+Each pipeline tool (DataProfiler, SemanticTypeInfer, etc.) is wrapped as a plain Python function and registered on the orchestrator agent as an ADK tool. Tool functions are stateless from ADK's perspective — they close over a shared `PipelineState` instance that is set once at startup. ADK tools never receive `PipelineState` as an argument.
+
+The model is invoked by the ADK orchestrator agent in three decision points. Each works differently.
 
 SemanticTypeInfer sends all column names, dtypes, null rates, and sample values in one call and gets back a JSON array of type assignments. One call, one response.
 
@@ -133,13 +138,13 @@ FeatureCreator sends column stats and gets back a JSON list of operation specs. 
 
 FeatureReporter sends a structured summary of pipeline decisions and gets back a Markdown report. No JSON, no validation, just text.
 
-The orchestrator runs a loop — it picks a tool, runs it, looks at the result, and decides what to do next. This is the only place the model runs in a loop. The number of calls depends on how many tools error during the run; in a clean run it is one call for sequencing.
+The orchestrator agent runs ADK's agent loop — it calls a tool, receives the result, and decides what to call next. ADK manages this loop internally. The number of model calls depends on how many tools return errors; in a clean run it is one call per decision point listed above.
 
 Nothing the model outputs is applied to data directly. Type assignments and operation specs both go through a validation step before anything touches the dataframe. On validation failure the pipeline attempts coercion in order: cast to float, then parse as timestamp, then apply LabelEncoder. If all three fail the operation is skipped and a warning is logged. The model decides what to do; code does it.
 
 `cross_categorical` operations carry `temporal_class: pre_encoding` and execute before the Encoder runs. Any FeatureCreator operation spec missing a `temporal_class` is rejected at plan-validation time.
 
-Parallelism uses ThreadPoolExecutor, not ProcessPoolExecutor. The serialisation overhead for sklearn objects makes multiprocessing not worth it. Pandas and sklearn release the GIL for heavy numerical work so threads are sufficient. A single `ThreadPoolExecutor(max_workers=8)` is instantiated in `pipeline/parallel.py` and passed to all tools via `PipelineState.executor`. No tool creates its own executor. This is the global cap of eight workers.
+Parallelism uses Ray. Ray is initialised once at orchestrator startup via `ray.init(num_cpus=8)` which enforces the global cap of eight workers. Ray uses shared memory for numpy arrays and pandas DataFrames (zero-copy via Apache Arrow) so there is no serialisation overhead for sklearn objects. All parallel work is expressed as `@ray.remote` functions in `pipeline/parallel.py`. No tool initialises Ray or sets worker counts — that is the orchestrator's responsibility at startup.
 
 Every stochastic operation takes `random_state=42`. Same inputs must produce the same outputs on every run. KNNImputer is deterministic by algorithm and does not accept a seed. IterativeImputer is the only imputer that requires `random_state=42`.
 
@@ -158,10 +163,11 @@ pipeline/
     state.py                    PipelineState dataclass and all sub dataclasses
     config.py                   ConfigSchema Pydantic model; loads and validates config.yaml at import time
     base.py                     BaseTool ABC; precondition checks inputs not None, postcondition checks output not None, __call__ chains both around run()
-    parallel.py                 single shared ThreadPoolExecutor(max_workers=8); all tools receive it via PipelineState.executor
-    orchestrator.py             FeatureEngineerOrchestrator, the main entry point
+    parallel.py                 Ray remote function definitions; ray.init(num_cpus=8) called once at orchestrator startup
+    orchestrator.py             FeatureEngineerOrchestrator; constructs ADK Agent, sets pipeline state, runs ADK Runner
     tools/
         __init__.py
+        adk_tools.py            ADK tool functions wrapping each BaseTool; set_pipeline_state() injection point
         profiler.py             DataProfiler
         infer.py                SemanticTypeInfer
         imputer.py              MissingValueHandler
@@ -175,7 +181,7 @@ pipeline/
 
 schema.md                       full input/output contract, all args documented
 README.md                       entry point for any caller, links schema.md
-main.py                         CLI: `python main.py run data.csv --task classification --target churn`
+main.py                         CLI: `python main.py run data.csv --task classification --target churn --model <model_string>`
 ```
 
 **What a run produces.**
@@ -272,7 +278,7 @@ Solution: Only `classification` and `regression` are valid. An unrecognized valu
 
 ### N. Eight-Worker Global Cap Enforcement
 "Hard cap: eight workers across all thread pools at any time." Multiple ThreadPoolExecutors are instantiated independently (profiler, scaler, selector). How is the global cap enforced — a shared semaphore passed into each executor, a single top level executor, or a per pool limit of eight?
-Solution: Instantiate a single module-level `ThreadPoolExecutor(max_workers=8)` in `pipeline/parallel.py` and pass it into every tool that needs concurrency. No semaphore bookkeeping needed — the executor's internal queue naturally caps concurrent workers at 8. All tools receive the shared executor via `PipelineState.executor` so the cap is structural, not cooperative.
+Solution: Use Ray. `ray.init(num_cpus=8)` is called once at orchestrator startup and enforces the global cap. All parallel work is defined as `@ray.remote` functions in `pipeline/parallel.py`. Tools call `ray.get([fn.remote(item) for item in items])` — no executor object, no semaphore, no per-tool configuration needed.
 
 ### O. config.yaml Schema Location
 "The config is validated against a schema at startup." Where is the schema defined — inline as a Pydantic model in Python, a separate YAML/JSON schema file, or a manual key existence check? A missing schema file or class is as dangerous as a missing config key.
