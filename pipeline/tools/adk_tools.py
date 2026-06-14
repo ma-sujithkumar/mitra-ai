@@ -28,12 +28,16 @@ _log_path: str | None = None
 _creator_instance: FeatureCreator | None = None
 
 
-def set_pipeline_state(state: PipelineState, model_call: Callable[[str], str]) -> None:
+def set_pipeline_state(
+    state: PipelineState,
+    model_call: Callable[[str], str],
+    judge_agent: Any | None = None,
+) -> None:
     global _state, _model_call, _log_path, _creator_instance
     _state = state
     _model_call = model_call
     _log_path = str(state.output_dir / "execution_log.txt")
-    _creator_instance = FeatureCreator(model_call)
+    _creator_instance = FeatureCreator(model_call, judge=judge_agent)
 
 
 def _log(tool: str, status: str, detail: str, elapsed: float) -> None:

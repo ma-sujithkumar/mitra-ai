@@ -41,8 +41,9 @@ def _extract_json_array(text: str) -> list:
 
 
 class FeatureCreator(BaseTool):
-    def __init__(self, model_call: Callable[[str], str]):
+    def __init__(self, model_call: Callable[[str], str], judge=None):
         self.model_call = model_call
+        self.judge = judge  # JudgeAgent | None — ranks/caps proposals
         self._specs: list[dict] | None = None
         self._proposed_pre: list[dict] = []
         self._proposed_post: list[dict] = []
@@ -97,13 +98,25 @@ class FeatureCreator(BaseTool):
                 continue
             valid_specs.append(spec)
 
-        # Rank by proxy MI (mean of source MIs) and cap
-        def proxy_mi(spec):
-            scores = [state.profile.get(s, {}).get("mi_with_target") or 0.0 for s in spec["sources"]]
-            return float(np.mean(scores)) if scores else 0.0
+        # Judge Agent (Solution F): ranks proposals and caps to `cap` items.
+        # Falls back to proxy-MI ranking if the Judge LLM is unavailable.
+        if self.judge is not None:
+            kept, source = self.judge.rank(
+                specs=valid_specs,
+                profile=state.profile,
+                target_column=state.target_column,
+                task=state.task,
+                cap=cap,
+            )
+            state.warnings.append(f"FeatureCreator ranking source={source}, kept={len(kept)}/{len(valid_specs)}")
+            valid_specs = kept
+        else:
+            def proxy_mi(spec):
+                scores = [state.profile.get(s, {}).get("mi_with_target") or 0.0 for s in spec["sources"]]
+                return float(np.mean(scores)) if scores else 0.0
+            valid_specs.sort(key=proxy_mi, reverse=True)
+            valid_specs = valid_specs[:cap]
 
-        valid_specs.sort(key=proxy_mi, reverse=True)
-        valid_specs = valid_specs[:cap]
         self._specs = valid_specs
         self._proposed_pre = [s for s in valid_specs if s["temporal_class"] == "pre_encoding"]
         self._proposed_post = [s for s in valid_specs if s["temporal_class"] == "post_encoding"]

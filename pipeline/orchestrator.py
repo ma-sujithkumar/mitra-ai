@@ -46,30 +46,23 @@ def _make_model_call(
     api_key: str,
     base_url: str | None,
 ) -> Callable[[str], str]:
-    """Returns a callable(prompt) -> response_text using ADK's LiteLlm wrapper.
+    """Returns a callable(prompt) -> response_text routed through our ADK-native
+    OpenAICompatibleLlm. No litellm in the path."""
+    from pipeline.openai_llm import OpenAICompatibleLlm
 
-    Resolves provider from the model string. `api_key` and `base_url` are passed
-    directly to LiteLlm (and also injected into env vars for any code path that
-    reads them via os.environ). `max_tokens` is applied per-call via
-    GenerateContentConfig.max_output_tokens.
-    """
-    try:
-        from google.adk.models.lite_llm import LiteLlm
-        kwargs: dict = {"model": model_string, "api_key": api_key}
-        if base_url:
-            kwargs["api_base"] = base_url
-        llm = LiteLlm(**kwargs)
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to construct LiteLlm({model_string}). Install google-adk and check api_key. Detail: {e}"
-        )
+    llm = OpenAICompatibleLlm(
+        model=model_string,
+        api_key=api_key,
+        base_url=base_url,
+        max_tokens=max_tokens,
+    )
 
     import asyncio
     from google.genai import types as genai_types
+    from google.adk.models.llm_request import LlmRequest
 
     def call(prompt: str) -> str:
         async def _go():
-            from google.adk.models.llm_request import LlmRequest
             contents = [genai_types.Content(role="user", parts=[genai_types.Part(text=prompt)])]
             req = LlmRequest(
                 model=model_string,
@@ -80,15 +73,15 @@ def _make_model_call(
             async for resp in llm.generate_content_async(req, stream=False):
                 if resp.content and resp.content.parts:
                     for part in resp.content.parts:
-                        if getattr(part, "text", None):
-                            chunks.append(part.text)
+                        text = getattr(part, "text", None)
+                        if text:
+                            chunks.append(text)
             return "".join(chunks)
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import nest_asyncio
-                nest_asyncio.apply()
+            loop = asyncio.get_running_loop()
+            import nest_asyncio
+            nest_asyncio.apply()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -187,15 +180,33 @@ class FeatureEngineerOrchestrator:
             api_key,
             self.config.llm.base_url,
         )
-        # Smoke test
+        # Smoke test — preserve traceback so the root cause is visible
+        import traceback as _tb
         try:
             smoke = model_call("Respond with the single word: ok")
             if not smoke or not smoke.strip():
                 raise RuntimeError("smoke test returned empty response")
         except Exception as e:
-            raise RuntimeError(f"Model smoke test failed: {e}")
+            raise RuntimeError(
+                f"Model smoke test failed.\n"
+                f"  model={self.model_string!r}\n"
+                f"  base_url={self.config.llm.base_url!r}\n"
+                f"  error_type={type(e).__name__}\n"
+                f"  error={e}\n"
+                f"--- traceback ---\n{_tb.format_exc()}"
+            ) from e
 
-        adk_tools.set_pipeline_state(state, model_call)
+        # Construct the Judge Agent (Solution F): isolated ADK sub-agent that
+        # ranks FeatureCreator proposals. Reuses the same model/endpoint.
+        from pipeline.judge_agent import JudgeAgent
+        judge_agent = JudgeAgent(
+            model_string=self.model_string,
+            api_key=api_key,
+            base_url=self.config.llm.base_url,
+            max_tokens=self.config.llm.max_tokens,
+        )
+
+        adk_tools.set_pipeline_state(state, model_call, judge_agent=judge_agent)
 
         # Run pipeline via ADK Agent
         self._run_adk_agent(state)
@@ -227,9 +238,16 @@ class FeatureEngineerOrchestrator:
         except ImportError as e:
             raise RuntimeError(f"google-adk not installed: {e}")
 
+        from pipeline.openai_llm import OpenAICompatibleLlm
+
         agent = Agent(
             name="feature_engineer_orchestrator",
-            model=self.model_string,
+            model=OpenAICompatibleLlm(
+                model=self.model_string,
+                api_key=self.config.llm.api_key,
+                base_url=self.config.llm.base_url,
+                max_tokens=self.config.llm.max_tokens,
+            ),
             description="Orchestrates the feature engineering pipeline.",
             instruction=ORCHESTRATOR_INSTRUCTION,
             tools=adk_tools.ALL_TOOLS,
