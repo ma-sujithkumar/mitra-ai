@@ -74,6 +74,18 @@ export async function startMetadata(payload) {
   });
 }
 
+export async function runLlmSmokeTest(payload) {
+  return requestJson('/api/llm/smoke-test', {
+    method: 'POST',
+    body: JSON.stringify({
+      provider: payload.provider || null,
+      model: payload.model || null,
+      api_key: payload.apiKey || null,
+      gateway_url: payload.gatewayUrl || null,
+    }),
+  });
+}
+
 export async function fetchRuns(limit = 5) {
   return requestJson(`/api/runs?limit=${encodeURIComponent(limit)}`);
 }

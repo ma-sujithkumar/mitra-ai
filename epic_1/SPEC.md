@@ -20,6 +20,9 @@ Constraints:
    file locally. Excel files are converted to canonical `data.csv` while keeping
    the original source file for audit/debugging.
 5. ZIP/image support is visible as deferred, but not accepted in Epic 1.
+6. The validation and metadata generation section in new run page should only appear after clicking on Validate and review button , move LLM settings of configuring model , provider , api gateway , api key  
+  in a more compact way and i want this section not to be part of new run page but of settings page, new run page should only have a reference of what model , provider is selected for the particular run
+7. Validate and review should be enabled only after mandatory fields - file uploaded , LLM smoke test successful are provided
 
 The two artifacts produced by Epic 1 flow into all downstream epics:
 - `validation_report.json` — deterministic data quality gate.

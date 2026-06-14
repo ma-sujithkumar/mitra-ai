@@ -7,7 +7,6 @@ import Settings from './screens/Settings.jsx';
 import UploadScreen from './screens/UploadScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import TopBar from './components/TopBar.jsx';
-import { Icons } from './icons.jsx';
 
 const ROUTE_META = {
   dashboard: {
@@ -40,6 +39,20 @@ const ROUTE_META = {
 function App() {
   const [route, setRoute] = useState('dashboard');
   const [runState, setRunState] = useState('idle');
+  const [llmSettings, setLlmSettings] = useState({
+    provider: 'anthropic',
+    model: '',
+    gatewayUrl: '',
+    apiKey: '',
+  });
+  // configKey records which exact LLM settings were last smoke-tested, so a
+  // prior "passed" result is ignored once any provider/model/key/gateway edit
+  // changes the configuration.
+  const [llmSmokeStatus, setLlmSmokeStatus] = useState({
+    status: 'idle',
+    message: '',
+    configKey: '',
+  });
   const meta = ROUTE_META[route] || ROUTE_META.dashboard;
 
   function go(nextRoute) {
@@ -51,16 +64,16 @@ function App() {
     setRoute('pipeline');
   }
 
-  const rightActions = (
-    <button className="btn btn-primary" onClick={() => setRoute('upload')} type="button">
-      <Icons.plus size={16} />
-      New Run
-    </button>
-  );
-
   const screens = {
     dashboard: <Dashboard go={go} startRun={startRun} />,
-    upload: <UploadScreen go={go} startRun={startRun} />,
+    upload: (
+      <UploadScreen
+        go={go}
+        llmSettings={llmSettings}
+        llmSmokeStatus={llmSmokeStatus}
+        startRun={startRun}
+      />
+    ),
     pipeline: (
       <PipelineScreen
         go={go}
@@ -70,14 +83,21 @@ function App() {
       />
     ),
     leaderboard: <LeaderboardScreen startRun={startRun} />,
-    settings: <Settings />,
+    settings: (
+      <Settings
+        llmSettings={llmSettings}
+        llmSmokeStatus={llmSmokeStatus}
+        setLlmSettings={setLlmSettings}
+        setLlmSmokeStatus={setLlmSmokeStatus}
+      />
+    ),
   };
 
   return (
     <div className="app">
       <Sidebar go={go} route={route} runState={runState} />
       <main className="workspace">
-        <TopBar icon={meta.icon} right={rightActions} sub={meta.sub} title={meta.title} />
+        <TopBar icon={meta.icon} sub={meta.sub} title={meta.title} />
         <div className="screen-frame">{screens[route]}</div>
       </main>
     </div>

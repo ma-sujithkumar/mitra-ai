@@ -1,12 +1,33 @@
 import { useEffect, useState } from 'react';
 
+import ByomFields from '../components/ByomFields.jsx';
 import StatusPill from '../components/StatusPill.jsx';
-import { fetchHealth, fetchPublicConfig } from '../api/client.js';
+import { fetchHealth, fetchPublicConfig, runLlmSmokeTest } from '../api/client.js';
+import { llmConfigKey } from '../data.js';
+import { Icons } from '../icons.jsx';
 
-function Settings() {
+function Settings({ llmSettings, llmSmokeStatus, setLlmSettings, setLlmSmokeStatus }) {
   const [health, setHealth] = useState(null);
   const [publicConfig, setPublicConfig] = useState(null);
   const [error, setError] = useState(null);
+
+  async function handleSmokeTest() {
+    setLlmSmokeStatus({ status: 'running', message: '', configKey: '' });
+    try {
+      const result = await runLlmSmokeTest(llmSettings);
+      setLlmSmokeStatus({
+        status: 'passed',
+        message: `${result.provider} / ${result.model} responded in ${result.latency_ms} ms`,
+        configKey: llmConfigKey(llmSettings),
+      });
+    } catch (smokeError) {
+      setLlmSmokeStatus({
+        status: 'failed',
+        message: smokeError.message,
+        configKey: '',
+      });
+    }
+  }
 
   useEffect(() => {
     let ignore = false;
@@ -20,6 +41,14 @@ function Settings() {
         if (!ignore) {
           setHealth(healthPayload);
           setPublicConfig(configPayload);
+          // Default the active provider to the first server-supported one
+          // only when the current selection is not available.
+          const supportedProviders = configPayload.llm?.providers || [];
+          setLlmSettings((currentSettings) => (
+            supportedProviders.length && !supportedProviders.includes(currentSettings.provider)
+              ? { ...currentSettings, provider: supportedProviders[0] }
+              : currentSettings
+          ));
         }
       } catch (settingsError) {
         if (!ignore) {
@@ -32,10 +61,17 @@ function Settings() {
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [setLlmSettings]);
 
   const providers = publicConfig?.llm?.providers || [];
   const baseModels = publicConfig?.llm?.base_models || {};
+  const SMOKE_PILL_BY_STATUS = {
+    idle: { status: 'idle', label: 'Not tested' },
+    running: { status: 'running', label: 'Testing' },
+    passed: { status: 'passed', label: 'Verified' },
+    failed: { status: 'failed', label: 'Failed' },
+  };
+  const smokeStatusPill = SMOKE_PILL_BY_STATUS[llmSmokeStatus.status] || SMOKE_PILL_BY_STATUS.idle;
 
   return (
     <div className="screen-stack">
@@ -99,6 +135,45 @@ function Settings() {
             </div>
           </dl>
         </article>
+      </section>
+
+      <section className="card panel-section">
+        <div className="section-head">
+          <div>
+            <p className="section-kicker">LLM</p>
+            <h2>Run Configuration</h2>
+          </div>
+          <StatusPill
+            status={smokeStatusPill.status}
+            label={smokeStatusPill.label}
+            spin={llmSmokeStatus.status === 'running'}
+          />
+        </div>
+        <p className="muted">
+          Provider, model, gateway, and key applied to every new run. A successful
+          connection test is required before a run can start.
+        </p>
+        <ByomFields
+          publicConfig={publicConfig}
+          setSettings={setLlmSettings}
+          settings={llmSettings}
+        />
+        <div className="smoke-test-row">
+          <button
+            className="btn btn-secondary"
+            disabled={llmSmokeStatus.status === 'running'}
+            onClick={handleSmokeTest}
+            type="button"
+          >
+            {llmSmokeStatus.status === 'running' ? <span className="spinner" /> : <Icons.cpu size={16} />}
+            Test connection
+          </button>
+          {llmSmokeStatus.message ? (
+            <span className={`smoke-test-msg ${llmSmokeStatus.status}`}>
+              {llmSmokeStatus.message}
+            </span>
+          ) : null}
+        </div>
       </section>
 
       <section className="card panel-section">
