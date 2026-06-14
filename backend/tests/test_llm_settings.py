@@ -16,6 +16,13 @@ from backend.config_loader import ConfigLoader
 from backend.session import SessionManager
 
 
+def write_test_ca_bundle(ca_bundle_path: Path) -> None:
+    ca_bundle_path.write_text(
+        Path(certifi.where()).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+
 def test_per_run_llm_settings_override_env(
     tmp_path: Path,
     test_config_loader: ConfigLoader,
@@ -75,7 +82,7 @@ def test_llm_settings_resolves_ca_bundle_from_env_file(
     test_config_loader: ConfigLoader,
 ) -> None:
     ca_bundle_path = tmp_path / "ca-bundle.pem"
-    ca_bundle_path.write_text("", encoding="utf-8")
+    write_test_ca_bundle(ca_bundle_path=ca_bundle_path)
     env_path = tmp_path / ".env"
     env_path.write_text(
         "LLM_TYPE=openai\n"
@@ -111,6 +118,28 @@ def test_llm_settings_rejects_missing_ca_bundle(
     )
 
     with pytest.raises(ValueError, match="LLM_CA_BUNDLE"):
+        resolver.resolve()
+
+
+def test_llm_settings_rejects_invalid_ca_bundle(
+    tmp_path: Path,
+    test_config_loader: ConfigLoader,
+) -> None:
+    ca_bundle_path = tmp_path / "ca-bundle.pem"
+    ca_bundle_path.write_text("not a certificate", encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "LLM_TYPE=openai\n"
+        "LLM_API_KEY=env-key\n"
+        "LLM_CA_BUNDLE=ca-bundle.pem\n",
+        encoding="utf-8",
+    )
+    resolver = LlmSettingsResolver(
+        config_loader=test_config_loader,
+        env_path=env_path,
+    )
+
+    with pytest.raises(ValueError, match="valid PEM CA bundle"):
         resolver.resolve()
 
 
@@ -216,7 +245,7 @@ def test_configure_default_ssl_certificates_preserves_user_cert_path(
     tmp_path: Path,
 ) -> None:
     custom_certificate_path = tmp_path / "custom.pem"
-    custom_certificate_path.write_text("", encoding="utf-8")
+    write_test_ca_bundle(ca_bundle_path=custom_certificate_path)
     monkeypatch.delenv("LLM_CA_BUNDLE", raising=False)
     monkeypatch.setenv("SSL_CERT_FILE", str(custom_certificate_path))
     monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
@@ -234,7 +263,7 @@ def test_configure_default_ssl_certificates_uses_explicit_ca_bundle(
     stale_certificate_path = tmp_path / "stale.pem"
     custom_certificate_path = tmp_path / "custom.pem"
     stale_certificate_path.write_text("", encoding="utf-8")
-    custom_certificate_path.write_text("", encoding="utf-8")
+    write_test_ca_bundle(ca_bundle_path=custom_certificate_path)
     monkeypatch.setenv("SSL_CERT_FILE", str(stale_certificate_path))
     monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(stale_certificate_path))
 

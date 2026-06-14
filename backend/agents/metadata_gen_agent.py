@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -115,6 +116,19 @@ def _validated_certificate_path(raw_path: str) -> Path:
     certificate_path = Path(raw_path).expanduser()
     if not certificate_path.is_file():
         raise FileNotFoundError(f"CA bundle file not found: {certificate_path}")
+    try:
+        ca_certificates = ssl.create_default_context(
+            cafile=str(certificate_path)
+        ).get_ca_certs()
+    except ssl.SSLError as exc:
+        raise ValueError(
+            "LLM_CA_BUNDLE must point to a valid PEM CA bundle."
+        ) from exc
+
+    if not ca_certificates:
+        raise ValueError(
+            "LLM_CA_BUNDLE must contain at least one CA certificate."
+        )
     return certificate_path
 
 
@@ -205,9 +219,10 @@ class LlmSettingsResolver:
         if not ca_bundle_path.is_absolute():
             ca_bundle_path = self.config_loader.repo_root / ca_bundle_path
 
-        if not ca_bundle_path.is_file():
-            raise ValueError(f"LLM_CA_BUNDLE file not found: {ca_bundle_path}")
-        return ca_bundle_path
+        try:
+            return _validated_certificate_path(str(ca_bundle_path))
+        except FileNotFoundError as exc:
+            raise ValueError(f"LLM_CA_BUNDLE file not found: {ca_bundle_path}") from exc
 
     @classmethod
     def _resolve_source(
