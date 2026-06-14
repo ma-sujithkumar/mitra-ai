@@ -3,7 +3,7 @@ import Segmented from './Segmented.jsx';
 import { PROVIDERS } from '../data.js';
 import { Icons } from '../icons.jsx';
 
-function ByomFields({ settings, setSettings, apiKeyRef, publicConfig }) {
+function ByomFields({ settings, setSettings, publicConfig }) {
   const Cpu = Icons.cpu;
   const selectedProvider = settings.provider || 'anthropic';
   const baseModels = publicConfig?.llm?.base_models || {};
@@ -30,35 +30,38 @@ function ByomFields({ settings, setSettings, apiKeyRef, publicConfig }) {
         />
       </FormField>
 
-      <FormField label="Model" hint="blank uses provider base">
-        <input
-          className="input"
-          onChange={(event) => updateSetting('model', event.target.value)}
-          placeholder={baseModel || 'base model'}
-          type="text"
-          value={settings.model || ''}
-        />
-      </FormField>
+      <div className="byom-grid">
+        <FormField label="Model" hint="blank uses provider base">
+          <input
+            className="input"
+            onChange={(event) => updateSetting('model', event.target.value)}
+            placeholder={baseModel || 'base model'}
+            type="text"
+            value={settings.model || ''}
+          />
+        </FormField>
 
-      <FormField label="API Key" hint="optional per run">
-        <input
-          autoComplete="off"
-          className="input mono"
-          placeholder="stored only for this request"
-          ref={apiKeyRef}
-          type="password"
-        />
-      </FormField>
+        <FormField label="API Key" hint="kept in memory for this session">
+          <input
+            autoComplete="off"
+            className="input mono"
+            onChange={(event) => updateSetting('apiKey', event.target.value)}
+            placeholder="paste provider key"
+            type="password"
+            value={settings.apiKey || ''}
+          />
+        </FormField>
 
-      <FormField label="Gateway URL" hint="optional">
-        <input
-          className="input mono"
-          onChange={(event) => updateSetting('gatewayUrl', event.target.value)}
-          placeholder="https://litellm.local:4000"
-          type="url"
-          value={settings.gatewayUrl || ''}
-        />
-      </FormField>
+        <FormField label="API Gateway URL" hint="optional">
+          <input
+            className="input mono"
+            onChange={(event) => updateSetting('gatewayUrl', event.target.value)}
+            placeholder="https://litellm.local:4000"
+            type="url"
+            value={settings.gatewayUrl || ''}
+          />
+        </FormField>
+      </div>
 
       <div className="inline-note">
         <Cpu size={15} />

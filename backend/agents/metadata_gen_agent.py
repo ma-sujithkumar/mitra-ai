@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import ssl
 from dataclasses import dataclass, field
@@ -17,6 +19,58 @@ from google.genai import types
 
 from backend.agents.tools import MetadataTools
 from backend.config_loader import ConfigLoader
+
+
+logger = logging.getLogger("mitra.metadata_agent")
+
+
+# Maps the dtype-style values models commonly emit onto the column-type enum the
+# metadata schema accepts ("categorical" / "numeric").
+COLUMN_TYPE_SYNONYMS = {
+    "numeric": "numeric",
+    "number": "numeric",
+    "numerical": "numeric",
+    "continuous": "numeric",
+    "float": "numeric",
+    "float32": "numeric",
+    "float64": "numeric",
+    "double": "numeric",
+    "decimal": "numeric",
+    "real": "numeric",
+    "int": "numeric",
+    "int32": "numeric",
+    "int64": "numeric",
+    "integer": "numeric",
+    "long": "numeric",
+    "categorical": "categorical",
+    "category": "categorical",
+    "categoric": "categorical",
+    "nominal": "categorical",
+    "ordinal": "categorical",
+    "factor": "categorical",
+    "string": "categorical",
+    "str": "categorical",
+    "object": "categorical",
+    "text": "categorical",
+    "char": "categorical",
+    "bool": "categorical",
+    "boolean": "categorical",
+}
+
+# Maps problem-type phrasings onto the schema enum.
+PROBLEM_TYPE_SYNONYMS = {
+    "classification": "classification",
+    "binary": "classification",
+    "binary classification": "classification",
+    "multiclass": "classification",
+    "multi-class": "classification",
+    "multiclass classification": "classification",
+    "regression": "regression",
+    "regressor": "regression",
+    "unsupervised": "unsupervised",
+    "clustering": "unsupervised",
+    "cluster": "unsupervised",
+}
 
 
 @dataclass(frozen=True)
@@ -63,21 +117,116 @@ class MetadataAgentToolAdapter:
         self.metadata_tools = metadata_tools
 
     def read_mini_data(self, session_id: str) -> str:
-        return self.metadata_tools.read_mini_data(session_id=session_id)
+        logger.info("tool read_mini_data called: session_id=%s", session_id)
+        mini_data = self.metadata_tools.read_mini_data(session_id=session_id)
+        logger.info(
+            "tool read_mini_data returned: session_id=%s chars=%d",
+            session_id,
+            len(mini_data),
+        )
+        return mini_data
 
     def write_metadata(
         self,
         session_id: str,
         metadata: dict[str, Any],
     ) -> dict[str, str]:
+        # Some models (e.g. llama-3.3 via NVIDIA) return the metadata argument
+        # as a JSON-encoded string instead of a structured object, so coerce it
+        # back to a dict before writing.
+        normalized_metadata = self._coerce_metadata_dict(metadata=metadata)
+        # Map dtype-style enum values (e.g. "float") onto the schema vocabulary.
+        normalized_metadata = self._normalize_metadata_enums(
+            metadata=normalized_metadata
+        )
+        # Statistics are objective facts from mini_data.csv, so compute them
+        # deterministically instead of trusting the model's transcription.
+        normalized_metadata["statistics"] = self.metadata_tools.build_statistics(
+            session_id=session_id
+        )
+        logger.info(
+            "tool write_metadata called: session_id=%s keys=%s",
+            session_id,
+            sorted(normalized_metadata.keys()),
+        )
         result = self.metadata_tools.write_metadata(
             session_id=session_id,
-            metadata=metadata,
+            metadata=normalized_metadata,
+        )
+        logger.info(
+            "tool write_metadata wrote: session_id=%s path=%s",
+            session_id,
+            result.metadata_path,
         )
         return {
             "session_id": result.session_id,
             "metadata_path": str(result.metadata_path),
         }
+
+    @staticmethod
+    def _coerce_metadata_dict(metadata: dict[str, Any] | str) -> dict[str, Any]:
+        if isinstance(metadata, dict):
+            return metadata
+        if isinstance(metadata, str):
+            parsed_metadata = json.loads(metadata)
+            if not isinstance(parsed_metadata, dict):
+                raise ValueError(
+                    "metadata tool argument must decode to a JSON object, got "
+                    f"{type(parsed_metadata).__name__}"
+                )
+            return parsed_metadata
+        raise ValueError(
+            f"metadata tool argument must be an object, got {type(metadata).__name__}"
+        )
+
+    @classmethod
+    def _normalize_metadata_enums(cls, metadata: dict[str, Any]) -> dict[str, Any]:
+        normalized_metadata = dict(metadata)
+
+        problem_type = normalized_metadata.get("problem_type")
+        normalized_problem_type = cls._map_enum_value(
+            value=problem_type,
+            synonyms=PROBLEM_TYPE_SYNONYMS,
+        )
+        if normalized_problem_type is not None:
+            normalized_metadata["problem_type"] = normalized_problem_type
+
+        target_col_type = normalized_metadata.get("target_col_type")
+        normalized_target_col_type = cls._map_enum_value(
+            value=target_col_type,
+            synonyms=COLUMN_TYPE_SYNONYMS,
+        )
+        if normalized_target_col_type is not None:
+            normalized_metadata["target_col_type"] = normalized_target_col_type
+
+        input_cols = normalized_metadata.get("input_cols")
+        if isinstance(input_cols, list):
+            normalized_metadata["input_cols"] = [
+                cls._normalize_input_col(input_col=input_col)
+                for input_col in input_cols
+            ]
+        return normalized_metadata
+
+    @classmethod
+    def _normalize_input_col(cls, input_col: Any) -> Any:
+        if not isinstance(input_col, dict):
+            return input_col
+        normalized_input_col = dict(input_col)
+        normalized_col_type = cls._map_enum_value(
+            value=normalized_input_col.get("col_type"),
+            synonyms=COLUMN_TYPE_SYNONYMS,
+        )
+        if normalized_col_type is not None:
+            normalized_input_col["col_type"] = normalized_col_type
+        return normalized_input_col
+
+    @staticmethod
+    def _map_enum_value(value: Any, synonyms: dict[str, str]) -> str | None:
+        # Returns the mapped enum value, or None when there is nothing to map
+        # (non-string, or an unknown value left untouched for the validator).
+        if not isinstance(value, str):
+            return None
+        return synonyms.get(value.strip().lower())
 
 
 def configure_default_ssl_certificates(
@@ -299,6 +448,13 @@ class MetadataAgentRunner:
         self,
         generation_input: MetadataGenerationInput,
     ) -> MetadataGenerationResult:
+        logger.info(
+            "generate_metadata start: session_id=%s provider=%s model=%s gateway=%s",
+            generation_input.session_id,
+            generation_input.llm_settings.provider,
+            generation_input.llm_settings.model,
+            generation_input.llm_settings.gateway_url or "(none)",
+        )
         configure_default_ssl_certificates(
             ca_bundle_path=generation_input.llm_settings.ca_bundle_path
         )
@@ -329,12 +485,21 @@ class MetadataAgentRunner:
             ],
         )
 
-        for _event in runner.run(
-            user_id=self.user_id,
-            session_id=generation_input.session_id,
-            new_message=message,
-        ):
-            pass
+        # Drive the agent through the supported async runner. The synchronous
+        # Runner.run is deprecated and stalls with async LiteLLM clients.
+        logger.info(
+            "entering agent run loop: session_id=%s", generation_input.session_id
+        )
+        asyncio.run(
+            self._drain_agent_events(
+                runner=runner,
+                session_id=generation_input.session_id,
+                message=message,
+            )
+        )
+        logger.info(
+            "agent run loop finished: session_id=%s", generation_input.session_id
+        )
 
         metadata_path = (
             generation_input.workspace_root
@@ -343,12 +508,69 @@ class MetadataAgentRunner:
             / "metadata.json"
         )
         if not metadata_path.is_file():
+            logger.error(
+                "metadata.json missing after run: session_id=%s expected_path=%s",
+                generation_input.session_id,
+                metadata_path,
+            )
             raise MetadataGenerationError("Metadata agent did not write metadata.json")
 
+        logger.info(
+            "metadata.json found: session_id=%s path=%s",
+            generation_input.session_id,
+            metadata_path,
+        )
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         return MetadataGenerationResult(
             metadata=metadata,
             metadata_path=metadata_path,
+        )
+
+    async def _drain_agent_events(
+        self,
+        runner: Runner,
+        session_id: str,
+        message: types.Content,
+    ) -> None:
+        event_count = 0
+        async for event in runner.run_async(
+            user_id=self.user_id,
+            session_id=session_id,
+            new_message=message,
+        ):
+            event_count += 1
+            self._log_agent_event(
+                session_id=session_id,
+                event_index=event_count,
+                event=event,
+            )
+        logger.info(
+            "agent emitted %d events: session_id=%s", event_count, session_id
+        )
+
+    @staticmethod
+    def _log_agent_event(session_id: str, event_index: int, event: Any) -> None:
+        author = getattr(event, "author", "unknown")
+        function_calls = event.get_function_calls() if hasattr(event, "get_function_calls") else []
+        function_responses = (
+            event.get_function_responses() if hasattr(event, "get_function_responses") else []
+        )
+        text_parts = []
+        content = getattr(event, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            part_text = getattr(part, "text", None)
+            if part_text:
+                text_parts.append(part_text)
+        logger.info(
+            "agent event %d: session_id=%s author=%s tool_calls=%s tool_responses=%s "
+            "is_final=%s text=%r",
+            event_index,
+            session_id,
+            author,
+            [call.name for call in function_calls],
+            [response.name for response in function_responses],
+            event.is_final_response() if hasattr(event, "is_final_response") else "n/a",
+            (" ".join(text_parts))[:300],
         )
 
     @staticmethod

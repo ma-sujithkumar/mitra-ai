@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import ByomFields from '../components/ByomFields.jsx';
 import FormField from '../components/FormField.jsx';
 import Segmented from '../components/Segmented.jsx';
 import StatusPill from '../components/StatusPill.jsx';
@@ -12,6 +11,7 @@ import {
   uploadDataset,
 } from '../api/client.js';
 import { streamMetadataEvents, streamValidationEvents } from '../api/events.js';
+import { llmConfigKey } from '../data.js';
 import { Icons } from '../icons.jsx';
 
 const VALIDATION_KEYS = [
@@ -30,8 +30,7 @@ const PROBLEM_OPTIONS = [
   { value: 'unsupervised', label: 'Cluster' },
 ];
 
-function UploadScreen({ go, startRun }) {
-  const apiKeyRef = useRef(null);
+function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
   const [publicConfig, setPublicConfig] = useState(null);
   const [recentUploads, setRecentUploads] = useState([]);
   const [datasetFile, setDatasetFile] = useState(null);
@@ -50,11 +49,6 @@ function UploadScreen({ go, startRun }) {
     description: '',
     dataType: 'tabular',
   });
-  const [llmSettings, setLlmSettings] = useState({
-    provider: 'anthropic',
-    model: '',
-    gatewayUrl: '',
-  });
 
   useEffect(() => {
     let ignore = false;
@@ -71,10 +65,6 @@ function UploadScreen({ go, startRun }) {
           setForm((currentForm) => ({
             ...currentForm,
             validationSplit: configPayload.pipeline.train_test_split,
-          }));
-          setLlmSettings((currentSettings) => ({
-            ...currentSettings,
-            provider: configPayload.llm.providers[0] || currentSettings.provider,
           }));
         }
       } catch (optionsError) {
@@ -100,6 +90,18 @@ function UploadScreen({ go, startRun }) {
     [validationEvents],
   );
   const canRunPipeline = metadataPhase === 'done';
+  const baseModel = publicConfig?.llm?.base_models?.[llmSettings.provider] || '';
+  const effectiveModel = llmSettings.model || baseModel || 'Provider base model';
+  const reviewStarted = validationPhase !== 'idle';
+  // Mandatory gates for Validate & Review: a dataset is selected and the
+  // current LLM configuration passed a connection test in Settings.
+  const hasDataset = Boolean(datasetFile || selectedRecent);
+  const llmVerified = (
+    llmSmokeStatus.status === 'passed'
+    && llmSmokeStatus.configKey === llmConfigKey(llmSettings)
+  );
+  const busy = validationPhase === 'running' || metadataPhase === 'running';
+  const canReview = hasDataset && llmVerified && !busy;
 
   function updateForm(key, value) {
     setForm((currentForm) => ({
@@ -191,7 +193,6 @@ function UploadScreen({ go, startRun }) {
 
   async function runMetadata(sessionId) {
     setMetadataPhase('running');
-    const apiKey = apiKeyRef.current?.value || '';
 
     try {
       await startMetadata({
@@ -201,7 +202,7 @@ function UploadScreen({ go, startRun }) {
         problemType: form.problemType === 'auto' ? null : form.problemType,
         provider: llmSettings.provider,
         model: llmSettings.model,
-        apiKey,
+        apiKey: llmSettings.apiKey || '',
         gatewayUrl: llmSettings.gatewayUrl,
       });
 
@@ -355,16 +356,53 @@ function UploadScreen({ go, startRun }) {
             </select>
           </FormField>
 
-          <ByomFields
-            apiKeyRef={apiKeyRef}
-            publicConfig={publicConfig}
-            setSettings={setLlmSettings}
-            settings={llmSettings}
-          />
+          <div className="llm-ref">
+            <div className="llm-ref-head">
+              <span className="section-kicker">LLM for this run</span>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => go('settings')}
+                type="button"
+              >
+                <Icons.gear size={14} />
+                Configure in Settings
+              </button>
+            </div>
+            <dl className="detail-list">
+              <div>
+                <dt>Provider</dt>
+                <dd className="capitalize">{llmSettings.provider || 'Not set'}</dd>
+              </div>
+              <div>
+                <dt>Model</dt>
+                <dd className="mono">{effectiveModel}</dd>
+              </div>
+              <div>
+                <dt>API Key</dt>
+                <dd>{llmSettings.apiKey ? 'Set' : 'Using server credentials'}</dd>
+              </div>
+              <div>
+                <dt>Connection</dt>
+                <dd>
+                  <StatusPill
+                    status={llmVerified ? 'passed' : 'queued'}
+                    label={llmVerified ? 'Verified' : 'Test in Settings'}
+                  />
+                </dd>
+              </div>
+            </dl>
+          </div>
+
+          {!canReview && !busy ? (
+            <p className="muted gate-hint">
+              {!hasDataset ? 'Select a dataset to continue. ' : ''}
+              {!llmVerified ? 'Run a successful LLM connection test in Settings to continue.' : ''}
+            </p>
+          ) : null}
 
           <button
             className="btn btn-primary full-width"
-            disabled={validationPhase === 'running' || metadataPhase === 'running'}
+            disabled={!canReview}
             onClick={handleValidateAndReview}
             type="button"
           >
@@ -374,6 +412,8 @@ function UploadScreen({ go, startRun }) {
         </section>
       </div>
 
+      {reviewStarted ? (
+      <>
       <section className="card panel-section">
         <div className="section-head">
           <div>
@@ -432,6 +472,8 @@ function UploadScreen({ go, startRun }) {
           Run pipeline
         </button>
       </section>
+      </>
+      ) : null}
     </div>
   );
 }

@@ -591,6 +591,33 @@ h2 {
   border-width: 1.5px;
 }
 
+.gate-hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+
+.smoke-test-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.smoke-test-msg {
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.smoke-test-msg.passed {
+  color: var(--ok, #1b8a5a);
+}
+
+.smoke-test-msg.failed {
+  color: var(--err, #c0392b);
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -690,6 +717,38 @@ h2 {
 
 .byom-panel {
   display: block;
+}
+
+.byom-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0 16px;
+}
+
+.btn-sm {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.capitalize {
+  text-transform: capitalize;
+}
+
+.llm-ref {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+
+.llm-ref-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
 }
 
 .inline-note {

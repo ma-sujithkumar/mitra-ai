@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import ssl
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +22,12 @@ from backend.dependencies import get_metadata_agent_runner
 from backend.dependencies import get_session_manager
 from backend.jobs import JobRegistry
 from backend.jobs import format_sse_event
+from backend.llm_failures import PROVIDER_PREFIX_HINT
+from backend.llm_failures import TOOL_CALLING_UNSUPPORTED_HINT
+from backend.llm_failures import has_llm_provider_missing_error
+from backend.llm_failures import has_llm_quota_error
+from backend.llm_failures import has_ssl_certificate_error
+from backend.llm_failures import has_tool_calling_unsupported_error
 from backend.session import SessionManager
 
 
@@ -296,52 +301,19 @@ def _metadata_generation_failed(
 
 
 def _metadata_failure_message(exception: Exception) -> str:
-    if _has_llm_quota_error(exception=exception):
+    if has_llm_provider_missing_error(exception=exception):
+        return PROVIDER_PREFIX_HINT
+    if has_tool_calling_unsupported_error(exception=exception):
+        return TOOL_CALLING_UNSUPPORTED_HINT
+    if has_llm_quota_error(exception=exception):
         return (
             "LLM provider quota exceeded or rate limited. Check the provider "
             "billing/quota for this API key, or choose another key, model, "
             "provider, or gateway."
         )
-    if _has_ssl_certificate_error(exception=exception):
+    if has_ssl_certificate_error(exception=exception):
         return (
             "LLM HTTPS certificate verification failed. Configure LLM_CA_BUNDLE "
             "with a PEM bundle containing your local root CA and restart the backend."
         )
     return "Metadata generation failed."
-
-
-def _has_llm_quota_error(exception: Exception) -> bool:
-    for current_exception in _iter_exception_chain(exception=exception):
-        exception_class_name = current_exception.__class__.__name__.lower()
-        exception_message = str(current_exception).lower()
-        if "ratelimit" in exception_class_name or "rate_limit" in exception_message:
-            return True
-        if "insufficient_quota" in exception_message:
-            return True
-        if "exceeded your current quota" in exception_message:
-            return True
-    return False
-
-
-def _has_ssl_certificate_error(exception: Exception) -> bool:
-    for current_exception in _iter_exception_chain(exception=exception):
-        if isinstance(current_exception, ssl.SSLCertVerificationError):
-            return True
-        if "SSLCertVerificationError" in current_exception.__class__.__name__:
-            return True
-    return False
-
-
-def _iter_exception_chain(exception: BaseException) -> list[BaseException]:
-    visited_exception_ids: set[int] = set()
-    current_exception: BaseException | None = exception
-    exception_chain: list[BaseException] = []
-    while current_exception is not None:
-        current_exception_id = id(current_exception)
-        if current_exception_id in visited_exception_ids:
-            break
-        visited_exception_ids.add(current_exception_id)
-        exception_chain.append(current_exception)
-
-        current_exception = current_exception.__cause__ or current_exception.__context__
-    return exception_chain

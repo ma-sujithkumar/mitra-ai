@@ -247,6 +247,17 @@ export const SHAP = [
   { feature: 'sepal_width', value: 0.079 },
 ];
 
+// Stable signature of the LLM settings used to invalidate a stale smoke-test
+// result whenever the provider, model, key, or gateway changes.
+export function llmConfigKey(settings) {
+  return [
+    settings.provider || '',
+    settings.model || '',
+    settings.gatewayUrl || '',
+    settings.apiKey || '',
+  ].join('|');
+}
+
 export const PROVIDERS = [
   { value: 'anthropic', label: 'Anthropic', placeholder: 'anthropic/claude...' },
   { value: 'openai', label: 'OpenAI', placeholder: 'openai/gpt...' },
