@@ -9,6 +9,7 @@ from typing import Callable
 
 import pandas as pd
 import ray
+from pandas.api.types import is_numeric_dtype
 
 from pipeline.config import ConfigSchema, load_config
 from pipeline.state import PipelineState
@@ -85,23 +86,46 @@ class FeatureEngineerOrchestrator:
     def __init__(
         self,
         data_path: str | Path,
-        task: str,
         target_column: str,
         model_string: str,
+        task: str | None = None,
         config_path: str | Path = "config/config.yaml",
     ):
-        if task not in {"classification", "regression"}:
+        if task is not None and task not in {"classification", "regression"}:
             raise ValueError(f"task must be 'classification' or 'regression', got {task!r}")
         if not model_string:
             raise ValueError("model_string is required (e.g., 'gemini/gemini-2.0-flash', 'openai/gpt-4o')")
         self.data_path = Path(data_path)
-        self.task = task
+        self.task = task  # may be None; resolved at run() once dataset is loaded
         self.target_column = target_column
         self.model_string = model_string
         self.config: ConfigSchema = load_config(config_path)
 
+    def _infer_task(self, target: pd.Series) -> str:
+        """Infer task from target column. Non-numeric -> classification.
+        Numeric: strictly greater than threshold -> regression; at-or-below -> classification.
+        """
+        if not is_numeric_dtype(target):
+            return "classification"
+        threshold = self.config.pipeline.task_infer_nunique_threshold
+        return "regression" if target.nunique(dropna=True) > threshold else "classification"
+
     def run(self) -> tuple[Path, str]:
-        # Startup sequence
+        # Startup sequence (config already validated in __init__)
+        df = pd.read_csv(self.data_path)
+        if self.target_column not in df.columns:
+            raise ValueError(f"target column {self.target_column!r} not in dataset columns {list(df.columns)}")
+        target = df[self.target_column].copy()
+        features = df.drop(columns=[self.target_column])
+
+        # Resolve task: inference if not supplied
+        if self.task is None:
+            resolved_task = self._infer_task(target)
+            task_source = "inferred"
+        else:
+            resolved_task = self.task
+            task_source = "supplied"
+
         if not ray.is_initialized():
             ray.init(num_cpus=self.config.pipeline.max_workers, ignore_reinit_error=True, log_to_driver=False)
 
@@ -109,16 +133,17 @@ class FeatureEngineerOrchestrator:
         output_dir = Path("pipeline_output") / run_id
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        df = pd.read_csv(self.data_path)
-        if self.target_column not in df.columns:
-            raise ValueError(f"target column {self.target_column!r} not in dataset columns {list(df.columns)}")
-        target = df[self.target_column].copy()
-        features = df.drop(columns=[self.target_column])
+        # Log task resolution at startup
+        (output_dir / "execution_log.txt").write_text(
+            f"[{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')}] startup task={resolved_task} ({task_source}) "
+            f"target={self.target_column} nunique={target.nunique(dropna=True)}\n",
+            encoding="utf-8",
+        )
 
         state = PipelineState(
             df=features,
             target=target,
-            task=self.task,
+            task=resolved_task,
             target_column=self.target_column,
             run_id=run_id,
             config=self.config,

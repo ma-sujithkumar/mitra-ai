@@ -5,7 +5,7 @@ Agentic feature engineering pipeline. Reads a raw tabular dataset, produces ML-r
 ## Install
 
 ```
-pip install google-adk pandas numpy scikit-learn scipy ray mrmr-selection pyyaml pydantic nest_asyncio
+pip install -r requirements.txt
 ```
 
 ## Quick start

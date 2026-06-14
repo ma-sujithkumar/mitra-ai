@@ -24,8 +24,9 @@ The model is only called where a human looking at column names and sample values
 - dataclasses (stdlib)
 - logging (stdlib)
 - ast (stdlib)
+- python-dotenv
 
-**Bring-your-own model.** The pipeline is model-provider-agnostic. The caller supplies a model string (e.g., `gemini/gemini-2.0-flash`, `openai/gpt-4o`) and sets the corresponding API key as an environment variable. ADK resolves the provider from the model string. No model client library is bundled — the caller installs whatever their provider requires.
+**Bring-your-own model.** The pipeline is model-provider-agnostic. The caller supplies a model string (e.g., `gemini/gemini-2.0-flash`, `openai/gpt-4o`) and sets the corresponding API key as an environment variable. API keys are loaded from a .env file at startup via python-dotenv. The env var name to use is declared in config.yaml under llm.api_key_env_var. ADK resolves the provider from the model string. No model client library is bundled — the caller installs whatever their provider requires.
 
 ---
 
@@ -118,7 +119,7 @@ The model is called once at the end to write the report from the structured pipe
 
 **Target column handling.** The target is separated from features at ingestion. It goes through imputation if it has missing values. If the target is categorical (classification with string labels) it is label encoded. It is never scaled or included in feature selection. Feature creation uses it as a reference for MI scoring only. It is always the last column in the output.
 
-**Task type.** Valid values are `classification` and `regression`. Mutual information and other task-sensitive methods switch variant accordingly. An unrecognized task type raises `ValueError` at startup before any tool runs.
+**Task type.** Valid values are classification and regression. If --task is not supplied, the pipeline infers it from the target column at startup: if the target is numeric and has more than task_infer_nunique_threshold unique values it is treated as regression, otherwise classification. The threshold lives in config.yaml. If --task is supplied, it is validated against the two valid values and a ValueError is raised on anything else. Mutual information and other task-sensitive methods switch variant accordingly based on the resolved task type.
 
 **Parallel execution.** Univariate analysis (per column stats null rates, distribution shape, skewness, top categories) and multivariate analysis (pairwise correlations, mutual information between columns) are independent and run at the same time inside DataProfiler. Feature selection scoring methods also run in parallel across three threads with scores combined after. Scaling runs across four column batches in parallel.
 
@@ -127,6 +128,7 @@ The model is called once at the end to write the report from the structured pipe
 ## 5. CONSTRAINTS
 
 **Agent harness: Google ADK.** The orchestrator is a `google.adk.agents.Agent`. The caller supplies a model string; the pipeline is model-provider-agnostic. ADK resolves the provider and handles all model calls. There is no `model_fn` callable anywhere in the codebase. A model string is required — the pipeline refuses to start without one. There is no offline fallback mode.
+The matching API key must be present in .env under the var name specified in config.yaml. The pipeline refuses to start if the env var is unset.
 
 Each pipeline tool (DataProfiler, SemanticTypeInfer, etc.) is wrapped as a plain Python function and registered on the orchestrator agent as an ADK tool. Tool functions are stateless from ADK's perspective — they close over a shared `PipelineState` instance that is set once at startup. ADK tools never receive `PipelineState` as an argument.
 

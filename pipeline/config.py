@@ -41,6 +41,7 @@ class PipelineSettings(BaseModel):
     max_tool_retries: int = Field(gt=0)
     random_state: int
     max_workers: int = Field(gt=0)
+    task_infer_nunique_threshold: int = Field(gt=0)
 
 
 class ConfigSchema(BaseModel):

@@ -13,7 +13,14 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     run = sub.add_parser("run", help="Run the feature engineering pipeline on a dataset")
     run.add_argument("data", type=str, help="Path to CSV dataset")
-    run.add_argument("--task", type=str, required=True, choices=["classification", "regression"])
+    run.add_argument(
+        "--task",
+        type=str,
+        required=False,
+        default=None,
+        choices=["classification", "regression"],
+        help="Optional. If omitted, the pipeline infers from the target column using task_infer_nunique_threshold from config.",
+    )
     run.add_argument("--target", type=str, required=True, help="Target column name")
     run.add_argument(
         "--model",
@@ -28,9 +35,9 @@ def main() -> int:
     if args.cmd == "run":
         orchestrator = FeatureEngineerOrchestrator(
             data_path=args.data,
-            task=args.task,
             target_column=args.target,
             model_string=args.model,
+            task=args.task,
             config_path=args.config,
         )
         output_dir, run_id = orchestrator.run()

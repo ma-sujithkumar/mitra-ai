@@ -55,12 +55,19 @@ pipeline:
   max_tool_retries: 3
   random_state: 42
   max_workers: 8
+  task_infer_nunique_threshold: 20   # if --task omitted: target with >20 unique values → regression, else classification
+
+llm:
+  max_tokens: 2048                    # passed to ADK GenerateContentConfig on every model call
+  api_key_env_var: API_KEY            # name of the env var holding the API key; python-dotenv loads .env at startup
 ```
 
 ---
 
 ### `pipeline/config.py`
 - Pydantic model `ConfigSchema` mirroring every key above with types and defaults.
+- `PipelineSettings` includes `task_infer_nunique_threshold: int` for auto task inference.
+- New `LlmConfig` sub-model: `max_tokens: int`, `api_key_env_var: str`.
 - Module-level `load_config(path) -> ConfigSchema` — loads yaml, validates, returns.
 - Any missing key raises `ValidationError` at import time.
 
@@ -370,14 +377,19 @@ def profile_data() -> dict:
 ```
 
 **Startup (called before ADK runner):**
-1. Validate `task` — raise `ValueError` if not `classification` or `regression`.
-2. Load and validate config via `ConfigSchema`.
-3. Call `ray.init(num_cpus=config.pipeline.max_workers)` — once, here only.
-4. Generate `run_id`.
-5. Separate target column from features; validate target column exists.
-6. Set `state.output_dir`; create directory.
-7. Initialise `PipelineState` (no `model_fn` field).
-8. Run ADK connectivity smoke test — send a minimal test message to the agent, verify a non-empty response.
+1. Load and validate config via `ConfigSchema`.
+2. Call `dotenv.load_dotenv()` to populate env from `.env` (silent no-op if file is absent).
+3. Verify `os.environ[config.llm.api_key_env_var]` is set and non-empty; otherwise raise `RuntimeError` naming the missing variable. The pipeline refuses to start without it.
+4. Separate target column from features; validate target column exists.
+5. Resolve `task`:
+   - If `--task` supplied: validate it is `"classification"` or `"regression"`, raise `ValueError` otherwise.
+   - If `--task` omitted: infer from target — if target is numeric **and** `nunique > task_infer_nunique_threshold` (from config) → `"regression"`, else `"classification"`.
+6. Call `ray.init(num_cpus=config.pipeline.max_workers)` — once, here only.
+7. Generate `run_id`.
+8. Set `state.output_dir`; create directory.
+9. Initialise `PipelineState` (no `model_fn` field).
+10. Construct the ADK model wrapper with `max_tokens=config.llm.max_tokens` baked into every call's `GenerateContentConfig`.
+11. Run ADK connectivity smoke test — send a minimal test message to the agent, verify a non-empty response.
 
 **Run:**
 ```python
@@ -415,10 +427,12 @@ def set_pipeline_state(s: PipelineState) -> None:
 CLI using `argparse`.
 
 ```
-python main.py run data.csv --task classification --target churn --model <model_string>
+python main.py run data.csv --target churn --model <model_string> [--task classification|regression]
 ```
 
-`--model` is required. The user supplies their own model string (e.g., `gemini/gemini-2.0-flash`, `openai/gpt-4o`, or any ADK-compatible identifier) and sets the corresponding API key as an environment variable before running. The model string is passed directly to the ADK `Agent` constructor. No default model is set — the pipeline refuses to start without one.
+- `--task` is **optional**. If omitted, the orchestrator infers it from the target column using `task_infer_nunique_threshold` from config. If supplied, it must be `classification` or `regression`.
+- `--model` is required. The user supplies their own model string. No default model is set — the pipeline refuses to start without one.
+- **API key**: place a `.env` file in the working directory with `<API_KEY_VAR>=...`. The variable name is set by `llm.api_key_env_var` in `config.yaml` (default: `API_KEY`). The pipeline loads `.env` via `python-dotenv` at startup and fails fast if the variable is missing or empty.
 
 ### `schema.md`
 Documents all inputs (dataset path, task, target column, model_fn), all outputs (artifact schema, report sections, log format), and PipelineState field contract.
@@ -449,6 +463,9 @@ All model calls are made by the ADK orchestrator agent. The user supplies the mo
 
 - [ ] No hardcoded values — all in `config.yaml`
 - [ ] No hardcoded model — user supplies model string and API key via env var
+- [ ] `.env` loaded via `python-dotenv` at startup; `llm.api_key_env_var` must be present and non-empty or pipeline aborts
+- [ ] `llm.max_tokens` from config wired into every ADK model call's `GenerateContentConfig`
+- [ ] `--task` optional: infer from target if omitted using `task_infer_nunique_threshold`; validate if supplied
 - [ ] `random_state=42` on: IterativeImputer, IsolationForest, PowerTransformer, RandomForest
 - [ ] KNNImputer: no seed (deterministic by algorithm)
 - [ ] Ray: `ray.init(num_cpus=8)` called once in orchestrator startup — no tool calls `ray.init`
@@ -610,6 +627,27 @@ Solution: Remove `mrmr_k` from the model response schema. Model picks method onl
 Profiler computes MI between features and target, but target is in `state.target` (separated at orchestrator startup), not in `state.df`. The profiler section never mentions reading `state.target`.
 
 Solution: Profiler precondition checks both `state.df not None` and `state.target not None`. MI computation explicitly uses `state.target`.
+
+---
+
+### 22. `.env` loading semantics
+Spec says "API keys are loaded from a .env file at startup via python-dotenv" but doesn't specify location, override behavior, or what happens when both `.env` and an exported env var exist.
+
+Solution: `dotenv.load_dotenv()` is called with default args at orchestrator startup — it searches upward from the CWD for `.env` and does **not** override existing environment variables. So an already-exported `API_KEY` takes precedence over the `.env` file. A missing `.env` file is a silent no-op; only an unset-after-load env var raises. The env var name is read from `config.llm.api_key_env_var`; ADK / LiteLlm then picks it up automatically when constructing the model client.
+
+---
+
+### 23. `llm.max_tokens` wiring
+Spec adds `llm.max_tokens` to config but doesn't say where it is applied — ADK Agent construction, per-call config, or both.
+
+Solution: `max_tokens` is applied **per call** via `GenerateContentConfig(max_output_tokens=config.llm.max_tokens)` inside the model-call wrapper in `orchestrator.py`. ADK's `Agent` constructor does not receive it — only the per-call `LlmRequest.config`. This keeps the wiring in one place and lets the smoke-test call use the same limit.
+
+---
+
+### 21. Task inference edge cases
+If `--task` is omitted and the target column has exactly `task_infer_nunique_threshold` unique values (boundary), or the target is non-numeric, the inference rule is ambiguous.
+
+Solution: Non-numeric target → always `classification` (label encoding will follow). Numeric target: strictly greater than threshold → `regression`; at-or-below → `classification`. Inferred task is logged to `execution_log.txt` at startup so callers can verify.
 
 ---
 

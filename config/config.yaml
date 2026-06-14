@@ -30,3 +30,8 @@ pipeline:
   max_tool_retries: 3
   random_state: 42
   max_workers: 8
+  task_infer_nunique_threshold: 20
+
+llm:
+  max_tokens: 2048
+  api_key_env_var: API_KEY
