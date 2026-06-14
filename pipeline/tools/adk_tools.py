@@ -39,8 +39,10 @@ def set_pipeline_state(state: PipelineState, model_call: Callable[[str], str]) -
 def _log(tool: str, status: str, detail: str, elapsed: float) -> None:
     if _log_path is None:
         return
+    # Collapse newlines and runs of whitespace so each tool stays on one line.
+    one_line = " | ".join(s.strip() for s in str(detail).splitlines() if s.strip())
     with open(_log_path, "a", encoding="utf-8") as f:
-        f.write(f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] {tool} {status} ({elapsed:.2f}s) {detail}\n")
+        f.write(f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] {tool} {status} ({elapsed:.2f}s) {one_line}\n")
 
 
 def _wrap(tool_name: str, fn: Callable[[], Any]) -> dict:

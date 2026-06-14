@@ -24,9 +24,7 @@ The model is only called where a human looking at column names and sample values
 - dataclasses (stdlib)
 - logging (stdlib)
 - ast (stdlib)
-- python-dotenv
-
-**Bring-your-own model.** The pipeline is model-provider-agnostic. The caller supplies a model string (e.g., `gemini/gemini-2.0-flash`, `openai/gpt-4o`) and sets the corresponding API key as an environment variable. API keys are loaded from a .env file at startup via python-dotenv. The env var name to use is declared in config.yaml under llm.api_key_env_var. ADK resolves the provider from the model string. No model client library is bundled — the caller installs whatever their provider requires.
+**Bring-your-own model.** The pipeline is model-provider-agnostic. The caller supplies a model string (e.g., `gemini/gemini-2.0-flash`, `openai/gpt-4o`) and sets the API key in `config.yaml` under `llm.api_key`. The provider base URL is declared under `llm.base_url`. At startup the orchestrator reads both from config and passes them directly to ADK — no environment variable injection needed. ADK resolves the provider from the model string. No model client library is bundled — the caller installs whatever their provider requires. `config/config.yaml` must be added to `.gitignore` since it holds the real key.
 
 ---
 
@@ -128,7 +126,7 @@ The model is called once at the end to write the report from the structured pipe
 ## 5. CONSTRAINTS
 
 **Agent harness: Google ADK.** The orchestrator is a `google.adk.agents.Agent`. The caller supplies a model string; the pipeline is model-provider-agnostic. ADK resolves the provider and handles all model calls. There is no `model_fn` callable anywhere in the codebase. A model string is required — the pipeline refuses to start without one. There is no offline fallback mode.
-The matching API key must be present in .env under the var name specified in config.yaml. The pipeline refuses to start if the env var is unset.
+The API key and base URL are read from `config.yaml` under `llm.api_key` and `llm.base_url` and passed directly to ADK at startup. The pipeline refuses to start if either is empty or missing.
 
 Each pipeline tool (DataProfiler, SemanticTypeInfer, etc.) is wrapped as a plain Python function and registered on the orchestrator agent as an ADK tool. Tool functions are stateless from ADK's perspective — they close over a shared `PipelineState` instance that is set once at startup. ADK tools never receive `PipelineState` as an argument.
 

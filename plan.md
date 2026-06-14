@@ -59,7 +59,8 @@ pipeline:
 
 llm:
   max_tokens: 2048                    # passed to ADK GenerateContentConfig on every model call
-  api_key_env_var: API_KEY            # name of the env var holding the API key; python-dotenv loads .env at startup
+  api_key_env_var: GOOGLE_API_KEY     # name of the env var the orchestrator injects the key into before ADK init
+  api_key: your_actual_key_here       # actual API key value; orchestrator copies into os.environ[api_key_env_var] at startup
 ```
 
 ---
@@ -67,7 +68,7 @@ llm:
 ### `pipeline/config.py`
 - Pydantic model `ConfigSchema` mirroring every key above with types and defaults.
 - `PipelineSettings` includes `task_infer_nunique_threshold: int` for auto task inference.
-- New `LlmConfig` sub-model: `max_tokens: int`, `api_key_env_var: str`.
+- New `LlmConfig` sub-model: `max_tokens: int`, `api_key_env_var: str`, `api_key: str` (non-empty).
 - Module-level `load_config(path) -> ConfigSchema` — loads yaml, validates, returns.
 - Any missing key raises `ValidationError` at import time.
 
@@ -378,8 +379,8 @@ def profile_data() -> dict:
 
 **Startup (called before ADK runner):**
 1. Load and validate config via `ConfigSchema`.
-2. Call `dotenv.load_dotenv()` to populate env from `.env` (silent no-op if file is absent).
-3. Verify `os.environ[config.llm.api_key_env_var]` is set and non-empty; otherwise raise `RuntimeError` naming the missing variable. The pipeline refuses to start without it.
+2. Read `config.llm.api_key`. If empty or missing, raise `RuntimeError`. The pipeline refuses to start without it.
+3. Inject the key into the process environment: `os.environ[config.llm.api_key_env_var] = config.llm.api_key`. This must happen **before** any ADK / LiteLlm import or construction so the provider client picks it up.
 4. Separate target column from features; validate target column exists.
 5. Resolve `task`:
    - If `--task` supplied: validate it is `"classification"` or `"regression"`, raise `ValueError` otherwise.
@@ -432,10 +433,10 @@ python main.py run data.csv --target churn --model <model_string> [--task classi
 
 - `--task` is **optional**. If omitted, the orchestrator infers it from the target column using `task_infer_nunique_threshold` from config. If supplied, it must be `classification` or `regression`.
 - `--model` is required. The user supplies their own model string. No default model is set — the pipeline refuses to start without one.
-- **API key**: place a `.env` file in the working directory with `<API_KEY_VAR>=...`. The variable name is set by `llm.api_key_env_var` in `config.yaml` (default: `API_KEY`). The pipeline loads `.env` via `python-dotenv` at startup and fails fast if the variable is missing or empty.
+- **API key**: set `llm.api_key` in `config/config.yaml`. The orchestrator copies it into `os.environ[llm.api_key_env_var]` at startup before any ADK import. The pipeline aborts if `llm.api_key` is empty or missing.
 
 ### `schema.md`
-Documents all inputs (dataset path, task, target column, model_fn), all outputs (artifact schema, report sections, log format), and PipelineState field contract.
+Documents all inputs (dataset path, task, target column, model string, `config.llm.api_key`), all outputs (artifact schema, report sections, log format), and PipelineState field contract.
 
 ### `README.md`
 Quick-start, link to schema.md, example CLI invocation.
@@ -462,8 +463,8 @@ All model calls are made by the ADK orchestrator agent. The user supplies the mo
 ## Key Constraints Checklist
 
 - [ ] No hardcoded values — all in `config.yaml`
-- [ ] No hardcoded model — user supplies model string and API key via env var
-- [ ] `.env` loaded via `python-dotenv` at startup; `llm.api_key_env_var` must be present and non-empty or pipeline aborts
+- [ ] No hardcoded model — user supplies model string in CLI and API key in `config.yaml`
+- [ ] `llm.api_key` read from config at startup and injected into `os.environ[llm.api_key_env_var]` **before any ADK import**; pipeline aborts if empty
 - [ ] `llm.max_tokens` from config wired into every ADK model call's `GenerateContentConfig`
 - [ ] `--task` optional: infer from target if omitted using `task_infer_nunique_threshold`; validate if supplied
 - [ ] `random_state=42` on: IterativeImputer, IsolationForest, PowerTransformer, RandomForest
@@ -630,10 +631,10 @@ Solution: Profiler precondition checks both `state.df not None` and `state.targe
 
 ---
 
-### 22. `.env` loading semantics
-Spec says "API keys are loaded from a .env file at startup via python-dotenv" but doesn't specify location, override behavior, or what happens when both `.env` and an exported env var exist.
+### 22. API-key injection ordering and pre-existing env vars
+Spec says the orchestrator reads `llm.api_key` and injects it into `os.environ[llm.api_key_env_var]` before ADK is initialised. Two questions: (a) what if the env var is already set externally? (b) how do we guarantee the injection happens before any ADK module reads the var?
 
-Solution: `dotenv.load_dotenv()` is called with default args at orchestrator startup — it searches upward from the CWD for `.env` and does **not** override existing environment variables. So an already-exported `API_KEY` takes precedence over the `.env` file. A missing `.env` file is a silent no-op; only an unset-after-load env var raises. The env var name is read from `config.llm.api_key_env_var`; ADK / LiteLlm then picks it up automatically when constructing the model client.
+Solution: (a) The config value always wins — `os.environ[llm.api_key_env_var] = config.llm.api_key` unconditionally overwrites any pre-existing value. The single source of truth for which key is used is `config.yaml`. (b) Injection is the **first** step in orchestrator startup after config load, and crucially happens **before** any `from google.adk...` import inside `_run_adk_agent` and before `_make_model_call` constructs `LiteLlm`. Place ADK imports inside method bodies, not at module top, so the env var is set before the provider client reads it.
 
 ---
 

@@ -18,6 +18,9 @@ python main.py run data.csv --task classification --target churn --model gemini/
 # OpenAI
 export OPENAI_API_KEY=...
 python main.py run data.csv --task regression --target price --model openai/gpt-4o
+
+# Anthropic
+python main.py run "test data/train.csv" --target SalePrice --model anthropic/claude-sonnet-4-6
 ```
 
 ## What it does

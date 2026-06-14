@@ -40,17 +40,28 @@ Rules:
 START_MESSAGE = "Begin the feature engineering pipeline. Start with profile_data."
 
 
-def _make_model_call(model_string: str) -> Callable[[str], str]:
+def _make_model_call(
+    model_string: str,
+    max_tokens: int,
+    api_key: str,
+    base_url: str | None,
+) -> Callable[[str], str]:
     """Returns a callable(prompt) -> response_text using ADK's LiteLlm wrapper.
 
-    Resolves provider from the model string. Caller must set the relevant API key env var.
+    Resolves provider from the model string. `api_key` and `base_url` are passed
+    directly to LiteLlm (and also injected into env vars for any code path that
+    reads them via os.environ). `max_tokens` is applied per-call via
+    GenerateContentConfig.max_output_tokens.
     """
     try:
         from google.adk.models.lite_llm import LiteLlm
-        llm = LiteLlm(model=model_string)
+        kwargs: dict = {"model": model_string, "api_key": api_key}
+        if base_url:
+            kwargs["api_base"] = base_url
+        llm = LiteLlm(**kwargs)
     except Exception as e:
         raise RuntimeError(
-            f"Failed to construct LiteLlm({model_string}). Install google-adk and set the relevant API key env var. Detail: {e}"
+            f"Failed to construct LiteLlm({model_string}). Install google-adk and check api_key. Detail: {e}"
         )
 
     import asyncio
@@ -60,7 +71,11 @@ def _make_model_call(model_string: str) -> Callable[[str], str]:
         async def _go():
             from google.adk.models.llm_request import LlmRequest
             contents = [genai_types.Content(role="user", parts=[genai_types.Part(text=prompt)])]
-            req = LlmRequest(model=model_string, contents=contents, config=genai_types.GenerateContentConfig())
+            req = LlmRequest(
+                model=model_string,
+                contents=contents,
+                config=genai_types.GenerateContentConfig(max_output_tokens=max_tokens),
+            )
             chunks: list[str] = []
             async for resp in llm.generate_content_async(req, stream=False):
                 if resp.content and resp.content.parts:
@@ -112,6 +127,22 @@ class FeatureEngineerOrchestrator:
 
     def run(self) -> tuple[Path, str]:
         # Startup sequence (config already validated in __init__)
+
+        # Read API key & endpoint from config. Inject into env BEFORE any ADK / LiteLlm import.
+        # ADK imports are deliberately kept inside method bodies (_make_model_call, _run_adk_agent)
+        # so env vars are set before the provider client reads them.
+        api_key = (self.config.llm.api_key or "").strip()
+        if not api_key or api_key == "your_actual_key_here":
+            raise RuntimeError(
+                "config.llm.api_key is empty or still set to the placeholder. "
+                "Set a real API key in config/config.yaml before running."
+            )
+        # LiteLlm reads OPENAI_API_KEY / OPENAI_API_BASE for `openai/*` model strings.
+        # We also pass api_key/base_url directly to LiteLlm, but env vars provide a safety net.
+        os.environ["OPENAI_API_KEY"] = api_key
+        if self.config.llm.base_url:
+            os.environ["OPENAI_API_BASE"] = self.config.llm.base_url
+
         df = pd.read_csv(self.data_path)
         if self.target_column not in df.columns:
             raise ValueError(f"target column {self.target_column!r} not in dataset columns {list(df.columns)}")
@@ -150,7 +181,12 @@ class FeatureEngineerOrchestrator:
             output_dir=output_dir,
         )
 
-        model_call = _make_model_call(self.model_string)
+        model_call = _make_model_call(
+            self.model_string,
+            self.config.llm.max_tokens,
+            api_key,
+            self.config.llm.base_url,
+        )
         # Smoke test
         try:
             smoke = model_call("Respond with the single word: ok")
@@ -167,7 +203,7 @@ class FeatureEngineerOrchestrator:
         # Write feature_artifact.json (orchestrator owns this per Plan ambiguity #7)
         artifact = {
             "run_id": run_id,
-            "task": self.task,
+            "task": resolved_task,
             "target_column": self.target_column,
             "dropped_columns": state.dropped_columns,
             "created_columns": state.created_columns,

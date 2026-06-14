@@ -44,6 +44,12 @@ class PipelineSettings(BaseModel):
     task_infer_nunique_threshold: int = Field(gt=0)
 
 
+class LlmConfig(BaseModel):
+    max_tokens: int = Field(gt=0)
+    api_key: str = Field(min_length=1)
+    base_url: str | None = None  # optional; if set, used as the OpenAI-compatible endpoint
+
+
 class ConfigSchema(BaseModel):
     imputation: ImputationConfig
     outlier: OutlierConfig
@@ -51,6 +57,7 @@ class ConfigSchema(BaseModel):
     feature_selection: FeatureSelectionConfig
     scaling: ScalingConfig
     pipeline: PipelineSettings
+    llm: LlmConfig
 
 
 def load_config(path: str | Path) -> ConfigSchema:
