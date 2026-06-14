@@ -218,18 +218,28 @@ def _resolve_llm_settings(
             gateway_url=metadata_request.gateway_url,
         )
     except ValueError as exc:
+        failure_message = _llm_configuration_failure_message(exception=exc)
         job_registry.mark_error(
             session_id=metadata_request.session_id,
             job_type="metadata",
-            message="LLM configuration unavailable.",
+            message=failure_message,
         )
         raise HTTPException(
             status_code=503,
             detail={
                 "error": "LLM_CONFIGURATION_UNAVAILABLE",
-                "message": "LLM configuration is unavailable.",
+                "message": failure_message,
             },
         ) from exc
+
+
+def _llm_configuration_failure_message(exception: ValueError) -> str:
+    if "LLM_CA_BUNDLE" in str(exception):
+        return (
+            "LLM_CA_BUNDLE must point to a PEM file containing at least one "
+            "root or intermediate CA certificate."
+        )
+    return "LLM configuration is unavailable."
 
 
 def _ensure_credentials(
@@ -286,6 +296,12 @@ def _metadata_generation_failed(
 
 
 def _metadata_failure_message(exception: Exception) -> str:
+    if _has_llm_quota_error(exception=exception):
+        return (
+            "LLM provider quota exceeded or rate limited. Check the provider "
+            "billing/quota for this API key, or choose another key, model, "
+            "provider, or gateway."
+        )
     if _has_ssl_certificate_error(exception=exception):
         return (
             "LLM HTTPS certificate verification failed. Configure LLM_CA_BUNDLE "
@@ -294,19 +310,38 @@ def _metadata_failure_message(exception: Exception) -> str:
     return "Metadata generation failed."
 
 
-def _has_ssl_certificate_error(exception: Exception) -> bool:
-    visited_exception_ids: set[int] = set()
-    current_exception: BaseException | None = exception
-    while current_exception is not None:
-        current_exception_id = id(current_exception)
-        if current_exception_id in visited_exception_ids:
-            return False
-        visited_exception_ids.add(current_exception_id)
+def _has_llm_quota_error(exception: Exception) -> bool:
+    for current_exception in _iter_exception_chain(exception=exception):
+        exception_class_name = current_exception.__class__.__name__.lower()
+        exception_message = str(current_exception).lower()
+        if "ratelimit" in exception_class_name or "rate_limit" in exception_message:
+            return True
+        if "insufficient_quota" in exception_message:
+            return True
+        if "exceeded your current quota" in exception_message:
+            return True
+    return False
 
+
+def _has_ssl_certificate_error(exception: Exception) -> bool:
+    for current_exception in _iter_exception_chain(exception=exception):
         if isinstance(current_exception, ssl.SSLCertVerificationError):
             return True
         if "SSLCertVerificationError" in current_exception.__class__.__name__:
             return True
+    return False
+
+
+def _iter_exception_chain(exception: BaseException) -> list[BaseException]:
+    visited_exception_ids: set[int] = set()
+    current_exception: BaseException | None = exception
+    exception_chain: list[BaseException] = []
+    while current_exception is not None:
+        current_exception_id = id(current_exception)
+        if current_exception_id in visited_exception_ids:
+            break
+        visited_exception_ids.add(current_exception_id)
+        exception_chain.append(current_exception)
 
         current_exception = current_exception.__cause__ or current_exception.__context__
-    return False
+    return exception_chain

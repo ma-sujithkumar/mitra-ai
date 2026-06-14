@@ -53,6 +53,21 @@ class CertificateFailingMetadataRunner:
         raise MetadataGenerationError("connection error") from certificate_error
 
 
+class RateLimitError(Exception):
+    pass
+
+
+class QuotaFailingMetadataRunner:
+    def generate_metadata(
+        self,
+        generation_input: MetadataGenerationInput,
+    ) -> MetadataGenerationResult:
+        provider_error = RateLimitError(
+            "RateLimitError: OpenAIException - insufficient_quota"
+        )
+        raise MetadataGenerationError("provider request failed") from provider_error
+
+
 def valid_metadata(session_id: str) -> dict[str, Any]:
     return {
         "session_id": session_id,
@@ -193,6 +208,38 @@ def test_metadata_missing_credentials_returns_503(
     assert response.json()["detail"]["error"] == "LLM_CREDENTIALS_REQUIRED"
 
 
+def test_metadata_invalid_ca_bundle_returns_configuration_error(
+    test_config_loader: ConfigLoader,
+) -> None:
+    env_path = test_config_loader.repo_root / ".env"
+    env_path.write_text(
+        "LLM_CA_BUNDLE=invalid-ca.pem\n",
+        encoding="utf-8",
+    )
+    (test_config_loader.repo_root / "invalid-ca.pem").write_text(
+        "not a certificate",
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(config_loader=test_config_loader))
+    session_id = upload_and_validate(client=client)
+
+    response = client.post(
+        "/api/metadata",
+        json={
+            "session_id": session_id,
+            "provider": "openai",
+            "api_key": "secret-key",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "LLM_CONFIGURATION_UNAVAILABLE"
+    assert "LLM_CA_BUNDLE must point to a PEM file" in response.json()["detail"][
+        "message"
+    ]
+    assert "secret-key" not in response.text
+
+
 def test_metadata_events_stream_progress_and_done(
     test_config_loader: ConfigLoader,
 ) -> None:
@@ -265,6 +312,31 @@ def test_metadata_certificate_failure_returns_actionable_message(
     assert response.status_code == 503
     assert response.json()["detail"]["error"] == "METADATA_GENERATION_FAILED"
     assert "LLM HTTPS certificate verification failed" in response.json()["detail"][
+        "message"
+    ]
+    assert "secret-key" not in response.text
+
+
+def test_metadata_quota_failure_returns_actionable_message(
+    test_config_loader: ConfigLoader,
+) -> None:
+    app = create_app(config_loader=test_config_loader)
+    app.state.metadata_agent_runner = QuotaFailingMetadataRunner()
+    client = TestClient(app)
+    session_id = upload_and_validate(client=client)
+
+    response = client.post(
+        "/api/metadata",
+        json={
+            "session_id": session_id,
+            "provider": "openai",
+            "api_key": "secret-key",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "METADATA_GENERATION_FAILED"
+    assert "LLM provider quota exceeded or rate limited" in response.json()["detail"][
         "message"
     ]
     assert "secret-key" not in response.text
