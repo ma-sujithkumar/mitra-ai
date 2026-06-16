@@ -71,6 +71,7 @@ Example:
 "pickle_file_path": "/models/model.pkl",
 "engineered_dataset_path": "/data/engineered_dataset.csv"
 }
+```
 ________________________________________
 4.1 session_id
 Purpose:
@@ -120,6 +121,24 @@ Phase 1 support:
 •	CatBoost
 •	Logistic Regression
 Unsupported models shall generate descriptive error messages.
+6.1 Supported Prediction Types
+Phase 1 support includes:
+
+- Binary Classification
+- Multiclass Classification
+- Regression
+
+The SHAP module shall automatically determine the prediction type from the loaded model where possible.
+
+If automatic detection is not possible, prediction type shall be inferred from available model metadata.
+
+The detected prediction type shall be recorded in metadata.json.
+
+Example values:
+
+- binary_classification
+- multiclass_classification
+- regression
 ________________________________________
 7. Model Loading and Validation
 The system shall:
@@ -265,32 +284,63 @@ feature_C,0.154
 Actual feature names shall be dynamically extracted from the engineered dataset.
 ________________________________________
 17.2 Feature-SHAP Mapping Export
+
 Filename:
+
 feature_shap_mapping.csv
+
 Purpose:
+
 Provide a machine-readable mapping between:
-•	record
-•	feature
-•	feature value
-•	SHAP contribution
+-record
+-feature
+-feature value
+-SHAP contribution
+
 This file shall be considered the primary machine-readable explainability artifact.
 
 The file shall contain both:
-- original feature value
-- corresponding SHAP contribution
 
-for every record-feature combination processed by the SHAP module.Required Columns:
+original feature value
+corresponding SHAP contribution
+
+for every record-feature combination processed by the SHAP module.
+
+Output Schema
+
+For Binary Classification and Regression
+
+Required Columns:
+
 record_id,feature_name,feature_value,shap_value
+
 Illustrative Example Only:
-record_id,feature_name,feature_value,shap_value
 
 1,feature_A,35,0.120
 1,feature_B,1200,-0.081
 
 2,feature_A,42,0.305
 2,feature_B,950,-0.154
-Actual feature names and values shall be dynamically extracted from the engineered dataset.
-One record-feature combination shall generate one row.
+
+For Multiclass Classification
+
+Required Columns:
+
+record_id,class_name,feature_name,feature_value,shap_value
+
+Illustrative Example Only:
+
+1,class_0,feature_A,35,0.120
+1,class_0,feature_B,1200,-0.081
+
+1,class_1,feature_A,35,-0.045
+1,class_1,feature_B,1200,0.091
+Additional Rules
+Actual feature names and feature values shall be dynamically extracted from the engineered dataset.
+Feature names shall never be hardcoded.
+One record-feature combination shall generate one row for Binary Classification and Regression.
+One record-feature-class combination shall generate one row for Multiclass Classification.
+SHAP values shall be exported using the full available numerical precision unless otherwise configured.
 ________________________________________
 18. Metadata Output
 Filename:
@@ -308,9 +358,22 @@ Example:
   "num_features": 15,
   "execution_timestamp": "..."
 }
-If model mismatch occurs:
+Model Name Validation Metadata
+
+The metadata output shall always contain both:
+
+- provided_model_name
+- detected_model_type
+
+to support integration traceability and validation auditing.
+
+Example Warning Scenario:
+
 {
+  "provided_model_name": "xgboost",
+  "detected_model_type": "XGBClassifier",
   "validation_status": "warning",
+  "prediction_type": "binary_classification",
   "message": "Provided model name differs from detected model type. Detected model type used for execution."
 }
 ________________________________________
@@ -348,28 +411,21 @@ Errors shall be:
 ________________________________________
 21. Output Directory Structure
 <configured_output_root>/
-└── <palceholder name>/
-    ├── loaders/
-│   ├── model_loader.py
-│   └── dataset_loader.py
-│
-├── validators/
-│   ├── model_validator.py
-│   └── schema_validator.py
-│
-├── explainers/
-│   ├── explainer_factory.py
-│   └── shap_service.py
-│
-├── exporters/
-│   ├── csv_exporter.py
-│   └── metadata_exporter.py
-│
-├── visualizations/
-│   └── plot_generator.py
-│
-└── utils/
-    └── logger.py
+└── <session_id>/
+    ├── plots/
+    │   ├── summary_plot.png
+    │   ├── feature_importance_bar.png
+    │   └── beeswarm_plot.png
+    │
+    ├── csv/
+    │   ├── global_feature_importance.csv
+    │   └── feature_shap_mapping.csv
+    │
+    ├── metadata/
+    │   └── metadata.json
+    │
+    └── logs/
+        └── execution.log
 ________________________________________
 22. Testing Requirements
 A separate testing utility shall be implemented.
@@ -445,7 +501,7 @@ A7. The execution environment has sufficient memory and storage to load the mode
 A8. SHAP library version remains compatible with supported model types.
 A9. The engineered dataset represents the feature space expected by the trained model.
 A10. The engineered dataset contains all feature columns required by the trained model.
-A11.Model artifact is serialized using a supported loading mechanism
+A11. Model artifact is serialized using a supported loading mechanism
 (joblib or pickle).
 ________________________________________
 26. Open Items
@@ -473,14 +529,6 @@ OI-05
 Determine whether engineered_dataset.csv includes target column.
 Status:
 Pending confirmation from Epic 2.
-________________________________________
-OI-06
-Determine whether Phase 1 supports:
-- binary classification
-- multiclass classification
-- regression
-Status:
-Pending confirmation from Epic 3
 ________________________________________
 27. Acceptance Criteria
 AC-01
@@ -529,12 +577,19 @@ AC-15
 Validation failures generate meaningful error messages and logs.
 ________________________________________
 AC-16
-feature_shap_mapping.csv contains:
+
+feature_shap_mapping.csv contains the required schema for the detected prediction type.
+
+Binary Classification / Regression:
 - feature_name
 - feature_value
 - shap_value
 
-for all processed records.
+Multiclass Classification:
+- class_name
+- feature_name
+- feature_value
+- shap_value
 ________________________________________
 AC-17
 metadata.json records:
@@ -543,11 +598,24 @@ metadata.json records:
 - validation status
 - execution timestamp
 ________________________________________
+AC-18
+System correctly processes Binary Classification models.
+________________________________________
+AC-19
+System correctly processes Multiclass Classification models.
+________________________________________
+AC-20
+System correctly processes Regression models.
+________________________________________
+
 28. Configurable Parameters
 CFG-01
+
 Output Root Directory
-Purpose:
-Defines the root folder where all session outputs are stored.
+
+Configured through application configuration.
+
+Default value shall be finalized during integration.
 ________________________________________
 CFG-02
 Logging Level
