@@ -1,0 +1,9 @@
+{
+  "task_type": "classification",
+  "data_format": "tabular",
+  "selected_count": 5,
+  "available_model_count": 30,
+  "selection_mode": "deterministic",
+  "invalid_llm_models": [],
+  "warnings": []
+}

@@ -10,3 +10,9 @@
 6. ⁠Onkar Shamsunder Biyani, SMILe
 7. ⁠Subhasis Mahana, Samsung
 8. ⁠Vidhi Kant Gupta, NPCI
+
+## Implemented Components
+
+- [Epic-3 Model Selection](epic_3/model_selection/README.md) — agent-based,
+  registry-constrained selection. Every emitted `model_name` is validated against
+  `model_library/ml_kit.py::MODEL_REGISTRY` before `model_config.json` is written.

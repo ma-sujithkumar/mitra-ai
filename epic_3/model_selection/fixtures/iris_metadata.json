@@ -1,0 +1,18 @@
+{
+  "problem_type": "classification",
+  "data_format": "tabular",
+  "output_cols": ["species"],
+  "input_cols": ["sepal_length", "sepal_width", "petal_length", "petal_width"],
+  "drop_cols": [],
+  "col_types": {
+    "sepal_length": "numeric",
+    "sepal_width": "numeric",
+    "petal_length": "numeric",
+    "petal_width": "numeric",
+    "species": "categorical"
+  },
+  "row_count": 150,
+  "col_count": 5,
+  "class_balance": {"setosa": 50, "versicolor": 50, "virginica": 50},
+  "user_description": "Predict the iris species from four numeric flower measurements."
+}

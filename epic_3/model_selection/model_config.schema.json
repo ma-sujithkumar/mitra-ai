@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MITRA MLKit Model Configuration",
+  "type": "array",
+  "minItems": 1,
+  "maxItems": 8,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "name",
+      "model_name",
+      "task_type",
+      "priority",
+      "rationale",
+      "selection_score",
+      "default_hyperparameters",
+      "hp_space",
+      "source"
+    ],
+    "properties": {
+      "name": {"type": "string", "minLength": 1},
+      "model_name": {"type": "string", "minLength": 1},
+      "task_type": {"enum": ["classification", "regression"]},
+      "priority": {"type": "integer", "minimum": 1, "maximum": 8},
+      "rationale": {"type": "string"},
+      "selection_score": {"type": "number"},
+      "default_hyperparameters": {"type": "object"},
+      "hp_space": {"type": "object"},
+      "source": {"const": "model_library/ml_kit.py::MODEL_REGISTRY"}
+    }
+  }
+}
