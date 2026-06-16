@@ -1,0 +1,922 @@
+ ▐▛███▜▌   Claude Code v2.1.170
+▝▜█████▛▘  Opus 4.8 · Claude Pro
+  ▘▘ ▝▝    ~/mitra
+
+ ▎ Meet Fable 5, our newest model for complex, long-running work. Try anytime with /model.
+ ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
+
+❯ /model                                                                        
+  ⎿  Set model to Opus 4.8 and saved as your default for new sessions
+
+❯ READ the specs in SPEC.md of epic-4, identify risks, ambiguities and any      
+  improvements that you suggest. list out, let's fix the spec first.            
+
+● I'll start by locating the epic-4 SPEC.md file.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now let me understand the surrounding context — the epic_4 directory structure
+  and existing reusable implementations, since CLAUDE.md emphasizes reuse.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The overfitting tool's spec mentions interfacing with "a training class" —
+  MLKit is the obvious candidate. Let me inspect its interface and metrics so I
+  can ground the spec review in what already exists.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● Now let me look at the metrics evaluators and the DataBundle structure, which
+  the spec's train_metrics/test_metrics and k-fold requirements directly depend
+  on.
+
+  Read 1 file (ctrl+o to expand)
+
+● Let me check the DataBundle/CommonData structure and the existing config
+  pattern, since k-fold CV needs raw data (X/y), not just metrics.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● I now have a clear picture. Let me do a quick final check on the config.ini
+  (PYTHON binary) and how MLKit/metrics are meant to be imported, then I'll
+  review the spec.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● I've read the epic-4 spec and cross-referenced it against what already exists
+  in model_library/ (MLKit). Here's my review. Per CLAUDE.md, I want to flag up
+  front: the "training class" this spec wants is almost certainly the 
+  already-built MLKit — you should git pull dev and we should wire to it rather
+  than leave a placeholder.
+
+  Here's what's wrong, ambiguous, or improvable in the spec.
+
+  ---
+  Risks (these block implementation or produce wrong results)
+
+  R1 — The Input Format contradicts the Requirements. This is the biggest one.
+  The input is {train_metrics, test_metrics} — already-computed metrics. But:
+  - Requirement 1 (gap = train − test) works fine from metrics alone. ✅
+  - Requirement 2 (K-fold CV) is impossible from metrics alone. K-fold needs the
+  raw dataset (X, y) and the ability to re-train the model on each fold. You
+  cannot do K-fold from two summary dicts.
+  - Requirement 3 ("interface with a training class") confirms K-fold must
+  actually run training.
+
+  So the spec asks for an input that makes half of it unimplementable. We must
+  decide: the tool receives a model handle + data (so it can run training/CV),
+  and metrics become optional precomputed inputs — not the only input.
+
+  R2 — Reinvention risk. metrics/evaluators.py::compute_metrics and the
+  MetricsResult dataclass already compute accuracy/f1/precision/recall
+  (classification) and mse/rmse/mae/r2 (regression). ml_kit.py::MLKit already
+  does .train() / .test() over
+  DataBundle(CommonData(X_train,y_train,X_test,y_test)). The spec should
+  explicitly reuse these (CLAUDE.md #1, #28) instead of a placeholder + custom
+  metric code.
+
+  R3 — Metric direction is unhandled. "gap = train − test" only makes sense for
+  higher-is-better metrics (accuracy, f1, r2). For mse/rmse/mae
+  (lower-is-better), overfitting means test > train, so the sign flips. A naive
+  subtraction will report regression overfitting backwards. Needs a
+  direction-aware map.
+
+  R4 — No reproducibility spec. No random seed for the K-fold split →
+  non-reproducible verdicts in an AutoML pipeline.
+
+  ---
+  Ambiguities (must be pinned down before coding)
+
+  A1 — "Overfitted or not" has no decision rule. The GOAL says decide if the
+  model overfit, but Requirements and Output have no threshold and no verdict
+  field. There's no is_overfitted boolean and no configurable threshold.
+
+  A2 — Regression "accuracy" undefined. Req 1 literally says "training accuracy
+  − test accuracy", but regression has no accuracy. Which metric defines the gap
+  per task type? (classification → accuracy or f1? regression → r2? rmse?)
+
+  A3 — train_metrics / test_metrics schema is {} — keys unspecified. Should they
+  match MetricsResult field names? If multiple metrics are present, is there
+  one gap or a gap per metric?
+
+  A4 — K-fold parameters all unspecified: value of k, StratifiedKFold vs KFold,
+  which metric is scored per fold, scored on train-only or full data, and the
+  output schema of k_fold_cross_validation_results (per-fold list? mean? std?).
+
+  A5 — Where does data come from for K-fold? Input json (a small metrics file)
+  has no X/y and no data path. CLI -i <input_json> can't carry a dataset.
+  Unresolved against R1.
+
+  A6 — Training-class interface contract undefined. "keep a placeholder" — but
+  MLKit already defines the contract (train(), test(), DataBundle). Specify it
+  now rather than inventing a placeholder we'll have to rip out.
+
+  A7 — Config inconsistency. Spec says config/config.yaml, but CLAUDE.md #22
+  requires PYTHON in a config.ini, and model_library uses both (config.ini for
+  python/paths, config.yaml for controllables). The new tool should follow the
+  same split, not invent a new convention.
+
+  ---
+  Defects (mechanical)
+
+  D1 — The Output and Input code fences are unclosed (missing closing ```), so
+  the markdown is malformed.
+  **D2 — Invalid JSON in examples** — trailing commas ("test_metrics":{},) and
+  unquoted keys in the Output block.
+  **D3 — CLI spec** -o, <output_dir> / -i, <input_json> has no long-form names,
+  no required/optional marking (CLAUDE.md #27 wants no silent defaults — error
+  if missing).
+
+  ---
+  Suggested fixes (what I'd change the spec to say)
+
+  1. Redefine inputs: tool takes model_name + a data reference (path to arrays /
+  DataBundle) so it can run CV via MLKit; train_metrics/test_metrics become
+  optional precomputed holdout metrics. Drop "metrics-only" as the sole input.
+  2. Reuse explicitly: from metrics.evaluators import compute_metrics, 
+  MetricsResult, from ml_kit import MLKit, from core.data_bundle import 
+  CommonData, DataBundle.
+  3. Add a verdict + threshold: output gets is_overfitted: bool, gap_threshold: 
+  float (in config.yaml), and a per-metric gaps: {metric: value} dict.
+  4. Direction-aware gap via a config-driven metric→direction map
+  (higher_is_better vs lower_is_better) — avoids an if-else ladder (CLAUDE.md
+  #4, #23).
+  5. Pin K-fold: k, stratified flag, scoring metric, random_state — all in
+  config.yaml; define output as {per_fold_scores: [...], mean: float, std: 
+  float} plus a train_vs_cv_gap.
+  6. Fix fences/JSON, add long-form CLI args, and adopt the config.ini
+  (python/paths) + config.yaml (controllables) split.
+
+  ---
+  Before I touch SPEC.md, two decisions are yours to make:
+
+● User answered Claude's questions:
+  ⎿  · How should the tool actually get what it needs to run K-fold CV (the core
+     R1 contradiction)? → model_name, dataset_path should be got through input
+     · How should the overfitting verdict be defined for regression (A2/R3)? → 
+     all
+
+● Both decisions are clear: input carries model_name + dataset_path (tool runs
+  CV via MLKit; metrics optional), and the regression verdict reports all —
+  direction-aware per-metric gaps including the relative-RMSE gap, plus a
+  verdict. Let me rewrite the spec accordingly.
+
+● Write(epic_4/overfitting_analysis_tool/SPEC.md)
+  ⎿  Added 122 lines, removed 26 lines
+        1 -## GOAL                                                       
+        1 +# SPEC: Overfitting Analysis Tool                             
+        2  
+        3 -The goal is to write python scripts which will get the regress
+          -ion and classification metrics and figure out if the ML model 
+          -has overfitted or not.                                        
+        3 +## 1. GOAL                                                    
+        4 +Provide a Python tool that, given a trained-able model and its
+          + dataset, computes                                            
+        5 +regression/classification metrics on train vs. test, runs K-fo
+          +ld cross validation,                                          
+        6 +and decides whether the model has overfitted. Designed to be c
+          +alled as a step in                                            
+        7 +an AutoML pipeline.                                           
+        8  
+        5 -## Application context                                        
+        6 -1. Should work in an AutoML pipeline.                         
+        9 +## 2. APPLICATION CONTEXT                                     
+       10 +1. Runs as a step inside an AutoML pipeline.                  
+       11 +2. Reuses existing MITRA components (do NOT reimplement metric
+          +s or training):                                               
+       12 +   - `model_library/ml_kit.py::MLKit` => the "training class".
+          + It exposes                                                   
+       13 +     `train()` and `test()` over a `DataBundle`. This replaces
+          + the placeholder.                                             
+       14 +   - `model_library/metrics/evaluators.py::compute_metrics` + 
+          +`MetricsResult`                                               
+       15 +     => standard metric computation (accuracy/f1/precision/rec
+          +all for                                                       
+       16 +     classification; mse/rmse/mae/r2 for regression).         
+       17 +   - `model_library/core/data_bundle.py::CommonData`, `DataBun
+          +dle`                                                          
+       18 +     => data container expected by MLKit.                     
+       19  
+       20 +## 3. PACKAGES TO BE USED                                     
+       21 +- scikit-learn (KFold / StratifiedKFold, cross-validation spli
+          +tting)                                                        
+       22 +- numpy                                                       
+       23 +- pyyaml (controllables)                                      
+       24 +- MITRA model_library (MLKit, compute_metrics, DataBundle)    
+       25  
+        9 -## Requirements (These things should be there for sure)       
+       10 -1. Calculate overfitting gap = training accuracy - test accura
+          -cy                                                            
+       11 -2. Perform K-fold cross validation                            
+       12 -3. Need to be interfacable with another training class through
+          - which the script can run the training - keep a placeholder fo
+          -r now                                                         
+       26 +## 4. REQUIREMENTS                                            
+       27 +1. Compute a direction-aware overfitting gap per metric (see S
+          +ection 7):                                                    
+       28 +   - Higher-is-better metrics (accuracy, f1, precision, recall
+          +, r2):                                                        
+       29 +     `gap = train_score - test_score` (positive => train bette
+          +r than test).                                                 
+       30 +   - Lower-is-better metrics (mse, rmse, mae):                
+       31 +     `gap = test_error - train_error` (positive => test worse 
+          +than train).                                                  
+       32 +   - Also report a scale-independent relative RMSE gap for reg
+          +ression:                                                      
+       33 +     `rel_rmse_gap = (test_rmse - train_rmse) / max(train_rmse
+          +, eps)`.                                                      
+       34 +2. Perform K-fold cross validation by re-training the model on
+          + each fold via                                                
+       35 +   MLKit. Report per-fold scores, mean, and std for the config
+          +ured scoring metric.                                          
+       36 +3. Emit an overfitting verdict `is_overfitted: bool`, decided 
+          +by comparing the                                              
+       37 +   primary gap (and/or the train-vs-CV gap) against a configur
+          +able threshold.                                               
+       38 +4. Interface with the training class through MLKit (no placeho
+          +lder). If the model                                           
+       39 +   cannot be retrained for a given input, K-fold is skipped an
+          +d the tool falls                                              
+       40 +   back to the holdout gap only, with a `cv_skipped_reason` fi
+          +eld.                                                          
+       41  
+       14 -## Output Format:                                             
+       15 -A json which has fields like                                  
+       16 -```                                                           
+       42 +## 5. INPUT FORMAT                                            
+       43 +A single JSON file (path via `-i`):                           
+       44 +```json                                                       
+       45  {
+       18 -  overfitting_gap: <float>,                                   
+       19 -  k_fold_cross_validation_results: {}                         
+       46 +  "model_type": "classification|regression",                  
+       47 +  "model_name": "XGBClassifier",                              
+       48 +  "dataset_path": "/abs/path/to/dataset.npz",                 
+       49 +  "train_metrics": {},                                        
+       50 +  "test_metrics": {}                                          
+       51  }
+       52 +```                                                           
+       53 +- `model_name`: one of the 60 names registered in MLKit (REQUI
+          +RED).                                                         
+       54 +- `dataset_path`: REQUIRED. An `.npz` containing arrays `X_tra
+          +in`, `y_train`,                                               
+       55 +  `X_test`, `y_test`. Loaded into `CommonData`/`DataBundle` fo
+          +r MLKit. K-fold runs                                          
+       56 +  on the concatenation of train+test by default (configurable 
+          +in config.yaml).                                              
+       57 +- `train_metrics`, `test_metrics`: OPTIONAL precomputed holdou
+          +t metrics whose keys                                          
+       58 +  match `MetricsResult` fields. When absent, the tool computes
+          + them itself by                                               
+       59 +  training via MLKit and calling `compute_metrics`. When prese
+          +nt, they are used                                             
+       60 +  as-is for the holdout gap (no retraining needed for the gap)
+          +.                                                             
+       61  
+       22 -## Input Format:                                              
+       62 +## 6. OUTPUT FORMAT                                           
+       63 +A JSON written to `<output_dir>/overfitting_analysis.json`:   
+       64  ```json
+       65  {
+       25 -  "model_type": "classification|regression",                  
+       26 -  "train_metrics":{},                                         
+       27 -  "test_metrics":{},                                          
+       66 +  "model_name": "XGBClassifier",                              
+       67 +  "model_type": "classification",                             
+       68 +  "is_overfitted": true,                                      
+       69 +  "gap_threshold": 0.1,                                       
+       70 +  "primary_metric": "accuracy",                               
+       71 +  "gaps": {                                                   
+       72 +    "accuracy": 0.18,                                         
+       73 +    "f1_macro": 0.15                                          
+       74 +  },                                                          
+       75 +  "rel_rmse_gap": null,                                       
+       76 +  "train_metrics": {},                                        
+       77 +  "test_metrics": {},                                         
+       78 +  "k_fold_cross_validation_results": {                        
+       79 +    "k": 5,                                                   
+       80 +    "scoring": "accuracy",                                    
+       81 +    "per_fold_scores": [0.81, 0.79, 0.83, 0.80, 0.82],        
+       82 +    "mean": 0.81,                                             
+       83 +    "std": 0.014,                                             
+       84 +    "train_vs_cv_gap": 0.16                                   
+       85 +  },                                                          
+       86 +  "cv_skipped_reason": null                                   
+       87  }
+       88 +```                                                           
+       89 +- `gaps`: direction-aware gap for every metric available for t
+          +he task type.                                                 
+       90 +- `rel_rmse_gap`: populated for regression only, else `null`. 
+       91 +- `train_vs_cv_gap`: train score minus CV mean (direction-awar
+          +e), the primary                                               
+       92 +  overfitting signal when holdout metrics are unavailable.    
+       93  
+       30 -## CLI Args:                                                  
+       31 --o, <output_dir>                                              
+       32 --i, <input_json>                                              
+       94 +## 7. CONTROLLABLES (config/config.yaml)                      
+       95 +- `k_folds`: number of folds (e.g. 5).                        
+       96 +- `stratified`: true for classification, false for regression 
+          +(auto by model_type                                           
+       97 +  unless overridden).                                         
+       98 +- `scoring_metric`: metric scored per fold (e.g. accuracy / r2
+          +).                                                            
+       99 +- `primary_metric`: metric used for the overfitting verdict.  
+      100 +- `gap_threshold`: float; `is_overfitted = primary_gap > gap_t
+          +hreshold`.                                                    
+      101 +- `cv_data_source`: `train_test_concat` | `train_only` | `test
+          +_only`.                                                       
+      102 +- `random_state`: seed for reproducible folds.                
+      103 +- `metric_direction_map`: hash map of metric => `higher_is_bet
+          +ter` |                                                        
+      104 +  `lower_is_better`. Avoids an if-else ladder when computing d
+          +irection-aware gaps.                                          
+      105 +- `epsilon`: small value for the relative RMSE denominator.   
+      106  
+      107 +Python binary and paths live in `config/config.ini` (`[python]
+          + PYTHON=...`,                                                 
+      108 +`[paths] ...`), matching the model_library convention. One con
+          +fig.ini per project.                                          
+      109  
+       35 -## Development outputs                                        
+       36 -1. config/config.yaml - capturing all the necessary controllab
+          -les                                                           
+       37 -2. overfitting_analysis.py -                                  
+       38 -3. tests/ -> test_suite to create a simple training class and 
+          -with simple dataset and verify if it works.                   
+      110 +## 8. CLI ARGS                                                
+      111 +- `-i, --input_json <path>`: REQUIRED. Path to the input JSON.
+          + Error if missing.                                            
+      112 +- `-o, --output_dir <path>`: REQUIRED. Created with `mkdir -p`
+          +. Error if missing.                                           
+      113 +- `-v, --verbose`: enable debug logging.                      
+      114  
+      115 +## 9. DEVELOPMENT OUTPUTS                                     
+      116 +1. `config/config.ini` - python binary + paths.               
+      117 +2. `config/config.yaml` - all controllables (Section 7).      
+      118 +3. `overfitting_analysis.py` - OOP implementation; imports MLK
+          +it, compute_metrics,                                          
+      119 +   DataBundle at top of file; direction-aware gaps via the con
+          +fig map.                                                      
+      120 +4. `tests/` - test suite that builds a small synthetic dataset
+          + (.npz), runs the                                             
+      121 +   tool end-to-end through MLKit for both a classifier and a r
+          +egressor, and asserts                                         
+      122 +   the output JSON schema and that a deliberately overfit mode
+          +l is flagged.                                                 
+      123  
+       41 -## Acceptance criteria:                                       
+       42 -1. Run the script successfully with the test_suite and report 
+          -the outputs                                                   
+      124 +## 10. ACCEPTANCE CRITERIA                                    
+      125 +1. Runs end-to-end on the test suite for both classification a
+          +nd regression and                                             
+      126 +   produces a schema-valid `overfitting_analysis.json`.       
+      127 +2. K-fold results contain per-fold scores, mean, and std and a
+          +re reproducible                                               
+      128 +   under a fixed `random_state`.                              
+      129 +3. A deliberately overfit model yields `is_overfitted: true`; 
+          +a well-fit model                                              
+      130 +   yields `is_overfitted: false`.                             
+      131 +4. No metric or training logic is reimplemented; MLKit and com
+          +pute_metrics are                                              
+      132 +   reused.                                                    
+      133  
+      134 +## 11. OPEN ITEMS / ASSUMPTIONS                               
+      135 +- Dataset is assumed to fit in memory as a single `.npz`. Stre
+          +aming/large datasets                                          
+      136 +  are out of scope for v1.                                    
+      137 +- `train_vs_cv_gap` vs `primary gap` precedence for the verdic
+          +t is configurable;                                            
+      138 +  default uses the holdout `primary gap` when holdout metrics 
+          +exist, else                                                   
+      139 +  `train_vs_cv_gap`.                                          
+
+● I've rewritten epic_4/overfitting_analysis_tool/SPEC.md. Summary of what
+  changed and why:
+
+  Resolved the core contradiction (R1): Input now carries model_name +
+  dataset_path (an .npz of X_train/y_train/X_test/y_test). The tool loads it
+  into a DataBundle and runs K-fold by re-training through MLKit.
+  train_metrics/test_metrics are now optional precomputed holdout metrics, not
+  the only input.
+
+  Wired to existing code (R2): The spec now names MLKit as the "training class"
+  (no placeholder), and compute_metrics/MetricsResult for metrics. Nothing gets
+  reimplemented.
+
+  Regression verdict = "all" (your choice): Section 4/6 now emit direction-aware
+  gaps for every metric (gaps dict), the relative-RMSE gap (rel_rmse_gap), and
+  a verdict (is_overfitted). A metric_direction_map in config drives the sign so
+  lower-is-better metrics (mse/rmse/mae) aren't subtracted backwards (R3).
+
+  Added what was missing: is_overfitted + configurable gap_threshold (A1),
+  per-task metric definitions (A2), K-fold params — k, stratified, scoring,
+  random_state, output schema with per-fold/mean/std/train_vs_cv_gap (A4, R4),
+  config.ini+config.yaml split matching model_library (A7), long-form required
+  CLI args with no silent defaults (D3), and fixed the malformed/invalid JSON
+  fences (D1/D2).
+
+  I also added an Open Items section: in-memory .npz only for v1, and the
+  verdict-precedence rule (holdout gap vs train-vs-CV gap) made configurable.
+
+  One thing worth confirming before any implementation: I assumed dataset_path
+  is an .npz with those four named arrays. If your AutoML pipeline hands
+  datasets over in a different format (CSV, a saved DataBundle pickle, a
+  feature-store handle), tell me and I'll adjust Section 5. Also — per
+  CLAUDE.md, when you're ready to build this, do a git pull on dev first so we
+  wire to the current MLKit interface rather than the snapshot I read here.
+
+✻ Cooked for 3m 49s
+
+❯ now, create a plan for this                                                   
+
+● I have a lot of context from the spec review, but a few things matter for a
+  runnable plan: exactly how code outside model_library imports MLKit (package
+  layout / sys.path), and the existing test + config-loading patterns. Let me
+  explore those in parallel.
+
+● 2 Explore agents finished (ctrl+o to expand)
+   ├ Explore MLKit import & data layout · 24 tool uses · 24.6k tokens
+   │ ⎿  Done
+   └ Explore test & config patterns · 28 tool uses · 27.4k tokens
+     ⎿  Done
+
+● I have everything I need. Key confirmations from exploration:
+  - model_library has no top-level __init__.py; external scripts reach it via
+  sys.path.insert(0, <model_library_root>) then from ml_kit import MLKit, from 
+  core.data_bundle import ..., from metrics.evaluators import ....
+  - MLKit.test() returns predictions only; the caller runs
+  compute_metrics(y_true, y_pred, task_type). The underlying
+  kit.model.predict(X) is public (BaseModel) — so train-set predictions are
+  reachable without retraining.
+  - Config pattern: config.ini (configparser, holds PYTHON + paths) →
+  config.yaml (yaml controllables). Tests are runner scripts (argparse + main(),
+  -v), not pytest.
+
+  Let me write the plan.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● Plan written. Here's the summary before you approve.
+
+  What it builds: a model_name + dataset_path → overfitting-verdict tool at
+  epic_4/overfitting_analysis_tool/, wired entirely to the existing
+  model_library (MLKit for training, compute_metrics for metrics,
+  validate_model_name for input checks) — no reimplementation.
+
+  Key design decisions grounded in exploration:
+  - Imports MLKit via the same sys.path.insert(model_library_root) bootstrap the
+  existing tests use (no top-level package). model_library_root lives in
+  config.ini, not in code.
+  - Train-set metrics come from kit.model.predict(X_train) after a single
+  train() — no wasteful retrain, since MLKit.test() only predicts the test
+  split.
+  - Direction-aware gaps via a metric_direction_map + dispatch dict (so
+  mse/rmse/mae aren't subtracted backwards), giving per-metric gaps,
+  rel_rmse_gap for regression, an is_overfitted verdict, and train_vs_cv_gap as
+  the fallback signal — matching the "all" choice for regression.
+  - K-fold retrains a fresh MLKit per fold (StratifiedKFold for classification,
+  KFold for regression), all params in config.yaml.
+  - Tests follow the repo's runner-script convention (no pytest) with both an
+  overfit and a well-fit case.
+
+  One thing I'd flag: per CLAUDE.md the plan ends pinned to the current MLKit
+  snapshot — when implementation starts, a git pull on dev and a quick
+  re-confirm of the interface is the first step.
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/now-create-a-plan-vast-pudding.md · /plan to
+     edit
+     Plan: Overfitting Analysis Tool (epic-4)
+
+     Context
+
+     epic_4/overfitting_analysis_tool/SPEC.md (just revised) asks for a tool
+     that takes a
+     model_name + dataset_path, computes train/test metrics, runs K-fold cross
+     validation
+     by retraining the model, and emits a verdict on whether the model overfit.
+     The whole point
+     is that this is an AutoML pipeline step that reuses the already-built
+     model_library
+     (MLKit) rather than reimplementing training or metrics. Exploration
+     confirmed every reuse
+     point exists and is importable. This plan implements the tool against those
+     components.
+
+     Reuse (do NOT reimplement)
+
+     - model_library/ml_kit.py::MLKit => the training class. MLKit(model_name, 
+     DataBundle).train(),
+     .test() (returns predictions), .model.predict(X) for train-set predictions.
+     - model_library/core/data_bundle.py::CommonData(X_train,y_train,X_test,y_te
+     st), DataBundle(common, hyperparameters).
+     - model_library/metrics/evaluators.py::compute_metrics(y_true,y_pred,task_t
+     ype,model_name) -> MetricsResult
+     (classification:
+     accuracy/f1_macro/f1_weighted/precision_macro/recall_macro; regression:
+     mse/rmse/mae/r2).
+     - model_library/core/validators.py::validate_model_name (raises with
+     suggestions for bad names — reuse for input validation).
+     - Import bootstrap mirrors model_library/tests/test_*.py:
+     sys.path.insert(0, model_library_root).
+
+     Directory layout (new)
+
+     epic_4/overfitting_analysis_tool/
+       config/config.ini          # [python] PYTHON ; [paths]
+     model_library_root, config_yaml
+       config/config.yaml         # all controllables (Section "config.yaml"
+     below)
+       overfitting_analysis.py    # OOP implementation
+       tests/test_overfitting.py  # runner script (argparse + main + asserts),
+     no pytest
+       docs/README.md             # git-tracked; docs/ otherwise gitignored
+
+     config/config.ini
+
+     [python]
+     PYTHON = /home/sujithma/venv/bin/python
+
+     [paths]
+     model_library_root = /home/sujithma/mitra/model_library
+     config_yaml = config/config.yaml
+     The model_library_root lives here (CLAUDE.md: no hardcoded paths in code).
+     The script reads
+     this with configparser at startup and sys.path.inserts it before importing
+     MLKit.
+
+     config/config.yaml (controllables)
+
+     overfitting:
+       k_folds: 5
+       shuffle: true
+       random_state: 42
+       cv_data_source: train_test_concat        # train_test_concat | train_only
+     | test_only
+       gap_threshold: 0.1
+       epsilon: 1.0e-9
+       classification:
+         stratified: true
+         scoring_metric: accuracy
+         primary_metric: accuracy
+       regression:
+         stratified: false
+         scoring_metric: r2
+         primary_metric: r2
+       metric_direction_map:
+         accuracy: higher_is_better
+         f1_macro: higher_is_better
+         f1_weighted: higher_is_better
+         precision_macro: higher_is_better
+         recall_macro: higher_is_better
+         r2: higher_is_better
+         mse: lower_is_better
+         rmse: lower_is_better
+         mae: lower_is_better
+
+     overfitting_analysis.py
+
+     OOP, fully typed (CLAUDE.md #29). Imports at top; the one necessary
+     deviation is a tiny
+     config-driven sys.path bootstrap before the model_library imports (same
+     pattern the
+     existing tests use) — documented with a comment.
+
+     Module-level dispatch map (avoids if-else ladder, CLAUDE.md #4/#23):
+     DIRECTION_GAP_FUNCS = {
+         "higher_is_better": lambda train_score, test_score: train_score -
+     test_score,
+         "lower_is_better":  lambda train_score, test_score: test_score -
+     train_score,
+     }
+
+     Class OverfittingAnalyzer:
+     - __init__(self, input_json_path: str, output_dir: str, verbose: bool) -> 
+     None
+     Reads config.ini + config.yaml (own loader, configparser+yaml). Class vars
+     hold config
+     sub-dicts shared across methods (CLAUDE.md #9). Parses input JSON;
+     validates required keys
+     (model_type, model_name, dataset_path); calls validate_model_name; checks
+     model_name
+     vs model_type consistency against MODEL_REGISTRY groupings.
+     - load_dataset(self, dataset_path: str) -> CommonData
+     np.load(.npz), require arrays X_train,y_train,X_test,y_test; error clearly
+     if absent.
+     - compute_holdout_metrics(self, common: CommonData) -> 
+     tuple[MetricsResult|None, MetricsResult|None]
+     If train_metrics/test_metrics present in input -> wrap into
+     MetricsResult-shaped dicts and
+     use as-is. Else: one MLKit train run; test() -> test preds;
+     kit.model.predict(common.X_train)
+     -> train preds; compute_metrics for each. Returns (train_result,
+     test_result).
+     - run_kfold(self, common: CommonData) -> dict
+     Assemble CV X,y per cv_data_source. StratifiedKFold (classification) or
+     KFold (regression)
+     with k/shuffle/random_state. Per fold: build CommonData (train idx ->
+     train, val idx -> test),
+     DataBundle, fresh MLKit(model_name), train(), test(), compute_metrics, pull
+     the
+     configured scoring_metric. Return {k, scoring, per_fold_scores, mean, std, 
+     train_vs_cv_gap},
+     where train_vs_cv_gap is the direction-aware gap of holdout train scoring
+     metric vs cv mean.
+     Validate k <= min class count (classification) / k <= n_samples; error
+     clearly otherwise.
+     On retrain failure, return None and set cv_skipped_reason.
+     - compute_gaps(self, train_result, test_result) -> tuple[dict, float|None]
+     Iterate non-None metrics for the task; gap via
+     DIRECTION_GAP_FUNCS[metric_direction_map[m]].
+     Regression also computes rel_rmse_gap = (test_rmse - 
+     train_rmse)/max(train_rmse, epsilon).
+     - decide_verdict(self, gaps: dict, kfold: dict|None) -> bool
+     primary_gap = gaps[primary_metric] when holdout available -> is_overfitted 
+     = primary_gap > gap_threshold.
+     If holdout metrics absent, fall back to kfold["train_vs_cv_gap"] > 
+     gap_threshold.
+     - write_output(self, payload: dict) -> str
+     mkdir -p output_dir (CLAUDE.md #17); write
+     <output_dir>/overfitting_analysis.json matching SPEC Section 6.
+     - run(self) -> dict orchestrates the above and returns the payload.
+
+     CLI (main, argparse, CLAUDE.md #27 no silent defaults — default None, error
+     if missing):
+     -i/--input_json (required), -o/--output_dir (required), -v/--verbose.
+     Logging mirrors model_library: logging.basicConfig(... "%(asctime)s 
+     [%(levelname)s] %(name)s => %(message)s"),
+     => prefixes, ASCII only (CLAUDE.md #11/#18).
+
+     tests/test_overfitting.py
+
+     Runner script (matches repo convention; no pytest). sys.path bootstrap to
+     both the tool dir
+     and model_library. Uses sklearn.datasets.make_classification /
+     make_regression to build
+     small datasets, saves them to a temp .npz, writes an input JSON, imports
+     and runs
+     OverfittingAnalyzer directly (not subprocess) for both tasks. Asserts:
+     1. Output JSON has all SPEC Section-6 keys; gaps populated for the task's
+     metrics.
+     2. K-fold has per_fold_scores (len == k), mean, std; reproducible across
+     two seeded runs.
+     3. Overfit case (full-depth DecisionTreeClassifier on small noisy data) =>
+     is_overfitted: true.
+     4. Well-fit case (e.g. LogisticRegression / regularized model) =>
+     is_overfitted: false.
+
+     Edge cases handled
+
+     - Bad model_name -> reuse validate_model_name (suggestions).
+     model_name/model_type mismatch -> explicit error.
+     - .npz missing required arrays -> explicit error.
+     - k too large for samples/classes -> explicit error before CV.
+     - Precomputed metrics missing the primary_metric key -> recompute via MLKit
+     (or error per config).
+
+     .gitignore
+
+     Ensure claude_scripts/ and docs/ (except docs/README.md) are ignored
+     (CLAUDE.md #10/#13);
+     add entries if a root/tool .gitignore does not already cover them.
+
+     Verification
+
+     Run with the configured PYTHON (/home/sujithma/venv/bin/python); spawn an
+     agent to run tests (CLAUDE.md #26):
+     1. cd epic_4/overfitting_analysis_tool && /home/sujithma/venv/bin/python 
+     tests/test_overfitting.py -v
+     => both classification and regression paths pass all assertions; prints
+     MetricsResult-style logs.
+     2. End-to-end CLI smoke: generate a sample .npz + input JSON in
+     claude_scripts/, then
+     /home/sujithma/venv/bin/python overfitting_analysis.py -i <input.json> -o 
+     claude_outputs/ -v
+     => claude_outputs/overfitting_analysis.json is schema-valid; overfit model
+     flagged true.
+     3. Reproducibility: run K-fold twice with the same random_state =>
+     identical per_fold_scores.
+
+     Notes / assumptions
+
+     - Dataset assumed in-memory .npz (SPEC v1 scope). Larger/streaming data out
+     of scope.
+     - Before implementing: git pull on dev and re-confirm the MLKit interface
+     matches this plan
+     (per CLAUDE.md #1), since the plan is pinned to the current snapshot.
+
+● Plan approved. Per CLAUDE.md #1, the first step is to sync dev and re-confirm
+  the MLKit interface before writing anything. Let me set up task tracking and
+  do that.
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ /model                                                                        
+  ⎿  Set model to Sonnet 4.6 (default) and saved as your default for new
+     sessions
+
+❯ continue                                                                      
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● Interface confirmed — no changes since the plan was written. Marking task 1
+  done and creating the remaining tasks, then building.
+
+● Now I'll create the directory structure and both config files.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(epic_4/overfitting_analysis_tool/config/config.ini)
+  ⎿  Wrote 6 lines to epic_4/overfitting_analysis_tool/config/config.ini
+      1 [python]
+      2 PYTHON = /home/sujithma/venv/bin/python
+      3 
+      4 [paths]
+      5 model_library_root = /home/sujithma/mitra/model_library
+      6 config_yaml = config/config.yaml
+
+● Write(epic_4/overfitting_analysis_tool/config/config.yaml)
+  ⎿  Wrote 34 lines to epic_4/overfitting_analysis_tool/config/config.yaml
+       1 overfitting:
+       2   k_folds: 5
+       3   shuffle: true
+       4   random_state: 42
+       5   # cv_data_source controls which data is used for K-fold splits
+       6   # Options: train_test_concat | train_only | test_only
+       7   cv_data_source: train_test_concat
+       8   gap_threshold: 0.1
+       9   # Small value guarding the relative RMSE denominator
+      10   epsilon: 1.0e-9
+     … +26 lines (ctrl+o to expand)
+● Now the main implementation. I need to check the
+  model_library/core/validators.py to understand validate_model_name and
+  MODEL_REGISTRY groupings before writing.
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● I have the full registry. Now I'll write overfitting_analysis.py.
+
+● Write(epic_4/overfitting_analysis_tool/overfitting_analysis.py)
+  ⎿  Wrote 489 lines to
+     epic_4/overfitting_analysis_tool/overfitting_analysis.py
+       1 import argparse
+       2 import configparser
+       3 import json
+       4 import logging
+       5 import os
+       6 import sys
+       7 from dataclasses import asdict, dataclass
+       8 from typing import Optional
+       9 
+      10 import numpy as np
+     … +588 lines (ctrl+o to expand)
+
+● Now the test suite — a runner script following the repo convention.
+
+● Write(epic_4/overfitting_analysis_tool/tests/test_overfitting.py)
+  ⎿  Wrote 310 lines to
+     epic_4/overfitting_analysis_tool/tests/test_overfitting.py
+      1 import argparse
+      2 import json
+      3 import logging
+      4 import os
+      5 import sys
+      6 import tempfile
+      7 
+      8 import numpy as np
+      9 from sklearn.datasets import make_classification, make_regression
+     … +350 lines (ctrl+o to expand)
+
+❯ Write the plan also into epic-4/overfitting_analysis/PLAN.md 
+
+● Writing the plan to epic_4 first (per user request), then spawning the test
+  agent.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● Write(epic_4/overfitting_analysis_tool/docs/PLAN.md)
+  ⎿  Wrote 121 lines to epic_4/overfitting_analysis_tool/docs/PLAN.md
+      1 # Plan: Overfitting Analysis Tool (epic-4)
+      3 ## Context
+      4 `epic_4/overfitting_analysis_tool/SPEC.md` (just revised) asks fo
+      5 `model_name` + `dataset_path`, computes train/test metrics, runs 
+        K-fold cross validation
+         overfit. The whole point
+      7 is that this is an AutoML pipeline step that **reuses** the alrea
+      8 (MLKit) rather than reimplementing training or metrics. Explorati
+        on confirmed every reuse
+        inst those components.
+     … +148 lines (ctrl+o to expand)
+
+● Now spawn the test agent per CLAUDE.md #26, while I continue with the
+  .gitignore check.
+
+● Agent(Run overfitting tool test suite)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+● The root .gitignore doesn't cover claude_scripts/ or docs/ yet. I'll add those
+  entries to the root .gitignore (not the tool directory, since CLAUDE.md says
+  these are repo-wide conventions).
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(.gitignore)
+  ⎿  Added 7 lines
+      1  meeting_transcripts/original
+      2 +                                                                
+      3 +# CLAUDE.md conventions: intermediate scripts and session docs a
+        +re not tracked                                                  
+      4 +claude_scripts/                                                 
+      5 +docs/                                                           
+      6 +!docs/README.md                                                 
+      7 +!**/docs/README.md                                              
+      8 +!**/docs/PLAN.md                                                
+
+● Test agent is running in the background. Waiting for its results — I'll report
+  back as soon as it completes.
+
+✻ Cogitated for 4m 52s
+
+● Agent "Run overfitting tool test suite" completed · 16s
+
+● All 4 tests passed. Marking complete.
+
+● Everything is done. Here's what was built and verified:
+
+  Files created:
+  epic_4/overfitting_analysis_tool/
+    config/config.ini          # PYTHON binary + model_library_root path
+    config/config.yaml         # k_folds, gap_threshold, metric_direction_map,
+  etc.
+    overfitting_analysis.py    # OverfittingAnalyzer class + CLI
+    tests/test_overfitting.py  # 4-case runner script
+    docs/PLAN.md               # plan (git-tracked)
+
+  Test results (exit 0, 4/4 passed):
+
+  ┌────────────────────┬────────────────────┬────────────┬─────────────────┐
+  │        Case        │       Model        │    Gap     │     Verdict     │
+  ├────────────────────┼────────────────────┼────────────┼─────────────────┤
+  │ Classification/Ove │ DecisionTreeClassi │ accuracy=0 │ is_overfitted=t │
+  │ rfit               │ fier               │ .15 > 0.10 │ rue             │
+  ├────────────────────┼────────────────────┼────────────┼─────────────────┤
+  │ Classification/Wel │ LogisticRegression │ accuracy=0 │ is_overfitted=f │
+  │ lFit               │                    │ .01        │ alse            │
+  ├────────────────────┼────────────────────┼────────────┼─────────────────┤
+  │ Regression/WellFit │ LinearRegression   │ r2=0.0007  │ is_overfitted=f │
+  │                    │                    │            │ alse            │
+  ├────────────────────┼────────────────────┼────────────┼─────────────────┤
+  │ KFold/Reproducibil │                    │ scores     │                 │
+  │ ity                │ LogisticRegression │ identical  │ deterministic   │
+  │                    │                    │ both runs  │                 │
+  └────────────────────┴────────────────────┴────────────┴─────────────────┘
+
+  Key design decisions implemented:
+  - No metric/training code reimplemented — all delegated to MLKit,
+  compute_metrics, validate_model_name.
+  - model_library_root in config.ini, never hardcoded — sys.path bootstrap reads
+  it at startup.
+  - Direction-aware gaps via a DIRECTION_GAP_FUNCS dispatch dict (no if-else
+  ladder), driven by metric_direction_map in config.yaml.
+  - Relative RMSE gap (rel_rmse_gap) populated for regression only.
+  - .gitignore at repo root updated to cover claude_scripts/ and docs/ (except
+  README.md and PLAN.md).
+
+✻ Worked for 5m 12s
+
+❯ create a README.md in the same folder which will tell an agent how to use     
+  this overfitting_analyzer                                                     
+● Write(epic_4/overfitting_analysis_tool/docs/README.md)
+  ⎿  Wrote 173 lines to epic_4/overfitting_analysis_tool/docs/README.md
+      1 # Overfitting Analysis Tool
+      2 
+      3 Analyzes whether a trained ML model has overfit by computing dire
+      4 (train vs. test) and K-fold cross validation. Designed as a step 
+        in an AutoML pipeline.
+      5 
+      6 Backed by `model_library` (MLKit + compute_metrics) — no training
+         or metric logic is
+      8 
+      9 ---
+     … +193 lines (ctrl+o to expand)
+
+● docs/README.md written at epic_4/overfitting_analysis_tool/docs/README.md. It
+  covers:
+
+  - Input format — what goes in the JSON and how to prepare the .npz
+  - CLI usage — all three args with a ready-to-run command
+  - Output schema — every field explained, with an annotated example
+  - Pipeline integration — how to import and call OverfittingAnalyzer directly
+  from another script
+  - Config knobs — the table of config.yaml controllables an agent might need to
+  tune
+  - Test suite — the single command to verify the tool before using it
+  - Supported model names — common examples with the classification/regression
+  distinction
+
+✻ Churned for 38s
+
+※ recap: Built the epic-4 overfitting analysis tool end-to-end: config, implementation, tests (4/4 pass), and README. No immediate next action — the tool is complete and ready to integrate into the AutoML pipeline. (disable recaps in /config)
