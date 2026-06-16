@@ -1,0 +1,46 @@
+# Weights for the scoring function: performance, overfitting, complexity.
+# Must sum to 1.0.
+weights:
+  performance: 0.60
+  overfitting: 0.30
+  complexity:  0.10
+
+# Hard-gate floors: models scoring below these are always rejected.
+accuracy_floor: 0.60     # classification: primary metric = accuracy
+r2_floor: 0.40           # regression:     primary metric = r2
+
+# Tie-break: if two models' primary-metric diff <= tie_break_pct, prefer simpler.
+tie_break_pct: 0.01
+
+# Complexity normalization bounds. family_rank is a 1-N integer (lower = simpler).
+# These are used for min-max scaling across the candidate set.
+complexity_normalization:
+  n_params_max: 1000000   # cap for normalizing n_params to [0,1]
+  depth_max: 100          # cap for depth
+  family_rank_max: 10     # cap for family_rank
+
+# Overfitting signal normalization cap (gaps beyond this are treated as 1.0).
+overfitting_gap_cap: 0.50
+
+# LLM settings.
+use_llm: true
+anthropic_model_env: ANTHROPIC_MODEL_NAME   # env var holding the model name
+prompt_template: judge_prompt.jinja2
+
+# Maps each metric name to its direction for gap computation (mirrors parent tool).
+# This avoids if-else ladders throughout the codebase.
+metric_direction_map:
+  accuracy:        higher_is_better
+  f1_macro:        higher_is_better
+  f1_weighted:     higher_is_better
+  precision_macro: higher_is_better
+  recall_macro:    higher_is_better
+  r2:              higher_is_better
+  mse:             lower_is_better
+  rmse:            lower_is_better
+  mae:             lower_is_better
+
+# Primary metric per task type (used for hard-gate and tie-break).
+primary_metric_map:
+  classification: accuracy
+  regression: r2
