@@ -1,0 +1,174 @@
+2026-06-17 13:33:47,150	INFO worker.py:2012 -- Started a local Ray instance.
+C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\ray\_private\worker.py:2051: FutureWarning: Tip: In future versions of Ray, Ray will no longer override accelerator visible devices env var if num_gpus=0 or num_gpus=None (default). To enable this behavior and turn off this error message, set RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
+  warnings.warn(
+C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\tools\function_tool.py:95: UserWarning: [EXPERIMENTAL] feature FeatureName.JSON_SCHEMA_FOR_FUNC_DECL is enabled.
+  build_function_declaration(
+Node execution failed with exception
+Traceback (most recent call last):
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_node_runner.py", line 129, in run
+    await self._execute_node(ctx, node_input)
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_node_runner.py", line 248, in _execute_node
+    await self._run_node_loop(ctx, node_input)
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_node_runner.py", line 262, in _run_node_loop
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_base_node.py", line 217, in run
+    async for item in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\agents\llm_agent.py", line 559, in _run_impl
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_llm_agent_wrapper.py", line 380, in run_llm_agent_as_node
+    async for event in run_iter:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\agents\base_agent.py", line 305, in run_async
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\agents\llm_agent.py", line 515, in _run_async_impl
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 881, in run_async
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 960, in _run_one_step_async
+    async for llm_response in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 1351, in _call_llm_async
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 1329, in _call_llm_with_tracing
+    async for llm_response in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 1412, in _run_and_handle_error
+    async for response in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 410, in _run_and_handle_error
+    raise model_error
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 387, in _run_and_handle_error
+    async for llm_response in agen:
+  File "B:\IISC\DL\Project\FSML\EDA\pipeline\openai_llm.py", line 224, in generate_content_async
+    completion = self._client.chat.completions.create(**kwargs)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\openai\_utils\_utils.py", line 286, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\openai\resources\chat\completions\completions.py", line 1204, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\openai\_base_client.py", line 1297, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\openai\_base_client.py", line 1070, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.InternalServerError: Error code: 504
+Root node feature_engineer_orchestrator failed.
+Traceback (most recent call last):
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\runners.py", line 835, in _cleanup_root_task
+    await task
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\runners.py", line 580, in _drive_root_node
+    raise ctx.error
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_node_runner.py", line 129, in run
+    await self._execute_node(ctx, node_input)
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_node_runner.py", line 248, in _execute_node
+    await self._run_node_loop(ctx, node_input)
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_node_runner.py", line 262, in _run_node_loop
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_base_node.py", line 217, in run
+    async for item in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\agents\llm_agent.py", line 559, in _run_impl
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_llm_agent_wrapper.py", line 380, in run_llm_agent_as_node
+    async for event in run_iter:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\agents\base_agent.py", line 305, in run_async
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\agents\llm_agent.py", line 515, in _run_async_impl
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 881, in run_async
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 960, in _run_one_step_async
+    async for llm_response in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 1351, in _call_llm_async
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 1329, in _call_llm_with_tracing
+    async for llm_response in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 1412, in _run_and_handle_error
+    async for response in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 410, in _run_and_handle_error
+    raise model_error
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 387, in _run_and_handle_error
+    async for llm_response in agen:
+  File "B:\IISC\DL\Project\FSML\EDA\pipeline\openai_llm.py", line 224, in generate_content_async
+    completion = self._client.chat.completions.create(**kwargs)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\openai\_utils\_utils.py", line 286, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\openai\resources\chat\completions\completions.py", line 1204, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\openai\_base_client.py", line 1297, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\openai\_base_client.py", line 1070, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.InternalServerError: Error code: 504
+Traceback (most recent call last):
+  File "B:\IISC\DL\Project\FSML\EDA\main.py", line 56, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "B:\IISC\DL\Project\FSML\EDA\main.py", line 43, in main
+    output_dir, run_id = orchestrator.run()
+                         ^^^^^^^^^^^^^^^^^^
+  File "B:\IISC\DL\Project\FSML\EDA\pipeline\orchestrator.py", line 252, in run
+    self._run_adk_agent(state)
+  File "B:\IISC\DL\Project\FSML\EDA\pipeline\orchestrator.py", line 319, in _run_adk_agent
+    loop.run_until_complete(_run())
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\asyncio\base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "B:\IISC\DL\Project\FSML\EDA\pipeline\orchestrator.py", line 306, in _run
+    async for _ in runner.run_async(
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\runners.py", line 1034, in run_async
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\runners.py", line 594, in _run_node_async
+    await self._cleanup_root_task(task, self.agent.name)
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\runners.py", line 835, in _cleanup_root_task
+    await task
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\runners.py", line 580, in _drive_root_node
+    raise ctx.error
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_node_runner.py", line 129, in run
+    await self._execute_node(ctx, node_input)
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_node_runner.py", line 248, in _execute_node
+    await self._run_node_loop(ctx, node_input)
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_node_runner.py", line 262, in _run_node_loop
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_base_node.py", line 217, in run
+    async for item in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\agents\llm_agent.py", line 559, in _run_impl
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\workflow\_llm_agent_wrapper.py", line 380, in run_llm_agent_as_node
+    async for event in run_iter:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\agents\base_agent.py", line 305, in run_async
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\agents\llm_agent.py", line 515, in _run_async_impl
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 881, in run_async
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 960, in _run_one_step_async
+    async for llm_response in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 1351, in _call_llm_async
+    async for event in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 1329, in _call_llm_with_tracing
+    async for llm_response in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 1412, in _run_and_handle_error
+    async for response in agen:
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 410, in _run_and_handle_error
+    raise model_error
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\google\adk\flows\llm_flows\base_llm_flow.py", line 387, in _run_and_handle_error
+    async for llm_response in agen:
+  File "B:\IISC\DL\Project\FSML\EDA\pipeline\openai_llm.py", line 224, in generate_content_async
+    completion = self._client.chat.completions.create(**kwargs)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\openai\_utils\_utils.py", line 286, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\openai\resources\chat\completions\completions.py", line 1204, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\openai\_base_client.py", line 1297, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\avina\miniconda3\envs\mitra_env\Lib\site-packages\openai\_base_client.py", line 1070, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.InternalServerError: Error code: 504
+
+ERROR conda.cli.main_run:execute(127): `conda run python main.py run test data/Reg/train.csv --target SalePrice --model openai/gpt-oss-120b` failed. (See above for error)

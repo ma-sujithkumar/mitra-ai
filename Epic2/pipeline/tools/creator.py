@@ -87,7 +87,17 @@ def _correlated_top3(profile: dict, col: str) -> dict[str, float]:
 
 
 def _co_occurring_pairs(profile: dict, target_col: str, top_n: int = 10) -> list[tuple[str, str, float]]:
-    """Approximate joint-MI ranking: rank pairs by product of per-column MI."""
+    """Top column pairs by joint MI with target.
+
+    Prefers the profiler's true joint-MI ranking (`_joint_mi_pairs`) when
+    present, since that is computed on the concatenated feature columns
+    against the target. Falls back to the MI-product proxy when the profiler
+    key is absent (plan ambiguity #29).
+    """
+    precomputed = profile.get("_joint_mi_pairs")
+    if precomputed:
+        return [(a, b, float(s)) for a, b, s in precomputed][:top_n]
+
     cols = [c for c in profile if not c.startswith("_") and c != target_col]
     scored: list[tuple[str, str, float]] = []
     for i, a in enumerate(cols):
@@ -159,6 +169,7 @@ class FeatureCreator(BaseTool):
             self.model_call, prompt, FeatureCreatorResponse, sent_fields, cfg,
             caller="FeatureCreator",
         )
+        state.last_llm_source = source
 
         if parsed is None or source == "fallback":
             state.warnings.append(

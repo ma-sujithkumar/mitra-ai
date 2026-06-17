@@ -119,6 +119,7 @@ class Scaler(BaseTool):
             self.model_call, prompt, ScalerResponse, sent_fields, cfg,
             caller="Scaler",
         )
+        state.last_llm_source = source
 
         if parsed is None or source == "fallback":
             state.warnings.append(

@@ -31,3 +31,5 @@ class PipelineState:
 
     pre_encoding_done: bool = False
     row_count_after_outlier: int | None = None
+
+    last_llm_source: str | None = None

@@ -44,7 +44,13 @@ def _strip_harmony(text: str | None) -> str | None:
 
 
 def _sanitize_function_name(name: str) -> str:
-    """Strip Harmony tokens and `functions.` namespace from a function call name."""
+    """Strip Harmony tokens and `functions.` namespace from a function call name.
+
+    gpt-oss Harmony format occasionally leaks channel markers into the function
+    name slot — e.g. `functions.create_features_pre..commentary` (the
+    `commentary` channel). Our tool names never contain dots, so anything
+    after the first `.` is post-namespace garbage and is dropped.
+    """
     if not name:
         return name
     cut = name.find("<|")
@@ -52,7 +58,9 @@ def _sanitize_function_name(name: str) -> str:
         name = name[:cut]
     if name.startswith("functions."):
         name = name[len("functions.") :]
-    return name.strip()
+    if "." in name:
+        name = name.split(".", 1)[0]
+    return name.strip(" _.")
 
 
 def _contents_to_messages(contents, system_instruction: str | None) -> list[dict]:

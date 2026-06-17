@@ -174,6 +174,7 @@ class MissingValueHandler(BaseTool):
             self.model_call, prompt, MissingValueResponse, sent_fields, cfg,
             caller="MissingValueHandler",
         )
+        state.last_llm_source = source
 
         decision_map: dict[str, str] = {}
         if parsed is None or source == "fallback":

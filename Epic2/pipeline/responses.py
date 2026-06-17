@@ -17,16 +17,18 @@ from typing import Literal
 from pydantic import BaseModel, Field, ValidationError
 
 # ---------- raw response logger ----------
-# Orchestrator calls set_raw_log(path) once at startup. Every LLM call site
-# (call_with_revision, Judge.plan, Judge.rank) writes one entry per attempt so
-# failures can be diagnosed without re-running the pipeline.
+# Orchestrator calls set_raw_log(path, max_chars) once at startup. Every LLM
+# call site (call_with_revision, Judge.plan, Judge.rank) writes one entry per
+# attempt so failures can be diagnosed without re-running the pipeline.
 _raw_log_path: str | None = None
-_RAW_SNIPPET_CHARS = 15000
+_raw_log_max_chars: int = 60000
 
 
-def set_raw_log(path: str | None) -> None:
-    global _raw_log_path
+def set_raw_log(path: str | None, max_chars: int | None = None) -> None:
+    global _raw_log_path, _raw_log_max_chars
     _raw_log_path = path
+    if max_chars is not None and max_chars > 0:
+        _raw_log_max_chars = int(max_chars)
 
 
 def log_raw(caller: str, attempt: str, raw: str | None, status: str, failures: list[str] | None = None) -> None:
@@ -34,8 +36,9 @@ def log_raw(caller: str, attempt: str, raw: str | None, status: str, failures: l
     if _raw_log_path is None:
         return
     body = raw if isinstance(raw, str) else ("" if raw is None else str(raw))
-    snippet = body[:_RAW_SNIPPET_CHARS]
-    truncated = "" if len(body) <= _RAW_SNIPPET_CHARS else f"\n... [truncated, total {len(body)} chars]"
+    cap = _raw_log_max_chars
+    snippet = body[:cap]
+    truncated = "" if len(body) <= cap else f"\n... [truncated, total {len(body)} chars]"
     try:
         with open(_raw_log_path, "a", encoding="utf-8") as f:
             f.write(
@@ -98,7 +101,10 @@ class MissingValueResponse(BaseModel):
 
 class OutlierDecision(DecisionItem):
     column: str
-    detector: Literal["iqr", "zscore", "isolation_forest"]
+    # detector is required for `flag` and `drop_row` (the mask is what gets
+    # flagged/dropped), and optional for `scale` (entire column is RobustScaled
+    # regardless of which rows would have been flagged). Spec §4, §7-CC.
+    detector: Literal["iqr", "zscore", "isolation_forest"] | None = None
     action: Literal["scale", "flag", "drop_row"]
 
 
@@ -158,29 +164,47 @@ def _strategy_tuple(item: BaseModel) -> tuple:
     """The joint of every Literal field on the item — used for degeneracy check.
 
     For example, `(detector, action)` for OutlierDecision, `(operation,
-    temporal_class)` for CreatorSpec.
+    temporal_class)` for CreatorSpec. None values are coerced to the sentinel
+    "n/a" so an all-`(None, scale)` outlier batch is still caught.
     """
-    # Heuristic: collect fields whose name is one of the known strategy-like names.
     candidates = ("type", "strategy", "detector", "action", "scaler", "operation", "temporal_class")
-    return tuple(getattr(item, c) for c in candidates if hasattr(item, c) and getattr(item, c) is not None)
+    parts: list = []
+    for c in candidates:
+        if hasattr(item, c):
+            v = getattr(item, c)
+            parts.append(v if v is not None else "n/a")
+    return tuple(parts)
 
 
 def _extract_json(raw: str) -> dict | list | None:
     """Best-effort JSON extraction. Accepts a bare JSON object, a fenced block,
-    or text with embedded JSON."""
+    or text with embedded JSON.
+
+    Tries non-greedy first so an embedded `{"example": ...}` block inside a
+    rationale doesn't swallow the surrounding response; falls back to greedy
+    if non-greedy fails to parse.
+    """
     if not raw:
         return None
     raw = raw.strip()
-    # Strip code fences
     fence = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", raw, re.DOTALL)
     if fence:
         candidate = fence.group(1)
-    else:
-        # First object or array in the text
-        m = re.search(r"(\{.*\}|\[.*\])", raw, re.DOTALL)
-        candidate = m.group(1) if m else raw
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    for pattern in (r"(\{.*?\}|\[.*?\])", r"(\{.*\}|\[.*\])"):
+        m = re.search(pattern, raw, re.DOTALL)
+        if not m:
+            continue
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            continue
     try:
-        return json.loads(candidate)
+        return json.loads(raw)
     except json.JSONDecodeError:
         return None
 
@@ -269,8 +293,10 @@ def validate_response(
                 failures.append("alternatives")
                 break
 
-    # Degeneracy check (joint strategy tuple)
-    if len(items) >= 3:
+    # Degeneracy check (joint strategy tuple). Skip on small batches per
+    # validation.lazy_min_batch_size (spec §5, §7-BB).
+    min_batch = getattr(cfg.validation, "lazy_min_batch_size", 3)
+    if len(items) >= max(1, min_batch):
         counts = Counter(_strategy_tuple(it) for it in items)
         top_count = counts.most_common(1)[0][1]
         if top_count / len(items) > cfg.validation.lazy_response_threshold:
@@ -279,14 +305,24 @@ def validate_response(
     return parsed, failures
 
 
+_INDEX_BRACKET_RE = re.compile(r"\[\d+\]")
+
+
 def _field_known(cited: str, sent: set[str]) -> bool:
-    """Allow exact, dotted-prefix, or suffix matches against the sent whitelist."""
+    """Allow exact, dotted-prefix, or suffix matches against the sent whitelist.
+
+    Models may cite list-typed nested fields with index syntax (`columns[3].dtype`)
+    even though the whitelist contains only dotted paths (`columns.dtype`). The
+    indexed form is normalized by stripping `[<int>]` brackets before membership
+    test (spec §5 "`evidence_cited` form", §7-V).
+    """
     if not cited:
         return False
-    if cited in sent:
+    normalized = _INDEX_BRACKET_RE.sub("", cited)
+    if normalized in sent:
         return True
     # Permit the leaf-name form (e.g. `null_rate` when sent includes `columns.null_rate`).
-    return any(s.endswith("." + cited) or s == cited for s in sent)
+    return any(s.endswith("." + normalized) or s == normalized for s in sent)
 
 
 def _list_field_name(model_cls: type[BaseModel]) -> str | None:

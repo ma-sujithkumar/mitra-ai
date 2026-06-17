@@ -13,6 +13,7 @@ with top_k_features from config.
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Callable
 
 import numpy as np
@@ -24,6 +25,15 @@ from pipeline.base import BaseTool, PostconditionError, PreconditionError
 from pipeline.evidence import ClusterEvidence, FeatureSelectorEvidence
 from pipeline.parallel import compute_correlation_clusters, compute_linear_baseline
 from pipeline.state import PipelineState
+
+
+def _deterministic_tag(columns) -> str:
+    """Deterministic 8-char tag from column names.
+
+    Python's built-in `hash` is salted per process and is forbidden anywhere a
+    name lands in `state.df` or `feature_artifact.json` (spec §5, §7-AA).
+    """
+    return hashlib.md5("|".join(columns).encode("utf-8")).hexdigest()[:8]
 
 
 class FeatureSelector(BaseTool):
@@ -50,10 +60,13 @@ class FeatureSelector(BaseTool):
         y = state.target.to_numpy()
 
         clusters_map = compute_correlation_clusters(X, cut_threshold=cfg.feature_selection.cluster_cut_threshold)
-        baseline = compute_linear_baseline(X, y, state.task, k=cfg.feature_selection.linear_baseline_k)
+        baseline = compute_linear_baseline(
+            X, y, state.task, k=cfg.feature_selection.linear_baseline_k,
+            seed=cfg.pipeline.random_state,
+        )
 
         cluster_evidence: list[ClusterEvidence] = []
-        per_col_mi = self._per_col_mi(X, y, state.task)
+        per_col_mi = self._per_col_mi(X, y, state.task, state)
         for cid, members in clusters_map.items():
             mis = [per_col_mi.get(c, 0.0) for c in members]
             if len(members) > 1:
@@ -91,12 +104,14 @@ class FeatureSelector(BaseTool):
 
         if plan is None:
             state.warnings.append("FeatureSelector: Judge unavailable; fallback mRMR over all features")
+            state.last_llm_source = "fallback"
             selected = self._mrmr(X, y, state.task, min(cfg.feature_selection.top_k_features, len(feature_cols)), state)
             if not selected:
                 selected = feature_cols[: cfg.feature_selection.top_k_features]
             state.selected_columns = selected
             state.selection_method = "fallback:mrmr_all"
             return
+        state.last_llm_source = "ok"
 
         # Execute the plan cluster by cluster.
         plan_actions = {a.cluster_id: a.action for a in plan.plan}
@@ -132,7 +147,7 @@ class FeatureSelector(BaseTool):
                     cols = members[:cluster_k]
             except Exception as e:
                 state.warnings.append(f"Selector cluster {cid} action={action} failed: {e}; fallback top-MI")
-                cols = self._top_mi(sub_X, y, state.task, cluster_k)
+                cols = self._top_mi(sub_X, y, state.task, cluster_k, seed=cfg.pipeline.random_state)
             kept.extend(cols)
             per_cluster_summary.append(f"c{cid}:{action}")
 
@@ -153,13 +168,13 @@ class FeatureSelector(BaseTool):
 
     # ---------- helpers ----------
 
-    @staticmethod
-    def _per_col_mi(X: pd.DataFrame, y, task: str) -> dict[str, float]:
+    def _per_col_mi(self, X: pd.DataFrame, y, task: str, state) -> dict[str, float]:
+        seed = state.config.pipeline.random_state
         try:
             if task == "classification":
-                mi = mutual_info_classif(X.to_numpy(), y, random_state=42)
+                mi = mutual_info_classif(X.to_numpy(), y, random_state=seed)
             else:
-                mi = mutual_info_regression(X.to_numpy(), y, random_state=42)
+                mi = mutual_info_regression(X.to_numpy(), y, random_state=seed)
             return {c: float(m) for c, m in zip(X.columns, mi)}
         except Exception:
             return {c: 0.0 for c in X.columns}
@@ -176,17 +191,17 @@ class FeatureSelector(BaseTool):
             return mrmr_regression(X=X, y=y_series, K=min(k, X.shape[1]))
         except Exception as e:
             state.warnings.append(f"mrmr unavailable: {e}; using top-MI proxy")
-            return FeatureSelector._top_mi(X, y, task, k)
+            return FeatureSelector._top_mi(X, y, task, k, seed=state.config.pipeline.random_state)
 
     @staticmethod
-    def _top_mi(X: pd.DataFrame, y, task: str, k: int) -> list[str]:
+    def _top_mi(X: pd.DataFrame, y, task: str, k: int, seed: int = 42) -> list[str]:
         if X.shape[1] == 0:
             return []
         try:
             if task == "classification":
-                mi = mutual_info_classif(X.to_numpy(), y, random_state=42)
+                mi = mutual_info_classif(X.to_numpy(), y, random_state=seed)
             else:
-                mi = mutual_info_regression(X.to_numpy(), y, random_state=42)
+                mi = mutual_info_regression(X.to_numpy(), y, random_state=seed)
             order = np.argsort(mi)[::-1][: min(k, X.shape[1])]
             return [X.columns[i] for i in order]
         except Exception:
@@ -199,7 +214,8 @@ class FeatureSelector(BaseTool):
         n_comp = min(k, X.shape[1], max(1, X.shape[0] - 1))
         pca = PCA(n_components=n_comp, random_state=cfg.pipeline.random_state)
         transformed = pca.fit_transform(X.to_numpy())
-        new_names = [f"pca_c{abs(hash(tuple(X.columns))) % 10_000}_{i}" for i in range(n_comp)]
+        tag = _deterministic_tag(list(X.columns))
+        new_names = [f"pca_{tag}_{i}" for i in range(n_comp)]
         for i, name in enumerate(new_names):
             state.df[name] = transformed[:, i]
             state.created_columns.append({"name": name, "operation": "pca", "sources": X.columns.tolist()})

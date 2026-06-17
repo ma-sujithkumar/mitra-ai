@@ -26,10 +26,14 @@ STRATEGY_DEFINITIONS: dict[str, str] = {
     "drop_row": "Action. Drops the offending rows and their matching target values atomically.",
 }
 
-OUTLIER_PROMPT = """For each numeric column pick exactly one detector and one action.
+OUTLIER_PROMPT = """For each numeric column pick exactly one action and, when relevant, one detector.
 
 ## STRATEGY DEFINITIONS (mechanical descriptions only)
 {strategy_definitions}
+
+## RULES
+- `detector` is REQUIRED when action is `flag` or `drop_row` — the detector's row mask is what gets flagged or dropped.
+- `detector` is OPTIONAL (omit the field) when action is `scale` — the whole column is RobustScaled regardless of which rows would have been flagged.
 
 ## RESPONSE SHAPE
 Return ONLY a JSON object of this shape:
@@ -122,6 +126,7 @@ class OutlierHandler(BaseTool):
             self.model_call, prompt, OutlierResponse, sent_fields, cfg,
             caller="OutlierHandler",
         )
+        state.last_llm_source = source
 
         if parsed is None or source == "fallback":
             state.warnings.append(
@@ -138,7 +143,12 @@ class OutlierHandler(BaseTool):
         drop_indices: set[int] = set()
         for col in numeric_cols:
             detector, action = decision_map[col]
-            mask = self._detect(df[col], detector, cfg)
+            # detector is optional for scale; coerce missing detector to a
+            # default for the few code paths that still want a mask (none of
+            # them act on the mask when action=scale).
+            if detector is None and action != "scale":
+                detector = "iqr"
+            mask = self._detect(df[col], detector, cfg) if detector else None
             if action == "scale":
                 scaler = RobustScaler()
                 arr = df[[col]].to_numpy()

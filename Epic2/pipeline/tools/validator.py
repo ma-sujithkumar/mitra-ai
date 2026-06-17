@@ -1,5 +1,4 @@
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
 
 from pipeline.base import BaseTool, PostconditionError, PreconditionError
 from pipeline.state import PipelineState
@@ -17,15 +16,14 @@ class FeatureValidator(BaseTool):
         for c in missing:
             state.warnings.append(f"Selected column missing from df, dropped: {c}")
 
-        coerced: list[str] = []
         for col in list(keep_cols):
             if not pd.api.types.is_float_dtype(df[col]):
-                ok = self._try_coerce(df, col, state)
+                ok = self._try_coerce(df, col)
                 if not ok:
                     keep_cols.remove(col)
-                    state.warnings.append(f"Coercion failed for {col}; dropped from selection")
-                else:
-                    coerced.append(col)
+                    state.warnings.append(
+                        f"Coercion failed for {col} (non-numeric, non-datetime); dropped from selection"
+                    )
 
         if df[keep_cols].isna().sum().sum() > 0:
             df[keep_cols] = df[keep_cols].fillna(0.0)
@@ -36,7 +34,14 @@ class FeatureValidator(BaseTool):
         state.selected_columns = keep_cols
 
     @staticmethod
-    def _try_coerce(df: pd.DataFrame, col: str, state: PipelineState) -> bool:
+    def _try_coerce(df: pd.DataFrame, col: str) -> bool:
+        """Strict coercion: float → datetime only.
+
+        LabelEncoding here would silently relabel a column that should have
+        been encoded earlier by the Encoder, hiding upstream typing or
+        normalization bugs. Spec §5 "FeatureValidator coercion is stricter",
+        §7-X.
+        """
         try:
             df[col] = pd.to_numeric(df[col], errors="raise").astype(float)
             return True
@@ -44,18 +49,6 @@ class FeatureValidator(BaseTool):
             pass
         try:
             df[col] = pd.to_datetime(df[col], errors="raise").astype("int64").astype(float)
-            return True
-        except Exception:
-            pass
-        try:
-            enc = LabelEncoder()
-            df[col] = enc.fit_transform(df[col].astype(str)).astype(float)
-            state.transformers.append({
-                "step": "validator_coerce_label",
-                "column": col,
-                "strategy": "label",
-                "classes": [str(c) for c in enc.classes_.tolist()],
-            })
             return True
         except Exception:
             return False

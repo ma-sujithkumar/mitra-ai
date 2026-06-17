@@ -82,11 +82,11 @@ def compute_correlation_clusters(X: pd.DataFrame, cut_threshold: float) -> dict[
     return {i: members for i, members in enumerate(clusters.values())}
 
 
-def compute_linear_baseline(X: pd.DataFrame, y: np.ndarray, task: str, k: int) -> float:
+def compute_linear_baseline(X: pd.DataFrame, y: np.ndarray, task: str, k: int, seed: int = 42) -> float:
     """Fit LogisticRegression / LinearRegression on the top-k MI features.
 
     Returns CV-AUC (classification) or CV-R² (regression). Cheap proxy for
-    whether linear methods will work.
+    whether linear methods will work. `seed` should be `cfg.pipeline.random_state`.
     """
     try:
         from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
@@ -101,9 +101,9 @@ def compute_linear_baseline(X: pd.DataFrame, y: np.ndarray, task: str, k: int) -
     X_num = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
     try:
         if task == "classification":
-            mi = mutual_info_classif(X_num.to_numpy(), y, random_state=42)
+            mi = mutual_info_classif(X_num.to_numpy(), y, random_state=seed)
         else:
-            mi = mutual_info_regression(X_num.to_numpy(), y, random_state=42)
+            mi = mutual_info_regression(X_num.to_numpy(), y, random_state=seed)
     except Exception:
         return 0.0
 
@@ -113,7 +113,7 @@ def compute_linear_baseline(X: pd.DataFrame, y: np.ndarray, task: str, k: int) -
     try:
         if task == "classification":
             scoring = "roc_auc" if len(set(y)) == 2 else "accuracy"
-            model = LogisticRegression(max_iter=1000, random_state=42)
+            model = LogisticRegression(max_iter=1000, random_state=seed)
         else:
             scoring = "r2"
             model = LinearRegression()

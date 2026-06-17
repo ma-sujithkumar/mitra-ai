@@ -15,7 +15,7 @@ from pipeline.config import ConfigSchema, load_config
 from pipeline.state import PipelineState
 from pipeline.tools import adk_tools
 
-ORCHESTRATOR_INSTRUCTION = """You orchestrate a feature engineering pipeline. Your job: call the tools below in the right order until the pipeline is complete, then stop.
+ORCHESTRATOR_INSTRUCTION_TEMPLATE = """You orchestrate a feature engineering pipeline. Your job: call the tools below in the right order until the pipeline is complete, then stop.
 
 Default tool sequence:
 1. profile_data
@@ -31,10 +31,11 @@ Default tool sequence:
 11. write_report
 
 Rules:
-- Call each tool exactly once if it returns {"status": "ok"}.
-- If a tool returns {"status": "error"}, retry it up to 3 times. On a 4th failure, skip to the next tool and continue.
+- Call each tool exactly once if it returns {{"status": "ok"}}.
+- If a tool returns {{"status": "error"}}, retry it up to {max_tool_retries} times. On the next failure, skip to the next tool and continue.
 - After write_report returns ok, respond with exactly the text: DONE. Nothing else.
-- Do not invent tool names. Only call tools from the registered list.
+- CRITICAL: Tool names must be used EXACTLY as listed above. Never append, prepend, or attach any suffix, prefix, annotation, commentary, or extra characters to a tool name. For example, call "create_features_pre" not "create_features_pre..commentary" or "create_features_pre_note". Only the exact name as listed is valid.
+- Do not add any notes, labels, or commentary by modifying the tool name. If you want to reason, do it in plain text before calling the tool.
 """
 
 START_MESSAGE = "Begin the feature engineering pipeline. Start with profile_data."
@@ -133,16 +134,25 @@ class FeatureEngineerOrchestrator:
         # Env var name comes from config.llm.api_key_env_var. If it is left as
         # the default OPENAI_API_KEY but the model_string targets a different
         # provider, derive from the model prefix as a safety net so the right
-        # provider client picks the key up.
-        env_var = (self.config.llm.api_key_env_var or "").strip() or "OPENAI_API_KEY"
+        # provider client picks the key up. Plan ambiguity #22 mandates that
+        # the override is logged so the user can see what happened.
+        configured_env_var = (self.config.llm.api_key_env_var or "").strip() or "OPENAI_API_KEY"
+        env_var = configured_env_var
+        env_var_override_msg: str | None = None
         if env_var == "OPENAI_API_KEY":
             prefix = self.model_string.split("/", 1)[0].lower()
-            env_var = {
+            derived = {
                 "openai": "OPENAI_API_KEY",
                 "gemini": "GOOGLE_API_KEY",
                 "google": "GOOGLE_API_KEY",
                 "anthropic": "ANTHROPIC_API_KEY",
             }.get(prefix, "OPENAI_API_KEY")
+            if derived != configured_env_var:
+                env_var = derived
+                env_var_override_msg = (
+                    f"env_var_override: configured={configured_env_var} "
+                    f"effective={env_var} (from model prefix '{prefix}')"
+                )
         os.environ[env_var] = api_key
         if self.config.llm.base_url:
             os.environ["OPENAI_API_BASE"] = self.config.llm.base_url
@@ -173,16 +183,24 @@ class FeatureEngineerOrchestrator:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Route every LLM call's raw response + outcome to raw_responses.txt
-        # so fallback paths are debuggable without rerunning.
+        # so fallback paths are debuggable without rerunning. Per-attempt cap
+        # comes from config (spec §6 "Observability detail").
         from pipeline import responses as _responses
-        _responses.set_raw_log(str(output_dir / "raw_responses.txt"))
+        _responses.set_raw_log(
+            str(output_dir / "raw_responses.txt"),
+            max_chars=self.config.validation.raw_log_max_chars,
+        )
 
-        # Log task resolution at startup
-        (output_dir / "execution_log.txt").write_text(
+        # Log task resolution at startup plus any env-var override.
+        log_lines = [
             f"[{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')}] startup task={resolved_task} ({task_source}) "
             f"target={self.target_column} nunique={target.nunique(dropna=True)}\n",
-            encoding="utf-8",
-        )
+        ]
+        if env_var_override_msg:
+            log_lines.append(
+                f"[{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')}] {env_var_override_msg}\n"
+            )
+        (output_dir / "execution_log.txt").write_text("".join(log_lines), encoding="utf-8")
 
         state = PipelineState(
             df=features,
@@ -200,12 +218,13 @@ class FeatureEngineerOrchestrator:
             api_key,
             self.config.llm.base_url,
         )
-        # Smoke test — preserve traceback so the root cause is visible
+        # Smoke test — structured-output dry run (spec §5 "Startup smoke test").
+        # Sends a one-column SemanticTypeInfer-shaped prompt through the same
+        # model_call path the tools use, parses via validate_response with
+        # relaxed thresholds, aborts on `failures=['parse']`.
         import traceback as _tb
         try:
-            smoke = model_call("Respond with the single word: ok")
-            if not smoke or not smoke.strip():
-                raise RuntimeError("smoke test returned empty response")
+            self._run_structured_smoke_test(model_call, output_dir)
         except Exception as e:
             raise RuntimeError(
                 f"Model smoke test failed.\n"
@@ -270,7 +289,9 @@ class FeatureEngineerOrchestrator:
                 max_tokens=self.config.llm.max_tokens,
             ),
             description="Orchestrates the feature engineering pipeline.",
-            instruction=ORCHESTRATOR_INSTRUCTION,
+            instruction=ORCHESTRATOR_INSTRUCTION_TEMPLATE.format(
+                max_tool_retries=self.config.pipeline.max_tool_retries,
+            ),
             tools=adk_tools.ALL_TOOLS,
         )
 
@@ -296,3 +317,75 @@ class FeatureEngineerOrchestrator:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         loop.run_until_complete(_run())
+
+    def _run_structured_smoke_test(self, model_call: Callable[[str], str], output_dir: Path) -> None:
+        """Send one structured-output prompt and parse it through validate_response.
+
+        Per spec §5 / §7-Y: aborts startup on `failures=['parse']`. Other
+        content failures are logged to execution_log.txt only — the smoke
+        prompt is a transport/parse check, not a quality benchmark.
+        """
+        # Pre-filter: empty-response check (preserves old behavior).
+        bare = model_call("Respond with the single word: ok")
+        if not bare or not bare.strip():
+            raise RuntimeError("smoke test pre-check returned empty response")
+
+        # Structured probe.
+        from pipeline.evidence import ColumnTypeEvidence, SemanticTypeInferEvidence, render
+        from pipeline.responses import SemanticTypeInferResponse, validate_response
+        from pipeline.tools.infer import INFER_PROMPT, _strategy_definitions_block
+
+        packet = SemanticTypeInferEvidence(columns=[
+            ColumnTypeEvidence(
+                name="example_col",
+                dtype="int64",
+                null_rate=0.0,
+                nunique=2,
+                top_values=["0", "1"],
+                random_samples=["0", "1"],
+                regex_signature={"uuid": 0, "email": 0, "iso_date": 0, "phone": 0, "numeric_string": 2},
+            )
+        ])
+        evidence_block, sent_fields = render(packet)
+        prompt = INFER_PROMPT.format(
+            strategy_definitions=_strategy_definitions_block(),
+            min_rationale_chars=1,
+            evidence_block=evidence_block,
+        )
+        raw = model_call(prompt)
+
+        # Build a relaxed-validation config view from the real config.
+        cfg = self.config
+        relaxed = _RelaxedValidationView(cfg)
+        parsed, failures = validate_response(SemanticTypeInferResponse, raw, sent_fields, relaxed)
+
+        log_line = (
+            f"[{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')}] smoke_test "
+            f"failures={failures} parsed={'yes' if parsed is not None else 'no'}\n"
+        )
+        with open(output_dir / "execution_log.txt", "a", encoding="utf-8") as f:
+            f.write(log_line)
+
+        if failures and "parse" in failures:
+            raise RuntimeError(
+                f"structured smoke test failed at parse stage: {failures}. "
+                f"Raw response (first 1000 chars): {raw[:1000]!r}"
+            )
+
+
+class _RelaxedValidationView:
+    """validate_response calls cfg.validation.*; this view relaxes the
+    thresholds without mutating the real config."""
+
+    def __init__(self, cfg):
+        self._cfg = cfg
+        self.validation = _RelaxedValidationSettings(cfg.validation)
+
+
+class _RelaxedValidationSettings:
+    def __init__(self, real):
+        self.min_rationale_chars = 1
+        self.min_alternatives = 0
+        self.lazy_response_threshold = 1.01  # never trip degeneracy
+        self.lazy_min_batch_size = getattr(real, "lazy_min_batch_size", 3)
+        self.boilerplate_denylist: list[str] = []

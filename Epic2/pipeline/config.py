@@ -59,6 +59,8 @@ class ValidationSettings(BaseModel):
     min_rationale_chars: int = Field(ge=0)
     min_alternatives: int = Field(ge=0)
     lazy_response_threshold: float = Field(ge=0.0, le=1.0)
+    lazy_min_batch_size: int = Field(default=3, ge=1)
+    raw_log_max_chars: int = Field(default=60000, ge=1024)
     boilerplate_denylist: list[str] = Field(default_factory=list)
 
 
