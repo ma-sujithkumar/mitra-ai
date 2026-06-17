@@ -197,3 +197,54 @@ After Phase 4, the pipeline has confirmed:
 
 `SchemaValidationResult.feature_dataframe` is the cleaned, target-excluded DataFrame
 that `ExplainerFactory` and `SHAPService` (Phase 5) can use directly.
+
+---
+
+## Unit Test Fixes
+
+**Applied after initial commit — test collection was broken on all three Phase 4 test files.**
+
+### Root Cause
+
+`test_fixture_factory.py`, `test_model_validator.py`, and `test_schema_validator.py` all
+import `FixtureFactory` via:
+
+```python
+from tests.fixtures.fixture_factory import FixtureFactory
+```
+
+For this package-style import to resolve, two conditions must hold:
+
+1. The `tests` directory must be a Python package (requires `tests/__init__.py`).
+2. The `epic_4_shap/` project root must be on `sys.path` so that `tests` is discoverable.
+
+Neither condition was met:
+- `pytest.ini` had `pythonpath = src`, which only added `epic_4_shap/src` to `sys.path`.
+- `tests/__init__.py` and `tests/unit/__init__.py` did not exist.
+
+The Phase 1-3 tests were unaffected because they never imported from the `tests` package.
+
+### Fix Applied
+
+| Change | Detail |
+|---|---|
+| `pytest.ini` | Added `.` to `pythonpath` so `epic_4_shap/` root is on `sys.path` |
+| `tests/__init__.py` | Created (empty package marker) |
+| `tests/unit/__init__.py` | Created (empty package marker) |
+
+### Files Modified
+
+- `pytest.ini` — `pythonpath = src` => `pythonpath = src .`
+- `tests/__init__.py` — new, empty
+- `tests/unit/__init__.py` — new, empty
+
+No validator business logic was changed.
+
+### Test Results After Fix
+
+```
+126 passed in 3.54s
+```
+
+All 126 tests pass: 73 pre-Phase-4 tests unaffected, 42 Phase 4 tests now collecting and
+passing, 11 pre-existing Phase 1-3 tests confirmed unbroken.
