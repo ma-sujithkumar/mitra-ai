@@ -23,3 +23,6 @@
   validates and routes models, prepares `training_jobs.json`, integrates the
   local training worker, persists job statuses, isolates per-model failures,
   and writes `training_summary.json`.
+- [Epic-3 Training SSE Events](epic_3/events/README.md) — publishes
+  replayable `queued`/`running`/terminal events, streams them through
+  `/api/training/events`, and keeps training independent of browser clients.

@@ -11,12 +11,14 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from inspect import signature
 from pathlib import Path
 from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from epic_3.events import NullTrainingEventSink, TrainingEvent, TrainingEventSink
 from epic_3.training.contracts import TrainingResult
 
 from .contracts import (
@@ -65,6 +67,7 @@ class ParallelTrainingExecutor(Protocol):
         handles: Sequence[Any],
         *,
         timeout_sec: float | None = None,
+        on_result: Callable[[TrainingResult], None] | None = None,
     ) -> Sequence[TrainingResult]:
         """Collect one structured result for each submitted job."""
 
@@ -75,10 +78,16 @@ class ParallelTrainingExecutor(Protocol):
 class TrainingOrchestrator:
     """Create jobs, execute locally or through Ray, and aggregate results."""
 
-    def __init__(self, model_library_root: str | Path) -> None:
+    def __init__(
+        self,
+        model_library_root: str | Path,
+        *,
+        event_sink: TrainingEventSink | None = None,
+    ) -> None:
         self.model_library_root = Path(model_library_root).expanduser().resolve()
         self.router = ModelRouter(self.model_library_root)
         self.aggregator = TrainingResultAggregator()
+        self.event_sink = event_sink or NullTrainingEventSink()
 
     def prepare(
         self,
@@ -95,6 +104,7 @@ class TrainingOrchestrator:
         if not session_id.strip():
             raise InvalidModelConfigError("session_id must not be empty")
 
+        self._reset_event_stream(session_id)
         train = self._require_file(train_path, "train")
         test = self._require_file(test_path, "test")
         session_root = Path(session_dir).resolve()
@@ -130,6 +140,14 @@ class TrainingOrchestrator:
         )
         destination = Path(output_path or session_root / "training_jobs.json").resolve()
         self._write_manifest(manifest, destination)
+        for job in manifest.jobs:
+            self._emit_job_event(
+                manifest=manifest,
+                job=job,
+                status="queued",
+                pct=0,
+                msg=f"{job.model_name} queued for training",
+            )
         return manifest
 
     def execute_local(
@@ -165,14 +183,24 @@ class TrainingOrchestrator:
         for job in manifest.jobs:
             job.status = "running"
             self._write_manifest(manifest, manifest_destination)
+            self._emit_job_event(
+                manifest=manifest,
+                job=job,
+                status="running",
+                pct=25,
+                msg=f"{job.model_name} local training started",
+            )
 
             result = self._execute_one(worker, job)
             job.status = result.status
             results.append(result)
             self._write_manifest(manifest, manifest_destination)
+            self._emit_result_event(manifest=manifest, job=job, result=result)
 
         summary = self.aggregator.build(manifest=manifest, results=results)
         self.aggregator.write(summary, summary_destination)
+        self._emit_summary_event(summary)
+        self._close_event_stream(manifest.session_id)
         return summary
 
     def execute_ray(
@@ -221,13 +249,50 @@ class TrainingOrchestrator:
         self._write_manifest(manifest, manifest_destination)
 
         results: list[TrainingResult]
+        emitted_terminal: dict[str, tuple[str, str | None]] = {}
+
+        def on_result(raw_result: TrainingResult) -> None:
+            try:
+                result = TrainingResult.model_validate(raw_result)
+                job = next(
+                    item for item in manifest.jobs if item.model_id == result.model_id
+                )
+                if result.model_name != job.model_name:
+                    return
+                self._emit_result_event(manifest=manifest, job=job, result=result)
+                emitted_terminal[result.model_id] = (result.status, result.error)
+            except Exception:
+                # Event callbacks are observability only.  Result validation and
+                # failure normalization remain the orchestrator's responsibility.
+                return
+
         try:
             executor.start()
             handles = executor.submit_all(
                 manifest.jobs,
                 resource_overrides=resource_overrides,
             )
-            raw_results = executor.collect(handles, timeout_sec=timeout_sec)
+            for job in manifest.jobs:
+                self._emit_job_event(
+                    manifest=manifest,
+                    job=job,
+                    status="submitted",
+                    pct=10,
+                    msg=f"{job.model_name} submitted to Ray",
+                )
+                self._emit_job_event(
+                    manifest=manifest,
+                    job=job,
+                    status="running",
+                    pct=25,
+                    msg=f"{job.model_name} training started on Ray",
+                )
+            raw_results = self._collect_parallel_results(
+                executor=executor,
+                handles=handles,
+                timeout_sec=timeout_sec,
+                on_result=on_result,
+            )
             results = self._normalize_parallel_results(
                 manifest=manifest,
                 raw_results=raw_results,
@@ -250,11 +315,17 @@ class TrainingOrchestrator:
 
         by_id = {result.model_id: result for result in results}
         for job in manifest.jobs:
-            job.status = by_id[job.model_id].status
+            result = by_id[job.model_id]
+            job.status = result.status
             self._write_manifest(manifest, manifest_destination)
+            signature_value = (result.status, result.error)
+            if emitted_terminal.get(job.model_id) != signature_value:
+                self._emit_result_event(manifest=manifest, job=job, result=result)
 
         summary = self.aggregator.build(manifest=manifest, results=results)
         self.aggregator.write(summary, summary_destination)
+        self._emit_summary_event(summary)
+        self._close_event_stream(manifest.session_id)
         return summary
 
     def prepare_and_execute_local(
@@ -336,6 +407,131 @@ class TrainingOrchestrator:
             resource_overrides=resource_overrides,
             close_executor=close_executor,
         )
+
+
+    @staticmethod
+    def _collect_parallel_results(
+        *,
+        executor: ParallelTrainingExecutor,
+        handles: Sequence[Any],
+        timeout_sec: float | None,
+        on_result: Callable[[TrainingResult], None],
+    ) -> Sequence[TrainingResult]:
+        """Use live callbacks when the executor supports them.
+
+        Older/fake executors remain compatible, which keeps the hand-off
+        contract stable while Onkar's real Ray executor can stream completions.
+        """
+
+        parameters = signature(executor.collect).parameters
+        if "on_result" in parameters:
+            return executor.collect(
+                handles,
+                timeout_sec=timeout_sec,
+                on_result=on_result,
+            )
+        return executor.collect(handles, timeout_sec=timeout_sec)
+
+    def _emit_job_event(
+        self,
+        *,
+        manifest: TrainingJobManifest,
+        job: TrainingJob,
+        status: str,
+        pct: int,
+        msg: str,
+        level: str = "info",
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        try:
+            event = TrainingEvent(
+                session_id=manifest.session_id,
+                level=level,
+                msg=msg,
+                pct=pct,
+                status=status,
+                model_id=job.model_id,
+                model_name=job.model_name,
+                details=dict(details or {}),
+            )
+            self.event_sink.emit(event)
+        except Exception:
+            # SSE is observability. It must never change a training outcome.
+            pass
+
+    def _emit_result_event(
+        self,
+        *,
+        manifest: TrainingJobManifest,
+        job: TrainingJob,
+        result: TrainingResult,
+    ) -> None:
+        timed_out = bool(result.error and "timed out" in result.error.lower())
+        status = "timed_out" if timed_out else result.status
+        level = "error" if result.status == "failed" else "info"
+        if timed_out:
+            message = f"{job.model_name} training timed out"
+        elif result.status == "failed":
+            message = f"{job.model_name} training failed"
+        else:
+            message = f"{job.model_name} training completed"
+
+        details: dict[str, Any] = {
+            "training_time_sec": result.training_time_sec,
+        }
+        if result.error:
+            details["error"] = result.error
+        if result.model_path:
+            details["model_path"] = result.model_path
+        if "validation_score" in result.metrics:
+            details["validation_score"] = result.metrics["validation_score"]
+
+        self._emit_job_event(
+            manifest=manifest,
+            job=job,
+            status=status,
+            pct=100,
+            msg=message,
+            level=level,
+            details=details,
+        )
+
+    def _emit_summary_event(self, summary: TrainingSummary) -> None:
+        try:
+            self.event_sink.emit(
+                TrainingEvent(
+                    session_id=summary.session_id,
+                    status="all_completed",
+                    pct=100,
+                    level="error" if summary.status == "failed" else "info",
+                    msg=(
+                        "All model training jobs finished: "
+                        f"{summary.completed} completed, {summary.failed} failed"
+                    ),
+                    details={
+                        "summary_status": summary.status,
+                        "total_models": summary.total_models,
+                        "completed": summary.completed,
+                        "failed": summary.failed,
+                    },
+                )
+            )
+        except Exception:
+            pass
+
+    def _reset_event_stream(self, session_id: str) -> None:
+        reset = getattr(self.event_sink, "reset_session", None)
+        if callable(reset):
+            try:
+                reset(session_id, clear_history=True)
+            except Exception:
+                pass
+
+    def _close_event_stream(self, session_id: str) -> None:
+        try:
+            self.event_sink.close_session(session_id)
+        except Exception:
+            pass
 
     @staticmethod
     def _execute_one(worker: TrainingWorker, job: TrainingJob) -> TrainingResult:

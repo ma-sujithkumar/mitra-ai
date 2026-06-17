@@ -20,7 +20,8 @@ metadata.json + model_config.json + Epic-2 train/test splits
   -> map results back by model_id
   -> update completed / failed
   -> isolate per-model failures and timeouts
-  -> write training_summary.json
+  -> emit live SSE lifecycle events
+  -> write training_summary.json and close the event stream
 ```
 
 ## Inputs
@@ -103,7 +104,13 @@ remains available as an explicit fallback when Ray is not desired.
 ## Programmatic Ray integration
 
 ```python
-summary = TrainingOrchestrator("model_library").execute_ray(
+from epic_3.events import TrainingEventBus
+
+bus = TrainingEventBus()
+summary = TrainingOrchestrator(
+    "model_library",
+    event_sink=bus,
+).execute_ray(
     manifest,
     target_column="species",
     timeout_sec=300,
@@ -121,5 +128,6 @@ python -m pytest -q \
   epic_3/model_selection/tests \
   epic_3/training_orchestrator/tests \
   epic_3/training/tests \
-  epic_3/ray_wrapper/tests
+  epic_3/ray_wrapper/tests \
+  epic_3/events/tests
 ```
