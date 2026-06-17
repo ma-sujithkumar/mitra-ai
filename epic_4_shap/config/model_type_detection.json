@@ -9,5 +9,27 @@
     "CatBoostClassifier": "CatBoost",
     "CatBoostRegressor": "CatBoost",
     "LogisticRegression": "LogisticRegression"
+  },
+  "supplied_name_to_family": {
+    "xgboost": "XGBoost",
+    "xgb": "XGBoost",
+    "xgbclassifier": "XGBoost",
+    "xgbregressor": "XGBoost",
+    "randomforest": "RandomForest",
+    "random_forest": "RandomForest",
+    "rf": "RandomForest",
+    "randomforestclassifier": "RandomForest",
+    "randomforestregressor": "RandomForest",
+    "lightgbm": "LightGBM",
+    "lgbm": "LightGBM",
+    "lgbmclassifier": "LightGBM",
+    "lgbmregressor": "LightGBM",
+    "catboost": "CatBoost",
+    "catboostclassifier": "CatBoost",
+    "catboostregressor": "CatBoost",
+    "logisticregression": "LogisticRegression",
+    "logistic_regression": "LogisticRegression",
+    "logreg": "LogisticRegression",
+    "lr": "LogisticRegression"
   }
 }

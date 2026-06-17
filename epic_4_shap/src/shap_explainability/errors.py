@@ -17,3 +17,15 @@ class ModelLoadError(SHAPModuleError):
 
 class DatasetLoadError(SHAPModuleError):
     """Raised when the engineered dataset cannot be loaded or validated."""
+
+
+class ModelValidationError(SHAPModuleError):
+    """Raised when model type detection fails (Rule 3) or the detected type is
+    unsupported (Rule 4) per spec.md Section 8. Rule 2 (name mismatch) is a
+    non-terminating warning and never raises this error."""
+
+
+class SchemaValidationError(SHAPModuleError):
+    """Raised when dataset and model feature schemas are incompatible (spec.md
+    Sec 12): feature count mismatch, feature name mismatch, or zero features
+    remain after target column exclusion."""
