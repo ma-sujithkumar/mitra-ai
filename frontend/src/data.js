@@ -267,7 +267,7 @@ export const PROVIDERS = [
 export const NAV_ITEMS = [
   { key: 'dashboard', label: 'Dashboard', icon: 'grid' },
   { key: 'upload', label: 'New Run', icon: 'upload' },
-  { key: 'pipeline', label: 'Pipeline', icon: 'flow' },
+  { key: 'pipeline', label: 'Training', icon: 'flow' },
   { key: 'leaderboard', label: 'Leaderboard', icon: 'trophy' },
   { key: 'settings', label: 'Settings', icon: 'gear' },
 ];

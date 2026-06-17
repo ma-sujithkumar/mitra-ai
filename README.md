@@ -26,3 +26,21 @@
 - [Epic-3 Training SSE Events](epic_3/events/README.md) — publishes
   replayable `queued`/`running`/terminal events, streams them through
   `/api/training/events`, and keeps training independent of browser clients.
+
+## Epic-3 Page 2 live training UI
+
+The Pipeline navigation now opens the live Page-2 training view. It subscribes
+to `GET /api/training/events?session_id=<id>`, replays queued events, displays
+one card per selected model, and updates status, progress, validation score,
+training duration, artifact path, and failure details without a page refresh.
+The browser's native `EventSource` reconnection remains enabled for temporary
+network interruptions. The final `all_completed` event unlocks navigation to
+the leaderboard.
+
+Frontend verification:
+
+```bash
+cd frontend
+npm test
+npm run build
+```

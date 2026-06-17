@@ -147,6 +147,12 @@ class TrainingOrchestrator:
                 status="queued",
                 pct=0,
                 msg=f"{job.model_name} queued for training",
+                details={
+                    "priority": job.priority,
+                    "rationale": job.rationale,
+                    "trainer_type": job.trainer_type,
+                    "data_format": job.data_format,
+                },
             )
         return manifest
 

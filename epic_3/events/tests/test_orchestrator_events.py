@@ -165,6 +165,9 @@ def test_local_training_emits_full_lifecycle_and_summary(tmp_path: Path) -> None
         "failed",
         "all_completed",
     ]
+    assert events[0].details["priority"] == 1
+    assert events[0].details["trainer_type"] == "tabular_classification"
+    assert "rationale" in events[0].details
     completed = next(event for event in events if event.status == "completed")
     assert completed.details["validation_score"] == 0.91
     failed = next(event for event in events if event.status == "failed")

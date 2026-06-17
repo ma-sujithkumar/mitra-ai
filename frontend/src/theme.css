@@ -1544,3 +1544,243 @@ h2 {
     grid-template-columns: 1fr;
   }
 }
+
+/* Epic-3 Page 2: live Ray training */
+.training-session-bar,
+.training-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  padding: 18px 20px;
+}
+
+.training-session-controls,
+.training-overview-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.training-session-controls .input {
+  min-width: 260px;
+}
+
+.training-overview-bar {
+  grid-column: 1 / -1;
+  height: 8px;
+}
+
+.training-count-grid {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.training-count-grid span {
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  padding: 10px 12px;
+}
+
+.training-count-grid strong {
+  font-family: var(--mono);
+  font-size: 18px;
+}
+
+.training-count-grid small {
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.training-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(340px, 0.9fr);
+  align-items: start;
+  gap: 18px;
+}
+
+.training-model-list {
+  display: grid;
+  gap: 12px;
+}
+
+.training-model-card {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--ink);
+  padding: 14px;
+  text-align: left;
+}
+
+.training-model-card:hover,
+.training-model-card.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.training-model-card.failed {
+  border-color: var(--error-line);
+  background: var(--error-bg);
+}
+
+.training-model-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.training-model-head strong,
+.training-model-head small {
+  display: block;
+}
+
+.training-model-head small,
+.training-model-card p,
+.training-last-message {
+  color: var(--ink-muted);
+}
+
+.training-model-card p,
+.training-last-message {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.training-priority {
+  display: grid;
+  place-items: center;
+  min-width: 34px;
+  height: 34px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.training-card-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 10px;
+}
+
+.training-card-progress span {
+  color: var(--accent);
+  font-size: 12px;
+  text-align: right;
+}
+
+.training-model-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.training-model-metrics span {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 9px 10px;
+}
+
+.training-model-metrics small {
+  color: var(--ink-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.training-artifact,
+.training-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 11px;
+}
+
+.training-artifact {
+  border: 1px solid var(--success-line);
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.training-artifact span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.training-error {
+  border: 1px solid var(--error-line);
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.training-log-panel {
+  min-height: 360px;
+}
+
+.training-log-body {
+  height: 420px;
+}
+
+.training-log-line {
+  grid-template-columns: 72px 86px minmax(0, 1fr);
+}
+
+.level-error {
+  color: #ff7c78;
+}
+
+.level-warn {
+  color: #f0bc66;
+}
+
+.training-summary-strip {
+  margin-bottom: 14px;
+}
+
+.training-empty {
+  margin: 0;
+  min-height: 280px;
+}
+
+@media (max-width: 900px) {
+  .training-session-bar,
+  .training-overview {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .training-session-controls,
+  .training-overview-actions {
+    justify-content: flex-start;
+  }
+
+  .training-session-controls .input {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .training-layout,
+  .training-count-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,8 +1,16 @@
-function streamEvents(url, handlers = {}, eventName = null) {
+function streamEvents(url, handlers = {}, eventName = null, options = {}) {
   const eventSource = new EventSource(url);
+  const closeOnTransportError = Boolean(options.closeOnTransportError);
 
   const handleMessage = (event) => {
-    const payload = JSON.parse(event.data);
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch (error) {
+      handlers.onError?.(error);
+      return;
+    }
+
     handlers.onEvent?.(payload);
 
     if (payload.type === 'done' || payload.status === 'all_completed') {
@@ -15,6 +23,8 @@ function streamEvents(url, handlers = {}, eventName = null) {
     }
   };
 
+  eventSource.onopen = () => handlers.onOpen?.();
+
   if (eventName) {
     eventSource.addEventListener(eventName, handleMessage);
   } else {
@@ -23,7 +33,11 @@ function streamEvents(url, handlers = {}, eventName = null) {
 
   eventSource.onerror = (event) => {
     handlers.onError?.(event);
-    eventSource.close();
+    // Native EventSource automatically reconnects and carries Last-Event-ID.
+    // Keep the stream alive for training unless a caller explicitly opts out.
+    if (closeOnTransportError) {
+      eventSource.close();
+    }
   };
 
   return eventSource;
@@ -31,12 +45,22 @@ function streamEvents(url, handlers = {}, eventName = null) {
 
 export function streamValidationEvents(sessionId, handlers = {}) {
   const params = new URLSearchParams({ session_id: sessionId });
-  return streamEvents(`/api/validate/events?${params.toString()}`, handlers);
+  return streamEvents(
+    `/api/validate/events?${params.toString()}`,
+    handlers,
+    null,
+    { closeOnTransportError: true },
+  );
 }
 
 export function streamMetadataEvents(sessionId, handlers = {}) {
   const params = new URLSearchParams({ session_id: sessionId });
-  return streamEvents(`/api/metadata/events?${params.toString()}`, handlers);
+  return streamEvents(
+    `/api/metadata/events?${params.toString()}`,
+    handlers,
+    null,
+    { closeOnTransportError: true },
+  );
 }
 
 export function streamTrainingEvents(sessionId, handlers = {}) {
