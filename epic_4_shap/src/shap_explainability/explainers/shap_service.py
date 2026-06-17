@@ -340,9 +340,14 @@ class SHAPService:
     def _normalize_binary_shap(raw_shap_output: Any) -> np.ndarray:
         """Normalise binary classification SHAP output to 2D ndarray.
 
-        RandomForest returns a list [class_0_values, class_1_values].
-        XGBoost, LightGBM, CatBoost, LinearExplainer return a 2D ndarray
-        directly (positive class contributions).
+        Handles three return shapes produced by different SHAP versions and model families:
+          - list [class_0_values, class_1_values]: old RandomForest API (SHAP < 0.40).
+            Takes index [1] for positive-class contributions.
+          - 3D ndarray (n_samples, n_features, n_classes): SHAP >= 0.40 tree models
+            (confirmed for RandomForest with shap==0.51.0). Takes slice [:, :, 1]
+            for positive-class contributions. Symmetric with _normalize_multiclass_shap.
+          - 2D ndarray (n_samples, n_features): XGBoost, LightGBM, CatBoost,
+            LinearExplainer. Already in positive-class form; used as-is.
         """
         if isinstance(raw_shap_output, list):
             # Take index [1] = contributions toward the positive class.
@@ -355,10 +360,16 @@ class SHAPService:
             return positive_class_values
 
         raw_array = np.asarray(raw_shap_output)
+
+        # SHAP >= 0.40 returns (n_samples, n_features, n_classes) for tree models.
+        # Slice index 1 (positive class) to produce the canonical 2D form.
+        if raw_array.ndim == 3:
+            return raw_array[:, :, 1]
+
         if raw_array.ndim != 2:
             raise SHAPExecutionError(
-                f"Binary SHAP values expected 2D array or list, got shape "
-                f"{raw_array.shape}."
+                f"Binary SHAP values expected 2D array, list, or 3D ndarray "
+                f"(n_samples, n_features, n_classes), got shape {raw_array.shape}."
             )
         return raw_array
 

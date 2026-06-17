@@ -1,4 +1,7 @@
 outputs/
+test_assets/
+docs/
 __pycache__/
 *.pyc
 .pytest_cache/
+*.egg-info/

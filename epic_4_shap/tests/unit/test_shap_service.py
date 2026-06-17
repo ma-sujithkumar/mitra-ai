@@ -222,11 +222,14 @@ def test_normalize_binary_list_takes_index_1(tmp_path: Path) -> None:
     np.testing.assert_array_equal(result, class_1_values)
 
 
-def test_normalize_binary_bad_ndarray_shape_raises(tmp_path: Path) -> None:
+def test_normalize_binary_3d_ndarray_takes_positive_class(tmp_path: Path) -> None:
+    """SHAP >= 0.40 returns (n_samples, n_features, n_classes) for binary tree models.
+    Normalization must slice [:, :, 1] (positive class) to produce a canonical 2D array."""
     service = _make_service(tmp_path)
     raw_3d = np.random.rand(5, 3, 2)
-    with pytest.raises(SHAPExecutionError):
-        service._normalize_shap_values(raw_3d, _PREDICTION_TYPE_BINARY)
+    result = service._normalize_shap_values(raw_3d, _PREDICTION_TYPE_BINARY)
+    assert result.shape == (5, 3)
+    np.testing.assert_array_equal(result, raw_3d[:, :, 1])
 
 
 # ---------------------------------------------------------------------------
