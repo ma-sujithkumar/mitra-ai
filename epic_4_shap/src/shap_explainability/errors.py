@@ -42,3 +42,11 @@ class ExportError(SHAPModuleError):
 
     Wraps OSError from file I/O so the pipeline failure path can catch all
     domain failures uniformly via SHAPModuleError."""
+
+
+class VisualizationError(SHAPModuleError):
+    """Raised when a plot cannot be generated or saved to disk.
+
+    Wraps exceptions from shap.summary_plot(), plt.savefig(), or matplotlib
+    so the pipeline failure path can catch all domain failures uniformly
+    via SHAPModuleError."""

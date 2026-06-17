@@ -64,6 +64,7 @@ def config_ini_writer(tmp_path: Path):
                 "\n"
                 "[plot]\n"
                 f"PLOT_FORMAT = {plot_format}\n"
+                "MAX_DISPLAY_FEATURES = 20\n"
             )
 
         config_file_path.write_text(config_text, encoding="utf-8")

@@ -43,6 +43,7 @@ class AppConfig:
     log_level: str
     target_column_candidates: tuple[str, ...]
     plot_format: str
+    max_display_features: int = 20
 
 
 class ConfigLoader:
@@ -116,12 +117,29 @@ class ConfigLoader:
                 "one non-empty, comma-separated column name."
             )
 
+        max_display_features_raw = config_parser.get(
+            "plot", "MAX_DISPLAY_FEATURES", fallback="20"
+        ).strip()
+        try:
+            max_display_features_value = int(max_display_features_raw)
+        except ValueError:
+            raise ConfigValidationError(
+                f"MAX_DISPLAY_FEATURES '{max_display_features_raw}' in "
+                f"{self.config_file_path} must be a positive integer."
+            )
+        if max_display_features_value < 1:
+            raise ConfigValidationError(
+                f"MAX_DISPLAY_FEATURES must be a positive integer, got "
+                f"{max_display_features_value} in {self.config_file_path}."
+            )
+
         return AppConfig(
             python_path=python_path,
             output_root=output_root,
             log_level=log_level_value,
             target_column_candidates=target_column_candidates,
             plot_format=plot_format_value,
+            max_display_features=max_display_features_value,
         )
 
     def _default_config_file_path(self) -> Path:

@@ -14,6 +14,7 @@ import pandas as pd
 
 from shap_explainability.loaders.dataset_loader import LoadedDataset
 from shap_explainability.loaders.model_loader import LoadedModel
+from shap_explainability.models.shap_result import SHAPResult
 from shap_explainability.session_context import SessionContext
 from shap_explainability.utils.logger import ExecutionLogger
 
@@ -141,4 +142,179 @@ class FixtureFactory:
             column_names=column_names,
             num_rows=len(dataframe),
             num_columns=len(column_names),
+        )
+
+    @staticmethod
+    def make_feature_dataframe(
+        num_samples: int = 10,
+        num_features: int = 3,
+    ) -> pd.DataFrame:
+        """Creates a synthetic feature DataFrame for use in plot generator tests.
+
+        Args:
+            num_samples: Number of rows (samples).
+            num_features: Number of feature columns.
+
+        Returns:
+            A DataFrame with columns named feature_0, feature_1, ... feature_N-1.
+        """
+        np.random.seed(42)
+        feature_column_names = [f"feature_{index}" for index in range(num_features)]
+        return pd.DataFrame(
+            np.random.randn(num_samples, num_features),
+            columns=feature_column_names,
+        )
+
+    @staticmethod
+    def make_shap_result_binary(
+        num_samples: int = 10,
+        num_features: int = 3,
+    ) -> SHAPResult:
+        """Creates a binary classification SHAPResult with synthetic SHAP values.
+
+        Args:
+            num_samples: Number of samples (rows) in the SHAP value array.
+            num_features: Number of features (columns) in the SHAP value array.
+
+        Returns:
+            A fully constructed SHAPResult for prediction_type='binary_classification'.
+        """
+        np.random.seed(42)
+        feature_names = tuple(f"feature_{index}" for index in range(num_features))
+        shap_values = np.random.randn(num_samples, num_features)
+
+        mean_abs_per_feature = np.abs(shap_values).mean(axis=0)
+        sorted_feature_indices = np.argsort(mean_abs_per_feature)[::-1]
+
+        global_importance_dataframe = pd.DataFrame({
+            "feature_name": [feature_names[idx] for idx in sorted_feature_indices],
+            "mean_absolute_shap_value": mean_abs_per_feature[sorted_feature_indices],
+        })
+
+        record_ids = np.repeat(np.arange(num_samples), num_features)
+        feature_names_repeated = np.tile(list(feature_names), num_samples)
+        feature_values_flat = np.random.randn(num_samples * num_features)
+        shap_values_flat = shap_values.flatten()
+
+        mapping_dataframe = pd.DataFrame({
+            "record_id": record_ids,
+            "feature_name": feature_names_repeated,
+            "feature_value": feature_values_flat,
+            "shap_value": shap_values_flat,
+        })
+
+        return SHAPResult(
+            prediction_type="binary_classification",
+            shap_values_array=shap_values,
+            feature_names=feature_names,
+            class_names=None,
+            global_importance_dataframe=global_importance_dataframe,
+            mapping_dataframe=mapping_dataframe,
+        )
+
+    @staticmethod
+    def make_shap_result_regression(
+        num_samples: int = 10,
+        num_features: int = 3,
+    ) -> SHAPResult:
+        """Creates a regression SHAPResult with synthetic SHAP values.
+
+        Args:
+            num_samples: Number of samples (rows) in the SHAP value array.
+            num_features: Number of features (columns) in the SHAP value array.
+
+        Returns:
+            A fully constructed SHAPResult for prediction_type='regression'.
+        """
+        np.random.seed(7)
+        feature_names = tuple(f"feature_{index}" for index in range(num_features))
+        shap_values = np.random.randn(num_samples, num_features)
+
+        mean_abs_per_feature = np.abs(shap_values).mean(axis=0)
+        sorted_feature_indices = np.argsort(mean_abs_per_feature)[::-1]
+
+        global_importance_dataframe = pd.DataFrame({
+            "feature_name": [feature_names[idx] for idx in sorted_feature_indices],
+            "mean_absolute_shap_value": mean_abs_per_feature[sorted_feature_indices],
+        })
+
+        record_ids = np.repeat(np.arange(num_samples), num_features)
+        feature_names_repeated = np.tile(list(feature_names), num_samples)
+        feature_values_flat = np.random.randn(num_samples * num_features)
+        shap_values_flat = shap_values.flatten()
+
+        mapping_dataframe = pd.DataFrame({
+            "record_id": record_ids,
+            "feature_name": feature_names_repeated,
+            "feature_value": feature_values_flat,
+            "shap_value": shap_values_flat,
+        })
+
+        return SHAPResult(
+            prediction_type="regression",
+            shap_values_array=shap_values,
+            feature_names=feature_names,
+            class_names=None,
+            global_importance_dataframe=global_importance_dataframe,
+            mapping_dataframe=mapping_dataframe,
+        )
+
+    @staticmethod
+    def make_shap_result_multiclass(
+        num_samples: int = 10,
+        num_features: int = 3,
+        num_classes: int = 3,
+    ) -> SHAPResult:
+        """Creates a multiclass SHAPResult with synthetic per-class SHAP value arrays.
+
+        Args:
+            num_samples: Number of samples (rows) in each per-class SHAP array.
+            num_features: Number of features (columns) in each per-class SHAP array.
+            num_classes: Number of classes K; produces a list of K arrays.
+
+        Returns:
+            A fully constructed SHAPResult for prediction_type='multiclass_classification'.
+            shap_values_array is a list of K ndarrays each of shape (num_samples, num_features).
+        """
+        np.random.seed(99)
+        feature_names = tuple(f"feature_{index}" for index in range(num_features))
+        class_names = tuple(f"class_{class_index}" for class_index in range(num_classes))
+
+        # List of K arrays: one per class
+        per_class_shap_arrays = [
+            np.random.randn(num_samples, num_features) for _ in range(num_classes)
+        ]
+
+        # Mean absolute SHAP averaged across all classes for global importance
+        stacked_abs = np.mean(
+            [np.abs(class_array) for class_array in per_class_shap_arrays], axis=0
+        )
+        mean_abs_per_feature = stacked_abs.mean(axis=0)
+        sorted_feature_indices = np.argsort(mean_abs_per_feature)[::-1]
+
+        global_importance_dataframe = pd.DataFrame({
+            "feature_name": [feature_names[idx] for idx in sorted_feature_indices],
+            "mean_absolute_shap_value": mean_abs_per_feature[sorted_feature_indices],
+        })
+
+        rows = []
+        for class_index, class_array in enumerate(per_class_shap_arrays):
+            for sample_index in range(num_samples):
+                for feature_index in range(num_features):
+                    rows.append({
+                        "record_id": sample_index,
+                        "class_name": class_names[class_index],
+                        "feature_name": feature_names[feature_index],
+                        "feature_value": np.random.randn(),
+                        "shap_value": class_array[sample_index, feature_index],
+                    })
+        mapping_dataframe = pd.DataFrame(rows)
+
+        return SHAPResult(
+            prediction_type="multiclass_classification",
+            shap_values_array=per_class_shap_arrays,
+            feature_names=feature_names,
+            class_names=class_names,
+            global_importance_dataframe=global_importance_dataframe,
+            mapping_dataframe=mapping_dataframe,
         )
