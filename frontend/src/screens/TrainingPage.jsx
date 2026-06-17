@@ -5,6 +5,7 @@ import TrainingLogs from '../components/training/TrainingLogs.jsx';
 import TrainingProgress from '../components/training/TrainingProgress.jsx';
 import TrainingSummary from '../components/training/TrainingSummary.jsx';
 import { streamTrainingEvents } from '../api/events.js';
+import { cancelTraining, fetchTrainingStatus } from '../api/training.js';
 import { Icons } from '../icons.jsx';
 import {
   applyTrainingEvent,
@@ -35,6 +36,8 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
   const [connectionStatus, setConnectionStatus] = useState('idle');
   const [connectionMessage, setConnectionMessage] = useState('');
   const [selectedModelId, setSelectedModelId] = useState(null);
+  const [backendStatus, setBackendStatus] = useState(null);
+  const [isCancelling, setIsCancelling] = useState(false);
   const sourceRef = useRef(null);
 
   const models = useMemo(() => selectTrainingModels(state), [state]);
@@ -60,6 +63,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     setConnectedSessionId(normalized);
     setSessionInput(normalized);
     setConnectionStatus('connecting');
+    setBackendStatus(null);
     setConnectionMessage('Connecting to the training event stream…');
     setRunState('running');
     setActiveSessionId(normalized);
@@ -105,6 +109,55 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     }
   }, [runState, setRunState, state.complete]);
 
+  useEffect(() => {
+    if (!connectedSessionId || state.complete) {
+      return undefined;
+    }
+
+    let stopped = false;
+    async function pollStatus() {
+      try {
+        const statusPayload = await fetchTrainingStatus(connectedSessionId);
+        if (!stopped) {
+          setBackendStatus(statusPayload);
+          if (['completed', 'partial_failure', 'failed', 'cancelled'].includes(statusPayload.status)) {
+            setRunState('done');
+          }
+        }
+      } catch (statusError) {
+        if (!stopped && statusError.status !== 404) {
+          setConnectionMessage(statusError.message);
+        }
+      }
+    }
+
+    pollStatus();
+    const intervalId = window.setInterval(pollStatus, 1500);
+    return () => {
+      stopped = true;
+      window.clearInterval(intervalId);
+    };
+  }, [connectedSessionId, setRunState, state.complete]);
+
+  async function handleCancel() {
+    if (!connectedSessionId || isCancelling) {
+      return;
+    }
+    setIsCancelling(true);
+    try {
+      const payload = await cancelTraining(connectedSessionId);
+      setBackendStatus((currentStatus) => ({
+        ...(currentStatus || {}),
+        ...payload,
+      }));
+      setConnectionMessage('Training cancellation requested.');
+    } catch (cancelError) {
+      setConnectionMessage(cancelError.message);
+    } finally {
+      setIsCancelling(false);
+    }
+  }
+
   return (
     <div className="screen-stack">
       <section className="card training-session-bar">
@@ -112,6 +165,9 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
           <p className="section-kicker">Training session</p>
           <h2>{connectedSessionId || 'Connect to a session'}</h2>
           <p className="muted">{connectionMessage || 'Use the session created on New Run, or paste a session ID.'}</p>
+          {backendStatus?.status ? (
+            <span className="mono muted">Backend status: {backendStatus.status}</span>
+          ) : null}
         </div>
         <div className="training-session-controls">
           <input
@@ -129,6 +185,17 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
             <button className="btn btn-secondary" onClick={disconnect} type="button">
               <Icons.pause size={16} />
               Disconnect
+            </button>
+          ) : null}
+          {['created', 'running'].includes(backendStatus?.status) ? (
+            <button
+              className="btn btn-secondary"
+              disabled={isCancelling}
+              onClick={handleCancel}
+              type="button"
+            >
+              <Icons.pause size={16} />
+              {isCancelling ? 'Cancelling...' : 'Cancel training'}
             </button>
           ) : null}
         </div>
