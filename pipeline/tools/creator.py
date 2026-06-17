@@ -1,49 +1,108 @@
-import json
-import re
+"""FeatureCreator — propose operation specs, then run pre/post phases.
+
+Typed FeatureCreatorEvidence + Pydantic FeatureCreatorResponse with the four
+content checks, one revision, fall-through to skip. Surviving specs are passed
+to the Judge Agent for ranking/capping.
+"""
+from __future__ import annotations
+
 from typing import Callable
 
 import numpy as np
 import pandas as pd
 
-from pipeline.base import BaseTool, PostconditionError, PreconditionError
+from pipeline.base import BaseTool, PreconditionError
+from pipeline.evidence import (
+    CreatorColumnEvidence,
+    FeatureCreatorEvidence,
+    render,
+)
 from pipeline.parallel import compute_mini_profile
+from pipeline.responses import FeatureCreatorResponse, call_with_revision
 from pipeline.state import PipelineState
 
-VALID_OPS = {
-    "ratio", "difference", "product", "sum_group", "square", "sqrt", "log1p",
-    "row_mean", "row_max", "row_count_positive", "days_since", "is_recent",
-    "equal_width_bins", "quantile_bins", "cross_categorical",
+# Operation vocabulary (15 items). Mechanical descriptions only.
+STRATEGY_DEFINITIONS: dict[str, str] = {
+    "ratio": "Divide column A by column B (zeros in B are treated as missing).",
+    "difference": "Subtract column B from column A.",
+    "product": "Multiply column A by column B.",
+    "sum_group": "Element-wise sum of two or more numeric columns.",
+    "square": "Square the column's values.",
+    "sqrt": "Square root of the absolute value of the column.",
+    "log1p": "Natural log of (1 + |value|).",
+    "row_mean": "Per-row mean across the listed columns.",
+    "row_max": "Per-row maximum across the listed columns.",
+    "row_count_positive": "Per-row count of strictly positive values across the listed columns.",
+    "days_since": "Days elapsed between now and the parsed datetime in the source column.",
+    "is_recent": "Binary indicator: 1 if the source datetime falls within the last 365 days.",
+    "equal_width_bins": "Bin the numeric source into equal-width buckets.",
+    "quantile_bins": "Bin the numeric source into equal-frequency (quantile) buckets.",
+    "cross_categorical": "Concatenate two categorical columns into a single string label. PRE-ENCODING.",
 }
 
-CREATOR_PROMPT = """You propose new features. For each proposal, output an operation spec.
+CREATOR_PROMPT = """Propose new feature operations.
 
-Available operations: ratio, difference, product, sum_group, square, sqrt, log1p,
-row_mean, row_max, row_count_positive, days_since, is_recent, equal_width_bins,
-quantile_bins, cross_categorical.
+## STRATEGY DEFINITIONS (mechanical descriptions only)
+{strategy_definitions}
 
-Each spec MUST include `temporal_class`:
-- "pre_encoding" for cross_categorical (executes before encoding).
-- "post_encoding" for all other operations.
+## RULES
+- `cross_categorical` MUST be marked temporal_class="pre_encoding".
+- All other operations MUST be temporal_class="post_encoding".
+- `sources` must reference columns from the EVIDENCE block.
+- Pick at most {cap} operations.
 
-Columns:
-{column_summary}
+## RESPONSE SHAPE
+Return ONLY a JSON object of this shape:
+{{
+  "specs": [
+    {{
+      "operation": "<one of the operations above>",
+      "sources": ["<col>", "..."],
+      "name": "<new column name>",
+      "temporal_class": "<pre_encoding|post_encoding>",
+      "rationale": "<at least {min_rationale_chars} characters citing fields from EVIDENCE>",
+      "evidence_cited": ["<field paths from EVIDENCE you used>"],
+      "alternatives_considered": ["<other operations you weighed>"]
+    }}
+  ]
+}}
 
-Respond with ONLY a JSON array (max {cap} items), no prose:
-[{{"operation": "<op>", "sources": ["<col1>", "<col2>"], "name": "<new_col_name>", "temporal_class": "<pre_encoding|post_encoding>"}}, ...]
+{evidence_block}
 """
 
 
-def _extract_json_array(text: str) -> list:
-    m = re.search(r"\[.*\]", text, re.DOTALL)
-    if not m:
-        raise ValueError(f"No JSON array: {text[:200]}")
-    return json.loads(m.group(0))
+def _strategy_definitions_block() -> str:
+    return "\n".join(f"- {k}: {v}" for k, v in STRATEGY_DEFINITIONS.items())
+
+
+def _correlated_top3(profile: dict, col: str) -> dict[str, float]:
+    cm = profile.get("_correlation_matrix") or {}
+    row = cm.get(col, {})
+    items = [
+        (k, float(v)) for k, v in row.items()
+        if k != col and isinstance(v, (int, float)) and not pd.isna(v)
+    ]
+    items.sort(key=lambda kv: abs(kv[1]), reverse=True)
+    return {k: v for k, v in items[:3]}
+
+
+def _co_occurring_pairs(profile: dict, target_col: str, top_n: int = 10) -> list[tuple[str, str, float]]:
+    """Approximate joint-MI ranking: rank pairs by product of per-column MI."""
+    cols = [c for c in profile if not c.startswith("_") and c != target_col]
+    scored: list[tuple[str, str, float]] = []
+    for i, a in enumerate(cols):
+        mi_a = profile.get(a, {}).get("mi_with_target") or 0.0
+        for b in cols[i + 1:]:
+            mi_b = profile.get(b, {}).get("mi_with_target") or 0.0
+            scored.append((a, b, float(mi_a * mi_b)))
+    scored.sort(key=lambda t: t[2], reverse=True)
+    return scored[:top_n]
 
 
 class FeatureCreator(BaseTool):
     def __init__(self, model_call: Callable[[str], str], judge=None):
         self.model_call = model_call
-        self.judge = judge  # JudgeAgent | None — ranks/caps proposals
+        self.judge = judge
         self._specs: list[dict] | None = None
         self._proposed_pre: list[dict] = []
         self._proposed_post: list[dict] = []
@@ -58,8 +117,7 @@ class FeatureCreator(BaseTool):
         pass
 
     def __call__(self, state: PipelineState) -> PipelineState:
-        # FeatureCreator uses run_pre / run_post; standard chain is a no-op
-        return state
+        return state  # FeatureCreator dispatches through run_pre / run_post
 
     def _ensure_specs(self, state: PipelineState) -> None:
         if self._specs is not None:
@@ -68,51 +126,77 @@ class FeatureCreator(BaseTool):
         if not feature_cols:
             self._specs = []
             return
-        summary_lines = []
+        cfg = state.config
+
+        per_col: list[CreatorColumnEvidence] = []
         for col in feature_cols:
             p = state.profile.get(col, {})
-            summary_lines.append(
-                f"- {col}: type={state.column_types.get(col)}, mi_with_target={p.get('mi_with_target')}, "
-                f"skewness={p.get('skewness')}, nunique={p.get('nunique')}"
+            per_col.append(
+                CreatorColumnEvidence(
+                    name=col,
+                    semantic_type=state.column_types.get(col, "numeric"),
+                    mi_with_target=float(p.get("mi_with_target") or 0.0),
+                    nunique=int(p.get("nunique") or 0),
+                    correlated_with_top3=_correlated_top3(state.profile, col),
+                    decomposed_from=p.get("decomposed_from"),
+                )
             )
-        cap = state.config.feature_creation.max_created_features
-        prompt = CREATOR_PROMPT.format(column_summary="\n".join(summary_lines), cap=cap)
-        try:
-            response = self.model_call(prompt)
-            raw_specs = _extract_json_array(response)
-        except Exception as e:
-            state.warnings.append(f"FeatureCreator parse failed: {e}; skipping feature creation")
-            raw_specs = []
+        packet = FeatureCreatorEvidence(
+            columns=per_col,
+            co_occurring_pairs=_co_occurring_pairs(state.profile, state.target_column),
+        )
+        evidence_block, sent_fields = render(packet, truncate_after_chars=int(cfg.llm.max_tokens * 0.7 * 4))
+
+        cap = cfg.feature_creation.max_created_features
+        prompt = CREATOR_PROMPT.format(
+            strategy_definitions=_strategy_definitions_block(),
+            min_rationale_chars=cfg.validation.min_rationale_chars,
+            cap=cap,
+            evidence_block=evidence_block,
+        )
+
+        parsed, source, failures = call_with_revision(
+            self.model_call, prompt, FeatureCreatorResponse, sent_fields, cfg,
+            caller="FeatureCreator",
+        )
+
+        if parsed is None or source == "fallback":
+            state.warnings.append(
+                f"FeatureCreator fell through to no-creation (failures={failures})"
+            )
+            self._specs = []
+            return
 
         valid_specs: list[dict] = []
-        for spec in raw_specs:
-            op = spec.get("operation")
-            sources = spec.get("sources", [])
-            name = spec.get("name")
-            tc = spec.get("temporal_class")
-            if op not in VALID_OPS or tc not in {"pre_encoding", "post_encoding"} or not name:
-                state.warnings.append(f"Rejected spec (invalid): {spec}")
+        for spec in parsed.specs:  # type: ignore[attr-defined]
+            sources = list(spec.sources or [])
+            if not sources or not all(s in state.df.columns for s in sources):
+                state.warnings.append(f"FeatureCreator rejected spec (sources missing): {spec.name}")
                 continue
-            if not isinstance(sources, list) or not all(s in state.df.columns for s in sources):
-                state.warnings.append(f"Rejected spec (sources missing): {spec}")
+            if not spec.name:
+                state.warnings.append("FeatureCreator rejected spec with empty name")
                 continue
-            valid_specs.append(spec)
+            valid_specs.append({
+                "operation": spec.operation,
+                "sources": sources,
+                "name": spec.name,
+                "temporal_class": spec.temporal_class,
+            })
 
-        # Judge Agent (Solution F): ranks proposals and caps to `cap` items.
-        # Falls back to proxy-MI ranking if the Judge LLM is unavailable.
-        if self.judge is not None:
-            kept, source = self.judge.rank(
+        # Judge ranks / caps the surviving specs.
+        if self.judge is not None and valid_specs:
+            kept, judge_source = self.judge.rank(
                 specs=valid_specs,
                 profile=state.profile,
                 target_column=state.target_column,
                 task=state.task,
                 cap=cap,
             )
-            state.warnings.append(f"FeatureCreator ranking source={source}, kept={len(kept)}/{len(valid_specs)}")
+            state.warnings.append(f"FeatureCreator ranking source={judge_source}, kept={len(kept)}/{len(valid_specs)}")
             valid_specs = kept
         else:
-            def proxy_mi(spec):
-                scores = [state.profile.get(s, {}).get("mi_with_target") or 0.0 for s in spec["sources"]]
+            def proxy_mi(sp):
+                scores = [state.profile.get(s, {}).get("mi_with_target") or 0.0 for s in sp["sources"]]
                 return float(np.mean(scores)) if scores else 0.0
             valid_specs.sort(key=proxy_mi, reverse=True)
             valid_specs = valid_specs[:cap]

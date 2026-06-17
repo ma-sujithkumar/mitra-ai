@@ -26,6 +26,7 @@ _state: PipelineState | None = None
 _model_call: Callable[[str], str] | None = None
 _log_path: str | None = None
 _creator_instance: FeatureCreator | None = None
+_selector_instance: FeatureSelector | None = None
 
 
 def set_pipeline_state(
@@ -33,11 +34,12 @@ def set_pipeline_state(
     model_call: Callable[[str], str],
     judge_agent: Any | None = None,
 ) -> None:
-    global _state, _model_call, _log_path, _creator_instance
+    global _state, _model_call, _log_path, _creator_instance, _selector_instance
     _state = state
     _model_call = model_call
     _log_path = str(state.output_dir / "execution_log.txt")
     _creator_instance = FeatureCreator(model_call, judge=judge_agent)
+    _selector_instance = FeatureSelector(model_call, judge=judge_agent)
 
 
 def _log(tool: str, status: str, detail: str, elapsed: float) -> None:
@@ -72,7 +74,8 @@ def profile_data() -> dict:
     """Run DataProfiler on the current dataset. Computes per-column stats and correlations."""
     def _do():
         DataProfiler()(_state)
-        return f"profiled {len(_state.profile) - 1} columns"
+        n_cols = sum(1 for k in _state.profile if not k.startswith("_"))
+        return f"profiled {n_cols} columns"
     return _wrap("profile_data", _do)
 
 
@@ -133,9 +136,9 @@ def scale_features() -> dict:
 
 
 def select_features() -> dict:
-    """Run FeatureSelector: pick method and select top-k features."""
+    """Run FeatureSelector: Judge picks per-cluster actions; code executes them."""
     def _do():
-        FeatureSelector(_model_call)(_state)
+        _selector_instance(_state)
         return f"method={_state.selection_method}, k={len(_state.selected_columns)}"
     return _wrap("select_features", _do)
 

@@ -67,3 +67,7 @@ class FeatureValidator(BaseTool):
             raise PostconditionError("FeatureValidator: target must be last column")
         if state.df.isna().sum().sum() > 0:
             raise PostconditionError("FeatureValidator: NaNs remain in output")
+        if state.row_count_after_outlier is not None and len(state.df) != state.row_count_after_outlier:
+            raise PostconditionError(
+                f"FeatureValidator: row count {len(state.df)} != post-outlier {state.row_count_after_outlier}"
+            )

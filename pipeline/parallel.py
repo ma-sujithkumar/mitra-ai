@@ -43,26 +43,84 @@ def _univariate_stats(col_name: str, series_bytes: dict) -> tuple[str, dict]:
     return col_name, stats_dict
 
 
-@ray.remote
-def _mi_with_target(col_data: list, target_data: list, task: str) -> float:
-    from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
-    col = np.asarray(col_data, dtype=float).reshape(-1, 1)
-    tgt = np.asarray(target_data)
-    mask = ~np.isnan(col.flatten())
-    if mask.sum() < 5:
-        return 0.0
-    col = col[mask]
-    tgt = tgt[mask]
+def run_parallel(remote_fn, items: list) -> list:
+    return ray.get([remote_fn.remote(*item) if isinstance(item, tuple) else remote_fn.remote(item) for item in items])
+
+
+def compute_correlation_clusters(X: pd.DataFrame, cut_threshold: float) -> dict[int, list[str]]:
+    """Average-linkage hierarchical clustering on 1 - |corr|.
+
+    Returns {cluster_id: [columns]}. Singleton columns get their own cluster.
+    """
+    cols = list(X.columns)
+    if len(cols) == 0:
+        return {}
+    if len(cols) == 1:
+        return {0: cols}
     try:
-        if task == "classification":
-            return float(mutual_info_classif(col, tgt, random_state=42)[0])
-        return float(mutual_info_regression(col, tgt, random_state=42)[0])
+        from scipy.cluster.hierarchy import fcluster, linkage
+        from scipy.spatial.distance import squareform
+
+        corr = X.corr().abs().to_numpy()
+        # Symmetric distance matrix
+        dist = 1.0 - np.nan_to_num(corr, nan=0.0)
+        np.fill_diagonal(dist, 0.0)
+        # squareform requires zero diagonal and exact symmetry
+        dist = (dist + dist.T) / 2.0
+        np.fill_diagonal(dist, 0.0)
+        condensed = squareform(dist, checks=False)
+        Z = linkage(condensed, method="average")
+        labels = fcluster(Z, t=cut_threshold, criterion="distance")
+    except Exception:
+        # Fallback: every column in its own cluster
+        return {i: [c] for i, c in enumerate(cols)}
+
+    clusters: dict[int, list[str]] = {}
+    for col, lab in zip(cols, labels):
+        clusters.setdefault(int(lab), []).append(col)
+    # Re-key to 0-indexed cluster IDs
+    return {i: members for i, members in enumerate(clusters.values())}
+
+
+def compute_linear_baseline(X: pd.DataFrame, y: np.ndarray, task: str, k: int) -> float:
+    """Fit LogisticRegression / LinearRegression on the top-k MI features.
+
+    Returns CV-AUC (classification) or CV-R² (regression). Cheap proxy for
+    whether linear methods will work.
+    """
+    try:
+        from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
+        from sklearn.linear_model import LinearRegression, LogisticRegression
+        from sklearn.model_selection import cross_val_score
     except Exception:
         return 0.0
 
+    if X.shape[1] == 0 or len(y) < 10:
+        return 0.0
 
-def run_parallel(remote_fn, items: list) -> list:
-    return ray.get([remote_fn.remote(*item) if isinstance(item, tuple) else remote_fn.remote(item) for item in items])
+    X_num = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    try:
+        if task == "classification":
+            mi = mutual_info_classif(X_num.to_numpy(), y, random_state=42)
+        else:
+            mi = mutual_info_regression(X_num.to_numpy(), y, random_state=42)
+    except Exception:
+        return 0.0
+
+    top_idx = np.argsort(mi)[::-1][: min(k, X.shape[1])]
+    X_top = X_num.iloc[:, top_idx].to_numpy()
+    cv = min(5, max(2, len(y) // 10))
+    try:
+        if task == "classification":
+            scoring = "roc_auc" if len(set(y)) == 2 else "accuracy"
+            model = LogisticRegression(max_iter=1000, random_state=42)
+        else:
+            scoring = "r2"
+            model = LinearRegression()
+        scores = cross_val_score(model, X_top, y, cv=cv, scoring=scoring)
+        return float(np.mean(scores))
+    except Exception:
+        return 0.0
 
 
 def compute_mini_profile(df: pd.DataFrame, columns: list[str]) -> dict[str, dict]:

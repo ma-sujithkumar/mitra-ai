@@ -1,12 +1,15 @@
 """Google ADK BaseLlm that talks to OpenAI-compatible endpoints (e.g. NVIDIA NIM)
 using the OpenAI Python SDK directly. No litellm in the call path.
 
-Handles gpt-oss Harmony tokens by stripping `<|...|>` markers from function call
-names before ADK's tool dispatcher reads them.
+Handles gpt-oss Harmony tokens by stripping `<|...|>` markers and `to=functions.xxx`
+fragments from BOTH function call names and message text content. If those tokens
+are allowed into conversation state, they echo back in the next request and the
+endpoint's parser rejects the payload with a 400 BadRequestError.
 """
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, AsyncGenerator
 
 from google.adk.models.base_llm import BaseLlm
@@ -14,6 +17,30 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types as genai_types
 from pydantic import Field, PrivateAttr
+
+# Harmony format markers used by gpt-oss models. Stripping these from text we
+# echo back avoids endpoint parser failures like:
+#   'unexpected tokens remaining in message header: Some("to=functions.xxx")'
+_HARMONY_TAG_RE = re.compile(r"<\|[^|>]*\|>")
+_HARMONY_TO_FN_RE = re.compile(r"\bto=functions\.[A-Za-z_][A-Za-z0-9_]*")
+_HARMONY_CHANNEL_RE = re.compile(r"\b(?:channel|recipient|content_type)=[A-Za-z0-9_\-/]+")
+
+
+def _strip_harmony(text: str | None) -> str | None:
+    """Remove Harmony-format control tokens from free-form text content.
+
+    Applied to both incoming model text/reasoning_content (before we store it
+    in conversation state) and to outgoing assistant text (defense in depth).
+    """
+    if not text:
+        return text
+    cleaned = _HARMONY_TAG_RE.sub("", text)
+    cleaned = _HARMONY_TO_FN_RE.sub("", cleaned)
+    cleaned = _HARMONY_CHANNEL_RE.sub("", cleaned)
+    # Collapse whitespace introduced by removals
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip() or None
 
 
 def _sanitize_function_name(name: str) -> str:
@@ -78,16 +105,24 @@ def _contents_to_messages(contents, system_instruction: str | None) -> list[dict
                     }
                 )
             if text_chunks:
-                messages.append({"role": "user", "content": "\n".join(text_chunks)})
+                user_text = _strip_harmony("\n".join(text_chunks))
+                if user_text:
+                    messages.append({"role": "user", "content": user_text})
         elif role == "model" or role == "assistant":
             msg: dict = {"role": "assistant"}
-            msg["content"] = "\n".join(text_chunks) if text_chunks else None
+            assistant_text = _strip_harmony("\n".join(text_chunks)) if text_chunks else None
+            msg["content"] = assistant_text
             if tool_calls:
                 msg["tool_calls"] = tool_calls
-            messages.append(msg)
+            # Some endpoints reject assistant messages with both content=None and
+            # no tool_calls — keep the message only if at least one side is set.
+            if msg["content"] is not None or msg.get("tool_calls"):
+                messages.append(msg)
         else:
             if text_chunks:
-                messages.append({"role": role or "user", "content": "\n".join(text_chunks)})
+                other_text = _strip_harmony("\n".join(text_chunks))
+                if other_text:
+                    messages.append({"role": role or "user", "content": other_text})
 
     return messages
 
@@ -193,8 +228,11 @@ class OpenAICompatibleLlm(BaseLlm):
         text = getattr(msg, "content", None)
         if not text or not str(text).strip():
             text = getattr(msg, "reasoning_content", None)
+        # Strip Harmony markup BEFORE it enters conversation state, otherwise it
+        # echoes back in the next request and the endpoint rejects with 400.
+        text = _strip_harmony(str(text)) if text else None
         if text:
-            parts.append(genai_types.Part(text=str(text)))
+            parts.append(genai_types.Part(text=text))
 
         tool_calls = getattr(msg, "tool_calls", None) or []
         for tc in tool_calls:

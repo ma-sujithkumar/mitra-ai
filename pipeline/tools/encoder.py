@@ -16,6 +16,7 @@ class Encoder(BaseTool):
         df = state.df
         for col in list(df.columns):
             t = state.column_types.get(col, "numeric")
+            # Numeric-coded categoricals are passed through; no re-encoding needed.
             if t in {"categorical", "binary"} and not pd.api.types.is_numeric_dtype(df[col]):
                 encoder = LabelEncoder()
                 df[col] = encoder.fit_transform(df[col].astype(str))

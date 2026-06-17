@@ -5,22 +5,16 @@
 | Arg | Type | Required | Description |
 |---|---|---|---|
 | `data` | path | yes | Path to a CSV with one header row. |
-| `--task` | `classification \| regression` | yes | Task type. Unrecognised values raise `ValueError` at startup. |
+| `--task` | `classification \| regression` | no | Optional. Inferred from the target column if omitted (numeric target with `nunique > task_infer_nunique_threshold` → regression; otherwise classification). Unrecognised values raise `ValueError` at startup. |
 | `--target` | str | yes | Target column name. Must exist in the dataset. |
-| `--model` | str | yes | ADK/LiteLLM model identifier (e.g. `gemini/gemini-2.0-flash`, `openai/gpt-4o`). The corresponding API key env var must be set before invocation. |
+| `--model` | str | yes | ADK/LiteLLM model identifier (e.g. `gemini/gemini-2.0-flash`, `openai/gpt-4o`). |
 | `--config` | path | no | Path to `config.yaml`. Defaults to `config/config.yaml`. |
 
-## Environment Variables
+## API Key
 
-Required, depending on `--model`:
+Set `llm.api_key` in `config/config.yaml`. The orchestrator copies it into the provider-specific environment variable (`OPENAI_API_KEY`, `GOOGLE_API_KEY`, or `ANTHROPIC_API_KEY`) at startup based on the `--model` prefix, before any ADK/LiteLLM import.
 
-| Provider | Variable |
-|---|---|
-| Gemini | `GOOGLE_API_KEY` |
-| OpenAI | `OPENAI_API_KEY` |
-| Anthropic | `ANTHROPIC_API_KEY` |
-
-LiteLLM resolves the variable based on the model string prefix.
+`config/config.yaml` is gitignored — never commit a real key.
 
 ## Outputs
 

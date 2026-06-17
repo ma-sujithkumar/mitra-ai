@@ -1,5 +1,10 @@
-import json
-import re
+"""OutlierHandler — pick (detector, action) per numeric column.
+
+Typed OutlierEvidence + Pydantic OutlierResponse with the four content checks,
+one revision, fall-through to (iqr, scale).
+"""
+from __future__ import annotations
+
 from typing import Callable
 
 import numpy as np
@@ -8,34 +13,51 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import RobustScaler
 
 from pipeline.base import BaseTool, PostconditionError, PreconditionError
+from pipeline.evidence import OutlierColumnEvidence, OutlierEvidence, render
+from pipeline.responses import OutlierResponse, call_with_revision
 from pipeline.state import PipelineState
 
-OUTLIER_PROMPT = """You are an outlier strategist. For each numeric column, pick exactly one detector and one action.
+STRATEGY_DEFINITIONS: dict[str, str] = {
+    "iqr": "Detector. Flags rows where the value falls outside Q1-1.5·IQR or above Q3+1.5·IQR.",
+    "zscore": "Detector. Flags rows whose standard-score |z| exceeds the configured threshold.",
+    "isolation_forest": "Detector. Fits an isolation-forest and flags rows scored as anomalous.",
+    "scale": "Action. Applies RobustScaler to the column (centres by median, scales by IQR).",
+    "flag": "Action. Adds a binary indicator column `<col>_is_outlier` and keeps the original.",
+    "drop_row": "Action. Drops the offending rows and their matching target values atomically.",
+}
 
-Detectors: iqr, zscore, isolation_forest
-Actions:
-- scale: apply RobustScaler (default for numeric).
-- flag: add binary column `<col>_is_outlier`.
-- drop_row: drop the offending rows + corresponding target rows (opt-in only).
+OUTLIER_PROMPT = """For each numeric column pick exactly one detector and one action.
 
-Guidance:
-- Data-entry errors (extreme values, low frequency) -> drop_row.
-- Outliers correlated with target -> flag.
-- Default numeric column -> scale.
+## STRATEGY DEFINITIONS (mechanical descriptions only)
+{strategy_definitions}
 
-Columns:
-{column_summary}
+## RESPONSE SHAPE
+Return ONLY a JSON object of this shape:
+{{
+  "decisions": [
+    {{
+      "column": "<name>",
+      "detector": "<iqr|zscore|isolation_forest>",
+      "action": "<scale|flag|drop_row>",
+      "rationale": "<at least {min_rationale_chars} characters citing fields from EVIDENCE>",
+      "evidence_cited": ["<field paths from EVIDENCE you used>"],
+      "alternatives_considered": ["<other detector/action pairs you weighed>"]
+    }}
+  ]
+}}
 
-Respond with ONLY a JSON array, no prose:
-[{{"column": "<name>", "detector": "<detector>", "action": "<action>"}}, ...]
+{evidence_block}
 """
 
 
-def _extract_json_array(text: str) -> list:
-    m = re.search(r"\[.*\]", text, re.DOTALL)
-    if not m:
-        raise ValueError(f"No JSON array: {text[:200]}")
-    return json.loads(m.group(0))
+def _strategy_definitions_block() -> str:
+    return "\n".join(f"- {k}: {v}" for k, v in STRATEGY_DEFINITIONS.items())
+
+
+def _extreme_pairs(series: pd.Series, target: pd.Series, k: int, ascending: bool) -> list[tuple[float, object]]:
+    aligned = pd.concat([series.rename("v"), target.rename("t")], axis=1).dropna(subset=["v"])
+    aligned = aligned.sort_values("v", ascending=ascending).head(k)
+    return [(float(v), t.item() if hasattr(t, "item") else t) for v, t in zip(aligned["v"], aligned["t"])]
 
 
 class OutlierHandler(BaseTool):
@@ -57,29 +79,65 @@ class OutlierHandler(BaseTool):
             state.row_count_after_outlier = len(df)
             return
 
-        summary_lines = []
+        per_col: list[OutlierColumnEvidence] = []
         for col in numeric_cols:
-            p = state.profile.get(col, {})
-            summary_lines.append(
-                f"- {col}: outlier_rate={p.get('outlier_rate')}, skewness={p.get('skewness')}, "
-                f"kurtosis={p.get('kurtosis')}, mi_with_target={p.get('mi_with_target')}"
+            series = pd.to_numeric(df[col], errors="coerce")
+            clean = series.dropna()
+            if clean.empty:
+                hist = [0] * 10
+            else:
+                counts, _ = np.histogram(clean.to_numpy(), bins=10)
+                hist = [int(c) for c in counts.tolist()]
+            mi = state.profile.get(col, {}).get("mi_with_target") or 0.0
+            try:
+                tcorr = float(series.corr(pd.to_numeric(state.target, errors="coerce")))
+                if np.isnan(tcorr):
+                    tcorr = 0.0
+            except Exception:
+                tcorr = 0.0
+            per_col.append(
+                OutlierColumnEvidence(
+                    name=col,
+                    histogram_10bin=hist,
+                    extreme_top5=_extreme_pairs(series, state.target, 5, ascending=False),
+                    extreme_bottom5=_extreme_pairs(series, state.target, 5, ascending=True),
+                    mi_with_target=float(mi),
+                    target_corr=tcorr,
+                )
             )
-        prompt = OUTLIER_PROMPT.format(column_summary="\n".join(summary_lines))
-        try:
-            response = self.model_call(prompt)
-            decisions = _extract_json_array(response)
-        except Exception as e:
-            state.warnings.append(f"OutlierHandler model parse failed: {e}; defaulting to scale")
-            decisions = [{"column": c, "detector": "iqr", "action": "scale"} for c in numeric_cols]
 
-        decision_map = {
-            d["column"]: (d.get("detector", "iqr"), d.get("action", cfg.outlier.default_action))
-            for d in decisions if "column" in d
-        }
+        packet = OutlierEvidence(
+            columns=per_col,
+            downstream_model_hint=cfg.pipeline.downstream_model_hint,
+        )
+        evidence_block, sent_fields = render(packet, truncate_after_chars=int(cfg.llm.max_tokens * 0.7 * 4))
+
+        prompt = OUTLIER_PROMPT.format(
+            strategy_definitions=_strategy_definitions_block(),
+            min_rationale_chars=cfg.validation.min_rationale_chars,
+            evidence_block=evidence_block,
+        )
+
+        parsed, source, failures = call_with_revision(
+            self.model_call, prompt, OutlierResponse, sent_fields, cfg,
+            caller="OutlierHandler",
+        )
+
+        if parsed is None or source == "fallback":
+            state.warnings.append(
+                f"OutlierHandler fell through to (iqr, scale) (failures={failures})"
+            )
+            decision_map = {c: ("iqr", cfg.outlier.default_action) for c in numeric_cols}
+        else:
+            decision_map = {
+                d.column: (d.detector, d.action) for d in parsed.decisions  # type: ignore[attr-defined]
+            }
+            for c in numeric_cols:
+                decision_map.setdefault(c, ("iqr", cfg.outlier.default_action))
 
         drop_indices: set[int] = set()
         for col in numeric_cols:
-            detector, action = decision_map.get(col, ("iqr", cfg.outlier.default_action))
+            detector, action = decision_map[col]
             mask = self._detect(df[col], detector, cfg)
             if action == "scale":
                 scaler = RobustScaler()

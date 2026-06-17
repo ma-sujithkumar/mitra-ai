@@ -1,11 +1,11 @@
-"""Judge Agent — an isolated ADK sub-agent that ranks FeatureCreator proposals.
+"""Judge Agent — isolated ADK sub-agent for two decisions.
 
-Spec ref: Fe_Spec.md §7 Solution F. The Judge Agent inspects the candidate
-feature operations proposed by FeatureCreator and returns a capped, ranked
-subset. It runs in its own ADK Agent + Runner so its reasoning never enters
-the orchestrator's context window.
+- FeatureCreator proposal ranking → `rank(...)`.
+- FeatureSelector method choice → `plan(...)`.
 
-Falls back to proxy-MI ranking if the LLM call or response parsing fails.
+Runs in its own ADK Agent + InMemoryRunner so its reasoning never enters the
+orchestrator's context window. Both entry points use the same validate_response
++ one-revision + fall-through contract used by tool LLM calls.
 """
 from __future__ import annotations
 
@@ -16,23 +16,55 @@ from typing import Any
 
 import numpy as np
 
-JUDGE_INSTRUCTION = """You are the Judge Agent for a feature engineering pipeline.
+from pipeline.evidence import FeatureSelectorEvidence, render
+from pipeline.responses import (
+    FeatureCreatorResponse,
+    SelectionPlanResponse,
+    call_with_revision,
+    log_raw,
+    validate_response,
+)
 
-You receive a list of candidate feature operations proposed by FeatureCreator,
-each with a proxy mutual-information score against the target. Your job: choose
-the best subset (at most `cap` items) that maximises relevance to the target
-while avoiding redundancy across proposals.
+JUDGE_RANK_INSTRUCTION = """You rank candidate feature operations.
 
-Selection rules:
-- Prefer operations whose source columns have higher mi_with_target.
-- Penalise proposals whose sources overlap heavily with proposals you have
-  already selected (redundancy).
-- Prefer a diverse mix of operation types over many copies of the same op.
-- Discard proposals whose name or sources look duplicative.
+Inputs:
+- A list of candidate operation specs with proxy mutual-information scores against the target.
+- A cap on the number of operations to keep.
 
-Respond with ONLY a JSON array of the `name` field of the kept proposals,
-in priority order. No prose, no markdown, no commentary.
-Example: ["price_per_sqft", "rooms_x_quality", "age_squared"]
+Selection mechanics:
+- Each spec carries `operation`, `sources`, `name`, `temporal_class`, and a proxy_mi.
+- Operations with overlapping `sources` are considered redundant.
+- A diverse mix of operation types is preferred over many copies of the same op.
+
+Respond with ONLY a JSON array of the kept `name` values, in priority order, at most `cap` items.
+No prose, no markdown.
+"""
+
+JUDGE_PLAN_INSTRUCTION = """You produce a feature selection plan, one action per correlation cluster.
+
+Action vocabulary (mechanical descriptions only):
+- mrmr: keep features with high MI against the target and low redundancy with each other.
+- pca: project the cluster onto a small number of principal components.
+- mrmr_then_pca: first mRMR on the significant subset, then PCA over the residual redundant block.
+- drop: discard the entire cluster.
+- lasso: fit a sparse L1 regression and keep features with nonzero coefficients.
+- rf_importance: fit a random forest and keep features by importance.
+
+## RESPONSE SHAPE
+Return ONLY a JSON object of this shape:
+{{
+  "plan": [
+    {{
+      "cluster_id": <int>,
+      "action": "<one of mrmr|pca|mrmr_then_pca|drop|lasso|rf_importance>",
+      "rationale": "<at least {min_rationale_chars} characters citing EVIDENCE fields>",
+      "evidence_cited": ["<field paths from EVIDENCE you used>"],
+      "alternatives_considered": ["<other actions you weighed>"]
+    }}
+  ]
+}}
+
+{evidence_block}
 """
 
 
@@ -49,14 +81,6 @@ def _proxy_mi(spec: dict, profile: dict) -> float:
 
 
 class JudgeAgent:
-    """ADK sub-agent for ranking FeatureCreator proposals.
-
-    Constructed once at orchestrator startup; reused for each FeatureCreator
-    invocation. Talks to the same OpenAI-compatible endpoint as the
-    orchestrator but through its own Agent + InMemoryRunner so context is
-    isolated.
-    """
-
     def __init__(
         self,
         model_string: str,
@@ -69,7 +93,9 @@ class JudgeAgent:
         self.base_url = base_url
         self.max_tokens = max_tokens
 
-    def _build_prompt(
+    # ---------- ranking ----------
+
+    def _build_rank_prompt(
         self,
         specs: list[dict],
         profile: dict,
@@ -101,18 +127,22 @@ class JudgeAgent:
         task: str,
         cap: int,
     ) -> tuple[list[dict], str]:
-        """Rank and cap proposals. Returns (kept_specs, source) where source is
-        either 'judge' (LLM verdict applied) or 'fallback:proxy_mi' (LLM
-        unavailable or response malformed)."""
         if not specs:
             return [], "judge"
         if len(specs) <= cap:
             return specs, "judge:no_cap_needed"
 
         try:
-            chosen_names = self._call_llm(specs, profile, target_column, task, cap)
-        except Exception:
+            chosen_names, raw_text = self._call_llm(
+                instruction=JUDGE_RANK_INSTRUCTION,
+                prompt=self._build_rank_prompt(specs, profile, target_column, task, cap),
+                parse_as_array=True,
+                return_raw=True,
+            )
+        except Exception as e:
+            log_raw("JudgeAgent.rank", "first", f"<exception: {e}>", "fallback", ["parse"])
             chosen_names = None
+            raw_text = ""
 
         if chosen_names:
             name_to_spec = {s["name"]: s for s in specs}
@@ -125,20 +155,80 @@ class JudgeAgent:
                 if len(kept) >= cap:
                     break
             if kept:
+                log_raw("JudgeAgent.rank", "first", raw_text, "ok", [])
                 return kept, "judge"
+            log_raw("JudgeAgent.rank", "first", raw_text, "rejected", ["no_known_names"])
+        else:
+            log_raw("JudgeAgent.rank", "first", raw_text, "rejected", ["parse"])
 
-        # Fallback: proxy MI ranking
         ranked = sorted(specs, key=lambda s: _proxy_mi(s, profile), reverse=True)
         return ranked[:cap], "fallback:proxy_mi"
 
+    # ---------- planning ----------
+
+    def plan(self, evidence: FeatureSelectorEvidence, cfg) -> SelectionPlanResponse | None:
+        """Return a per-cluster SelectionPlanResponse or None on hard failure."""
+        evidence_block, sent_fields = render(evidence, truncate_after_chars=int(self.max_tokens * 0.7 * 4))
+        prompt = JUDGE_PLAN_INSTRUCTION.format(
+            min_rationale_chars=cfg.validation.min_rationale_chars,
+            evidence_block=evidence_block,
+        )
+
+        try:
+            raw = self._call_llm(
+                instruction="You produce a feature selection plan.",
+                prompt=prompt,
+                parse_as_array=False,
+            )
+        except Exception as e:
+            log_raw("JudgeAgent.plan", "first", f"<exception: {e}>", "fallback", ["parse"])
+            return None
+
+        if not raw:
+            log_raw("JudgeAgent.plan", "first", "", "fallback", ["empty_response"])
+            return None
+        parsed, failures = validate_response(SelectionPlanResponse, raw, sent_fields, cfg)
+        if parsed is not None and not failures:
+            log_raw("JudgeAgent.plan", "first", raw, "ok", [])
+            return parsed  # type: ignore[return-value]
+        log_raw("JudgeAgent.plan", "first", raw, "rejected", failures)
+
+        revision = (
+            prompt
+            + "\n\n## REVISION\nprior_response_was_uninformative=true\n"
+            + "Failures: " + ", ".join(failures or ["parse"])
+            + ".\nProduce a fresh plan with rationale ≥ "
+            + f"{cfg.validation.min_rationale_chars} chars per cluster and explicit "
+            + "evidence_cited / alternatives_considered fields."
+        )
+        try:
+            raw2 = self._call_llm(
+                instruction="You produce a feature selection plan.",
+                prompt=revision,
+                parse_as_array=False,
+            )
+        except Exception as e:
+            log_raw("JudgeAgent.plan", "revision", f"<exception: {e}>", "fallback", failures or ["parse"])
+            return None
+        if not raw2:
+            log_raw("JudgeAgent.plan", "revision", "", "fallback", ["empty_response"])
+            return None
+        parsed2, failures2 = validate_response(SelectionPlanResponse, raw2, sent_fields, cfg)
+        if parsed2 is not None and not failures2:
+            log_raw("JudgeAgent.plan", "revision", raw2, "ok:revised", [])
+            return parsed2  # type: ignore[return-value]
+        log_raw("JudgeAgent.plan", "revision", raw2, "fallback", failures2 or ["parse"])
+        return None
+
+    # ---------- transport ----------
+
     def _call_llm(
         self,
-        specs: list[dict],
-        profile: dict,
-        target_column: str,
-        task: str,
-        cap: int,
-    ) -> list[str] | None:
+        instruction: str,
+        prompt: str,
+        parse_as_array: bool,
+        return_raw: bool = False,
+    ) -> Any:
         from google.adk.agents import Agent
         from google.adk.runners import InMemoryRunner
         from google.genai import types as genai_types
@@ -154,21 +244,18 @@ class JudgeAgent:
         agent = Agent(
             name="feature_judge",
             model=llm,
-            description="Ranks candidate feature operations.",
-            instruction=JUDGE_INSTRUCTION,
+            description="Judge sub-agent.",
+            instruction=instruction,
             tools=[],
         )
         runner = InMemoryRunner(agent=agent, app_name="fe_judge")
-        prompt = self._build_prompt(specs, profile, target_column, task, cap)
         session_id = f"judge_{abs(hash(prompt)) % (10**12)}"
 
         async def _go() -> str:
             session = await runner.session_service.create_session(
                 app_name="fe_judge", user_id="orchestrator", session_id=session_id
             )
-            content = genai_types.Content(
-                role="user", parts=[genai_types.Part(text=prompt)]
-            )
+            content = genai_types.Content(role="user", parts=[genai_types.Part(text=prompt)])
             chunks: list[str] = []
             async for event in runner.run_async(
                 user_id="orchestrator", session_id=session.id, new_message=content
@@ -191,10 +278,14 @@ class JudgeAgent:
             asyncio.set_event_loop(loop)
         text = loop.run_until_complete(_go())
 
-        if not text or not text.strip():
-            return None
-        try:
-            arr = _extract_json_array(text)
-        except Exception:
-            return None
-        return [str(x) for x in arr if isinstance(x, (str, int))]
+        raw_text = text or ""
+        if not raw_text.strip():
+            return (None, raw_text) if return_raw else None
+        if parse_as_array:
+            try:
+                arr = _extract_json_array(raw_text)
+            except Exception:
+                return (None, raw_text) if return_raw else None
+            parsed = [str(x) for x in arr if isinstance(x, (str, int))]
+            return (parsed, raw_text) if return_raw else parsed
+        return (raw_text, raw_text) if return_raw else raw_text

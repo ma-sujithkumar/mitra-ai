@@ -1,0 +1,1991 @@
+╭─── Claude Code v2.1.132 ─────────────────────────────────────────────────────╮
+│                                      │ Tips for getting started              │
+│         Welcome back Avinash!        │ Run /init to create a CLAUDE.md file… │
+│                                      │ ───────────────────────────────────── │
+│                ▐▛███▜▌               │ What's new                            │
+│               ▝▜█████▛▘              │ Added plugin dependency enforcement:… │
+│                 ▘▘ ▝▝                │ Added projected context cost (per-tu… │
+│                                      │ Added `worktree.bgIsolation: "none"`… │
+│   Opus 4.7 · Claude Pro · Avinash    │ /release-notes for more               │
+│     B:\IISC\DL\Project\FSML\EDA      │                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+❯ look at the code generated it is so primitive it can be replaced by simple if 
+   else statements it has to be generic but with string guard rails. first look 
+   the spec file and suggest changes to make it strong                          
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Let me look at the generated pipeline code to understand what's primitive.
+
+  Searched for 1 pattern, read 10 files (ctrl+o to expand)
+
+● I've read the spec and the actual tool implementations (imputer.py,
+  outlier.py, scaler.py, selector.py, creator.py, infer.py, validator.py). Your
+  complaint is correct, and it's a spec problem, not a coding problem — let me
+  get a second opinion before writing up the changes.
+
+● Advising using Opus 4.7
+  ⎿  ✔ Advisor has reviewed the conversation and will apply the feedback 
+     (ctrl+o to expand)
+
+● Below are spec-level changes that target the root cause: today the spec
+  describes policies and the prompts execute them, so the LLM becomes redundant.
+   The fixes force the spec to distinguish decisions (require reasoning over
+  evidence) from policies (fixed mappings) — everything else follows.
+
+  The three structural changes
+
+  1. Lock the evidence contract per decision point (new §5 subsection: "Evidence
+   Packets")
+
+  Today §4 says things like "the model looks at the null pattern" and "reads the
+   profile." That's why every prompt degenerates to scalar f-strings
+  (null_rate=0.07, skew=1.2) — there is no contract forcing richer input.
+  Mandate a typed EvidencePacket per decision point. Concretely:
+
+  - MissingValueHandlerEvidence: per column with nulls — null_rate,
+  null_run_lengths (consecutive-null histogram, distinguishes MCAR from MNAR),
+  null_mask_corr top-5, target_rate_when_null vs target_rate_when_present,
+  10_random_present_values, dtype, semantic_type. The MCAR-vs-MAR claim in §4 is
+   only verifiable from these signals, none of which are sent today.
+  - OutlierHandlerEvidence: 10-bin histogram, extreme_values_top5 +
+  extreme_values_bottom5 with row-aligned target values, mi_with_target,
+  target_corr, downstream-model hint (linear_or_tree).
+  - ScalerEvidence: 20-bin histogram, skewness, kurtosis, outlier_rate, bounded
+  (yes/no, range), monotonic_with_target (rank corr).
+  - SelectorEvidence: correlation-cluster decomposition (output of a
+  hierarchical clustering on |corr|), per-cluster mean_mi, max_mi, n_features,
+  plus n_rows, task, is_linearly_separable_proxy (CV-AUC of a logistic baseline
+  on top-K MI).
+  - FeatureCreatorEvidence: per column — semantic_type, mi_with_target, nunique,
+   correlated_with (top 3), is_datetime_decomposed_from (provenance),
+  co_occurring_pairs (top by joint MI).
+  - SemanticTypeInferEvidence: already close — keep dtype, null_rate, nunique, 
+  top_values, add 5_random_samples (string form) and regex_signature (e.g.
+  UUID/email/date hits).
+
+  Make pipeline/evidence.py the home of these dataclasses; tools build them, a
+  fixed serializer renders them to prompts. No more f-strings in tools.
+
+  2. Ban policy-in-prompt (new §5 rule: "Prompts describe, do not prescribe")
+
+  This is the direct fix for the user's complaint. Today's prompts literally
+  write the if-else in English:
+
+  ▎ "median: numeric, low null rate, MCAR"
+  ▎ "robust: skewed or has outliers"
+  ▎ "high inter-correlation + low MI → pca"
+
+  Rule: prompts may describe what a strategy does mechanically but may not
+  enumerate when to use it. Replace the "Guidance:" sections in imputer.py,
+  outlier.py, scaler.py, selector.py with strategy definitions only. The model
+  must derive the mapping from the EvidencePacket. If you can't trust the model
+  to derive it, the LLM call shouldn't exist — convert it to deterministic code
+  and stop pretending.
+
+  3. Mandate a structured response with evidence citations (replaces §5 "Nothing
+   the model outputs..." paragraph)
+
+  Every model response schema becomes:
+  {"column":"…", "strategy":"…", "rationale":"…",
+   "evidence_cited":["field_name_1","field_name_2"],
+   "alternatives_considered":["strategy_a","strategy_b"]}
+  Validator rejects responses where evidence_cited is empty, references fields
+  not in the prompt, or rationale < N chars / matches a boilerplate denylist
+  ("because it is appropriate", "based on the data", etc.). One re-prompt
+  allowed with prior_response_was_uninformative=true. This single rule kills the
+   lookup-table failure mode more cheaply than any judge layer.
+
+  One additional rule worth adding
+
+  4. Banned-pattern check on aggregated outputs (extends §7 Solution G)
+
+  §7-G covers type coercion (float → timestamp → label) but not decision
+  laziness. Add: if a tool's batched response is degenerate (>80% of imputations
+   are median, >80% of scalings are standard, all outlier actions are scale),
+  the response is marked uninformative and re-prompted once with a
+  delta-evidence pack that contrasts the columns. Coercion ≠ revision; this is
+  the revision path.
+
+  Items to cut from the natural list of fixes
+
+  - Holdout arbitration when the model and default disagree — sounds good but
+  imputation can't be cheaply holdout-tested, and per-column scaling holdouts
+  have circular deps with selection. Skip unless you scope it to one decision
+  with a worked protocol.
+  - LLM-self-reported confidence thresholds — uncalibrated; instead, gate on
+  len(evidence_cited) and len(alternatives_considered). Quantity of cited
+  evidence is observable; "confidence: 0.9" is not.
+  - Generic Judge over every tool — contradicts §2 "token-sparse
+  implementation." Today Judge covers FeatureCreator (right call: huge proposal
+  space). Extend Judge to FeatureSelector only, where the prose in §4 already
+  describes a multi-cluster plan that needs critique. Leave
+  imputer/outlier/scaler to the structured-response validator from change 3.
+
+  Where in the spec each change lands
+
+  ┌────────────────────────────┬────────────────────────────────────────────┐
+  │           Change           │              Section to edit               │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │                            │ New §5 subsection after "Each pipeline     │
+  │ Evidence Packets contract  │ tool... wrapped as a plain Python          │
+  │                            │ function"                                  │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Ban policy-in-prompt       │ §5 — new paragraph next to the "Nothing    │
+  │                            │ the model outputs..." rule                 │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Structured response +      │ §5 + §7-G (Solution G extended)            │
+  │ citation validator         │                                            │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Banned-pattern revision    │ §7-G (rename to "Validation and revision") │
+  │ loop                       │                                            │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Judge extended to Selector │ §3 Feature Selection paragraph + §7-F      │
+  │                            │ Solution                                   │
+  └────────────────────────────┴────────────────────────────────────────────┘
+
+  Want me to draft the actual replacement prose for any of these sections so you
+   can paste into Fe_Spec.md yourself?
+
+✻ Churned for 3m 12s
+
+※ recap: You asked me to strengthen Fe_Spec.md so generated code stops degenerating into if-else. I proposed three structural changes: typed evidence packets, banning policy-in-prompt, and structured responses with evidence citations. Next: say which section you want drafted as replacement prose. (disable recaps in /config)
+
+❯ yes                                                                           
+
+● Here is paste-ready prose for each change. Headers indicate where in
+  Fe_Spec.md to put each block. I match the existing spec's tone (direct,
+  declarative).
+
+  ---
+  1. New §5 subsection: insert after the paragraph beginning "Each pipeline 
+  tool…"
+
+  **Evidence Packets.** Every model call receives a typed `EvidencePacket`
+  constructed by the calling tool. Packets are defined as dataclasses in
+  `pipeline/evidence.py` and rendered to prompts by a single serializer.
+  Tools must not build prompt strings from ad-hoc f-strings over the
+  profile dict — the dataclass is the contract.
+
+  The required schema per decision point:
+
+  - `SemanticTypeInferEvidence` — per column: `dtype`, `null_rate`,
+    `nunique`, `top_values` (up to 5), `random_samples` (5 string-cast
+    values), `regex_signature` (hits for UUID / email / ISO date / phone /
+    numeric-string patterns).
+
+  - `MissingValueHandlerEvidence` — per column with nulls: `null_rate`,
+    `null_run_lengths` (histogram of consecutive-null streak lengths;
+    distinguishes MCAR from MNAR), `null_mask_corr_top5` (other columns
+    whose values correlate with this column's null mask),
+    `target_rate_when_null` vs `target_rate_when_present`,
+    `random_present_values` (10), `dtype`, `semantic_type`.
+
+  - `OutlierHandlerEvidence` — per numeric column: 10-bin histogram,
+    `extreme_values_top5` and `extreme_values_bottom5` with their aligned
+    target values, `mi_with_target`, `target_corr`, `downstream_model_hint`
+    (`linear` or `tree`, supplied by the caller in `config.yaml`).
+
+  - `ScalerEvidence` — per numeric column: 20-bin histogram, `skewness`,
+    `kurtosis`, `outlier_rate`, `bounded` (boolean + range if true),
+    `monotonic_with_target` (Spearman rank correlation).
+
+  - `FeatureCreatorEvidence` — per column: `semantic_type`,
+    `mi_with_target`, `nunique`, `correlated_with_top3`,
+    `decomposed_from` (provenance for datetime children), and a global
+    `co_occurring_pairs` list (top column pairs by joint MI).
+
+  - `FeatureSelectorEvidence` — `correlation_clusters` (output of average-
+    linkage hierarchical clustering on |corr|, cut at a threshold from
+    `config.yaml`), per-cluster `n_features`, `mean_mi`, `max_mi`,
+    `intra_cluster_corr`, plus global `n_rows`, `task`, and
+    `linear_baseline_score` (CV-AUC or CV-R² of a logistic/linear baseline
+    on the top-K MI features — a cheap proxy for whether linear methods
+    will work).
+
+  EvidencePacket fields are the only data the model sees. Adding a field
+  is a code change in `evidence.py` plus a config entry, never a prompt
+  edit.
+
+  ---
+  2. New §5 paragraph: insert next to the "Nothing the model outputs…" rule
+
+  **Prompts describe, do not prescribe.** Prompt templates may state what
+  each strategy does mechanically (e.g. "RobustScaler centres by median
+  and scales by IQR") but may not enumerate when to apply it (e.g. "use
+  RobustScaler when the column is skewed"). The latter is the deterministic
+  policy written in English — it converts the LLM into a lookup table and
+  defeats the reason for calling it. If a strategy can be selected by a
+  fixed rule over scalar features, the call is replaced with code; if it
+  cannot, the model must derive the mapping from the EvidencePacket
+  without a hint sheet in the prompt.
+
+  ---
+  3. §5 — replace the paragraph that begins "Nothing the model outputs is 
+  applied to data directly…" with the following
+
+  Nothing the model outputs is applied to data directly. Every model
+  response is parsed against a Pydantic model `<ToolName>Response` defined
+  in `pipeline/responses.py`. Each per-item decision must carry four
+  fields: `strategy` (or `type` / `operation` depending on the call),
+  `rationale` (free text, minimum length from `config.yaml`),
+  `evidence_cited` (list of EvidencePacket field names the rationale
+  references), and `alternatives_considered` (list of other strategies
+  the model weighed before picking).
+
+  A response is rejected — and the call is retried exactly once with
+  `prior_response_was_uninformative=true` plus a delta-evidence pack
+  contrasting the columns that received the same answer — if any of the
+  following hold:
+
+  1. `evidence_cited` is empty or references field names absent from the
+     prompt.
+  2. `rationale` is shorter than the configured minimum or matches a
+     denylist of boilerplate phrases stored in
+     `config.yaml/validation.boilerplate_denylist`.
+  3. `alternatives_considered` is empty.
+  4. The batched response is degenerate: more than
+     `validation.lazy_response_threshold` (default 0.8) of items share the
+     same strategy across a heterogeneous EvidencePacket (i.e. the columns
+     visibly differ on the cited fields but the strategy does not).
+
+  If the retry also fails the four checks, the tool falls through to its
+  deterministic default and the failure is recorded in `state.warnings`
+  with the rejected response attached. The retry budget is one per tool
+  call, not per item.
+
+  On schema parse failure the pipeline attempts coercion in order: cast
+  to float, then parse as timestamp, then apply LabelEncoder. If all
+  three fail the operation is skipped and a warning is logged. Coercion
+  handles malformed types; the four checks above handle lazy content.
+  The two paths are distinct and run in this order: parse → coerce →
+  content-check → revise-once → fall through.
+
+  ---
+  4. §7 — replace Solution G with the following
+
+  ### G. Validation and revision
+
+  Two failure modes are handled separately.
+
+  **Type failures (malformed output).** When the model returns a value
+  that does not fit the response schema — wrong type, missing field,
+  bad JSON — the pipeline attempts coercion in order: cast to float, then
+  parse as timestamp, then apply LabelEncoder. If all three fail the
+  operation is skipped and a warning is logged.
+
+  **Content failures (lazy or unjustified output).** When the model
+  returns a syntactically valid response that fails the four content
+  checks in §5 (empty `evidence_cited`, boilerplate `rationale`, empty
+  `alternatives_considered`, or a degenerate batch where more than
+  `validation.lazy_response_threshold` of items share a strategy despite
+  heterogeneous evidence), the call is retried exactly once with a
+  delta-evidence pack that highlights the contrasts the model missed.
+  If the retry fails the same checks the tool falls through to its
+  deterministic default with the rejected response attached to
+  `state.warnings`.
+
+  These are the only revision paths. Coercion is not revision; a coerced
+  response still has to pass the content checks.
+
+  ---
+  5a. §3 — replace the "Feature Selection (8)" entry header line with
+
+  ### Feature Selection (8) — [agent] picks method via Judge, [code] executes
+
+  Method selection is delegated to the Judge Agent, not the orchestrator.
+  The orchestrator sends the FeatureSelectorEvidence packet to Judge,
+  which returns a `selection_plan` — an ordered list of per-cluster
+  actions (`mrmr`, `pca`, `mrmr_then_pca`, `drop`, `lasso`, `rf_importance`)
+  keyed by cluster ID. Code executes the plan cluster by cluster. The
+  plan format and the cluster ID scheme are defined in
+  `pipeline/responses.py::SelectionPlanResponse`.
+
+  5b. §7 — replace Solution F with
+
+  ### F. FeatureCreator and FeatureSelector both run through the Judge Agent.
+
+  The Judge Agent is the critique layer for any decision whose space is
+  too large for a single greedy LLM call. Two decisions qualify:
+
+  - **FeatureCreator proposals.** FeatureCreator generates candidate
+    operation specs; Judge ranks and caps them to `cap` items from
+    `config.yaml`. Ranking weighs proxy MI of source columns, redundancy
+    against already-selected proposals, and operation-type diversity.
+
+  - **FeatureSelector method choice.** The selector sends the cluster-
+    decomposed FeatureSelectorEvidence packet and receives a
+    `selection_plan` (per-cluster action list). Judge is required here
+    because the §4 prose describes a multi-cluster strategy
+    ("mRMR on significant features, PCA on the residual redundant block")
+    that a single greedy prompt cannot produce reliably.
+
+  Other tools (Imputer, Outlier, Scaler, Encoder, FeatureValidator) do
+  not use Judge. Their decision spaces are small enough that the
+  structured-response checks in §5 / §7-G are sufficient and adding Judge
+  would violate the token-sparse principle in §2.
+
+  Judge runs in its own ADK Agent + InMemoryRunner. Its prompt context
+  never enters the orchestrator's context window. Fallback when Judge is
+  unavailable: FeatureCreator uses proxy-MI ranking; FeatureSelector
+  falls back to mRMR over all features.
+
+  ---
+  If you want, I can also draft the matching config.yaml additions (the
+  validation.* keys, the cluster-cut threshold, boilerplate_denylist) so they
+  don't lag the spec.
+
+✻ Cooked for 52s
+
+❯ update the spec                                                               
+
+● The user explicitly asked, so I'll apply the changes to Fe_Spec.md. Going
+  through each edit.
+
+● Update(Fe_Spec.md)
+  ⎿  Added 4 lines, removed 1 line
+      84  30. MinMaxScaler
+      85  31. PowerTransformer (Yeo-Johnson)
+      86  
+      87 -### Feature Selection (8) — [code] execution, [agent] picks whi
+         -ch method to run                                               
+      87 +### Feature Selection (8) — [agent] picks method via Judge, [co
+         +de] executes                                                   
+      88 +                                                               
+      89 +Method selection is delegated to the Judge Agent, not the orche
+         +strator. The orchestrator sends the `FeatureSelectorEvidence` p
+         +acket to Judge, which returns a `selection_plan` — an ordered l
+         +ist of per-cluster actions (`mrmr`, `pca`, `mrmr_then_pca`, `dr
+         +op`, `lasso`, `rf_importance`) keyed by cluster ID. Code execut
+         +es the plan cluster by cluster. The plan format and the cluster
+         + ID scheme are defined in `pipeline/responses.py::SelectionPlan
+         +Response`.                                                     
+      90 +                                                               
+      91  32. VarianceThreshold
+      92  33. Mutual information (classification / regression)
+      93  34. ANOVA F-test
+
+● Update(Fe_Spec.md)
+  ⎿  Added 18 lines
+      133  
+      134  Each pipeline tool (DataProfiler, SemanticTypeInfer, etc.) is 
+           wrapped as a plain Python function and registered on the orche
+           strator agent as an ADK tool. Tool functions are stateless fro
+           m ADK's perspective — they close over a shared `PipelineState`
+            instance that is set once at startup. ADK tools never receive
+            `PipelineState` as an argument.
+      135  
+      136 +**Evidence Packets.** Every model call receives a typed `Evide
+          +ncePacket` constructed by the calling tool. Packets are define
+          +d as dataclasses in `pipeline/evidence.py` and rendered to pro
+          +mpts by a single serializer. Tools must not build prompt strin
+          +gs from ad-hoc f-strings over the profile dict — the dataclass
+          + is the contract.                                             
+      137 +                                                              
+      138 +The required schema per decision point:                       
+      139 +                                                              
+      140 +- `SemanticTypeInferEvidence` — per column: `dtype`, `null_rat
+          +e`, `nunique`, `top_values` (up to 5), `random_samples` (5 str
+          +ing-cast values), `regex_signature` (hits for UUID / email / I
+          +SO date / phone / numeric-string patterns).                   
+      141 +                                                              
+      142 +- `MissingValueHandlerEvidence` — per column with nulls: `null
+          +_rate`, `null_run_lengths` (histogram of consecutive-null stre
+          +ak lengths; distinguishes MCAR from MNAR), `null_mask_corr_top
+          +5` (other columns whose values correlate with this column's nu
+          +ll mask), `target_rate_when_null` vs `target_rate_when_present
+          +`, `random_present_values` (10), `dtype`, `semantic_type`.    
+      143 +                                                              
+      144 +- `OutlierHandlerEvidence` — per numeric column: 10-bin histog
+          +ram, `extreme_values_top5` and `extreme_values_bottom5` with t
+          +heir aligned target values, `mi_with_target`, `target_corr`, `
+          +downstream_model_hint` (`linear` or `tree`, supplied by the ca
+          +ller in `config.yaml`).                                       
+      145 +                                                              
+      146 +- `ScalerEvidence` — per numeric column: 20-bin histogram, `sk
+          +ewness`, `kurtosis`, `outlier_rate`, `bounded` (boolean + rang
+          +e if true), `monotonic_with_target` (Spearman rank correlation
+          +).                                                            
+      147 +                                                              
+      148 +- `FeatureCreatorEvidence` — per column: `semantic_type`, `mi_
+          +with_target`, `nunique`, `correlated_with_top3`, `decomposed_f
+          +rom` (provenance for datetime children), and a global `co_occu
+          +rring_pairs` list (top column pairs by joint MI).             
+      149 +                                                              
+      150 +- `FeatureSelectorEvidence` — `correlation_clusters` (output o
+          +f average-linkage hierarchical clustering on |corr|, cut at a 
+          +threshold from `config.yaml`), per-cluster `n_features`, `mean
+          +_mi`, `max_mi`, `intra_cluster_corr`, plus global `n_rows`, `t
+          +ask`, and `linear_baseline_score` (CV-AUC or CV-R² of a logist
+          +ic/linear baseline on the top-K MI features — a cheap proxy fo
+          +r whether linear methods will work).                          
+      151 +                                                              
+      152 +EvidencePacket fields are the only data the model sees. Adding
+          + a field is a code change in `evidence.py` plus a config entry
+          +, never a prompt edit.                                        
+      153 +                                                              
+      154  The model is invoked by the ADK orchestrator agent in three de
+           cision points. Each works differently.
+      155  
+      156  SemanticTypeInfer sends all column names, dtypes, null rates, 
+           and sample values in one call and gets back a JSON array of ty
+           pe assignments. One call, one response.
+
+● Update(Fe_Spec.md)
+  ⎿  Added 14 lines, removed 1 line
+      161  
+      162  The orchestrator agent runs ADK's agent loop — it calls a tool
+           , receives the result, and decides what to call next. ADK mana
+           ges this loop internally. The number of model calls depends on
+            how many tools return errors; in a clean run it is one call p
+           er decision point listed above.
+      163  
+      164 -Nothing the model outputs is applied to data directly. Type as
+          -signments and operation specs both go through a validation ste
+          -p before anything touches the dataframe. On validation failure
+          - the pipeline attempts coercion in order: cast to float, then 
+          -parse as timestamp, then apply LabelEncoder. If all three fail
+          - the operation is skipped and a warning is logged. The model d
+          -ecides what to do; code does it.                              
+      164 +**Prompts describe, do not prescribe.** Prompt templates may s
+          +tate what each strategy does mechanically (e.g. "RobustScaler 
+          +centres by median and scales by IQR") but may not enumerate wh
+          +en to apply it (e.g. "use RobustScaler when the column is skew
+          +ed"). The latter is the deterministic policy written in Englis
+          +h — it converts the LLM into a lookup table and defeats the re
+          +ason for calling it. If a strategy can be selected by a fixed 
+          +rule over scalar features, the call is replaced with code; if 
+          +it cannot, the model must derive the mapping from the Evidence
+          +Packet without a hint sheet in the prompt.                    
+      165  
+      166 +Nothing the model outputs is applied to data directly. Every m
+          +odel response is parsed against a Pydantic model `<ToolName>Re
+          +sponse` defined in `pipeline/responses.py`. Each per-item deci
+          +sion must carry four fields: `strategy` (or `type` / `operatio
+          +n` depending on the call), `rationale` (free text, minimum len
+          +gth from `config.yaml`), `evidence_cited` (list of EvidencePac
+          +ket field names the rationale references), and `alternatives_c
+          +onsidered` (list of other strategies the model weighed before 
+          +picking).                                                     
+      167 +                                                              
+      168 +A response is rejected — and the call is retried exactly once 
+          +with `prior_response_was_uninformative=true` plus a delta-evid
+          +ence pack contrasting the columns that received the same answe
+          +r — if any of the following hold:                             
+      169 +                                                              
+      170 +1. `evidence_cited` is empty or references field names absent 
+          +from the prompt.                                              
+      171 +2. `rationale` is shorter than the configured minimum or match
+          +es a denylist of boilerplate phrases stored in `config.yaml/va
+          +lidation.boilerplate_denylist`.                               
+      172 +3. `alternatives_considered` is empty.                        
+      173 +4. The batched response is degenerate: more than `validation.l
+          +azy_response_threshold` (default 0.8) of items share the same 
+          +strategy across a heterogeneous EvidencePacket (i.e. the colum
+          +ns visibly differ on the cited fields but the strategy does no
+          +t).                                                           
+      174 +                                                              
+      175 +If the retry also fails the four checks, the tool falls throug
+          +h to its deterministic default and the failure is recorded in 
+          +`state.warnings` with the rejected response attached. The retr
+          +y budget is one per tool call, not per item.                  
+      176 +                                                              
+      177 +On schema parse failure the pipeline attempts coercion in orde
+          +r: cast to float, then parse as timestamp, then apply LabelEnc
+          +oder. If all three fail the operation is skipped and a warning
+          + is logged. Coercion handles malformed types; the four checks 
+          +above handle lazy content. The two paths are distinct and run 
+          +in this order: parse → coerce → content-check → revise-once → 
+          +fall through.                                                 
+      178 +                                                              
+      179  `cross_categorical` operations carry `temporal_class: pre_enco
+           ding` and execute before the Encoder runs. Any FeatureCreator 
+           operation spec missing a `temporal_class` is rejected at plan-
+           validation time.
+      180  
+      181  Parallelism uses Ray. Ray is initialised once at orchestrator 
+           startup via `ray.init(num_cpus=8)` which enforces the global c
+           ap of eight workers. Ray uses shared memory for numpy arrays a
+           nd pandas DataFrames (zero-copy via Apache Arrow) so there is 
+           no serialisation overhead for sklearn objects. All parallel wo
+           rk is expressed as `@ray.remote` functions in `pipeline/parall
+           el.py`. No tool initialises Ray or sets worker counts — that i
+           s the orchestrator's responsibility at startup.
+
+● Now the §7 solutions. Let me grab the exact text of Solution F and G first.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(Fe_Spec.md)
+  ⎿  Added 20 lines, removed 3 lines
+      281  
+      282  ### F. FeatureCreator Output Cap
+      283  No upper bound is defined on the number of operations the mode
+           l may propose. Twenty source columns can produce hundreds of p
+           airwise ratios, products, and differences. Without a cap, feat
+           ure count can explode before selection runs. Should config.yam
+           l hold a max_created_features key?
+      284 -Solution: The Judge Agent decides on the best set of features 
+          -based on ranking for feature selection.                       
+      284 +Solution: FeatureCreator and FeatureSelector both run through 
+          +the Judge Agent.                                              
+      285  
+      286 -### G. Validation Failure Behavior                            
+      286 +The Judge Agent is the critique layer for any decision whose s
+          +pace is too large for a single greedy LLM call. Two decisions 
+          +qualify:                                                      
+      287 +                                                              
+      288 +- **FeatureCreator proposals.** FeatureCreator generates candi
+          +date operation specs; Judge ranks and caps them to `cap` items
+          + from `config.yaml`. Ranking weighs proxy MI of source columns
+          +, redundancy against already-selected proposals, and operation
+          +-type diversity.                                              
+      289 +                                                              
+      290 +- **FeatureSelector method choice.** The selector sends the cl
+          +uster-decomposed `FeatureSelectorEvidence` packet and receives
+          + a `selection_plan` (per-cluster action list). Judge is requir
+          +ed here because the §4 prose describes a multi-cluster strateg
+          +y ("mRMR on significant features, PCA on the residual redundan
+          +t block") that a single greedy prompt cannot produce reliably.
+      291 +                                                              
+      292 +Other tools (Imputer, Outlier, Scaler, Encoder, FeatureValidat
+          +or) do not use Judge. Their decision spaces are small enough t
+          +hat the structured-response checks in §5 / §7-G are sufficient
+          + and adding Judge would violate the token-sparse principle in 
+          +§2.                                                           
+      293 +                                                              
+      294 +Judge runs in its own ADK Agent + InMemoryRunner. Its prompt c
+          +ontext never enters the orchestrator's context window. Fallbac
+          +k when Judge is unavailable: FeatureCreator uses proxy-MI rank
+          +ing; FeatureSelector falls back to mRMR over all features.    
+      295 +                                                              
+      296 +### G. Validation and Revision                                
+      297  "Type assignments and operation specs both go through a valida
+           tion step before anything touches the dataframe." What happens
+            on failure — is the operation silently skipped, is an excepti
+           on raised, or is the model retried with an error message? The 
+           validator.py tool listed in §6 is never described.
+      288 -Solution: it should be try eccept block first try to convert t
+          -o float next try time stamp except label encode.              
+      298 +                                                              
+      299 +Solution: two failure modes are handled separately.           
+      300 +                                                              
+      301 +**Type failures (malformed output).** When the model returns a
+          + value that does not fit the response schema — wrong type, mis
+          +sing field, bad JSON — the pipeline attempts coercion in order
+          +: cast to float, then parse as timestamp, then apply LabelEnco
+          +der. If all three fail the operation is skipped and a warning 
+          +is logged.                                                    
+      302 +                                                              
+      303 +**Content failures (lazy or unjustified output).** When the mo
+          +del returns a syntactically valid response that fails the four
+          + content checks in §5 (empty `evidence_cited`, boilerplate `ra
+          +tionale`, empty `alternatives_considered`, or a degenerate bat
+          +ch where more than `validation.lazy_response_threshold` of ite
+          +ms share a strategy despite heterogeneous evidence), the call 
+          +is retried exactly once with a delta-evidence pack that highli
+          +ghts the contrasts the model missed. If the retry fails the sa
+          +me checks the tool falls through to its deterministic default 
+          +with the rejected response attached to `state.warnings`.      
+      304 +                                                              
+      305 +These are the only revision paths. Coercion is not revision; a
+          + coerced response still has to pass the content checks.       
+      306  ### H. Target Column Handling
+      307  The target column is never mentioned in the context of transfo
+           rmations. Is it excluded from imputation, encoding, scaling, a
+           nd selection automatically? Is it passed through unchanged? Do
+           es its presence affect feature creation (e.g., should features
+            be created relative to the target)?
+      308  Solution: Target is separated from features at ingestion. It g
+           oes through imputation if it has missing values. If the target
+            is categorical (classification with string labels) it must be
+            label encoded. It is never scaled or included in feature sele
+           ction. Feature creation uses it as a reference for MI scoring 
+           only. It is always passed through to the output as the last co
+           lumn.
+
+● All six edits applied. Summary of what changed in Fe_Spec.md:
+
+  - §3 Feature Selection — header now says Judge picks the method via
+  selection_plan; the 8-method list is preserved as the action vocabulary.
+  - §5 — added the Evidence Packets subsection (typed dataclass contract per
+  decision point) right after the "Each pipeline tool…" paragraph.
+  - §5 — added the Prompts describe, do not prescribe rule.
+  - §5 — replaced the one-paragraph validation rule with the structured-response
+   contract (rationale, evidence_cited, alternatives_considered), the four
+  rejection criteria, and the parse → coerce → content-check → revise-once →
+  fall-through ordering.
+  - §7 Solution F — promoted Judge to cover FeatureCreator and FeatureSelector,
+  with an explicit reason the other tools do not use Judge.
+  - §7 Solution G — split into Type failures vs. Content failures; coercion is
+  now distinct from revision.
+
+  Want me to draft the matching config.yaml additions
+  (validation.boilerplate_denylist, validation.lazy_response_threshold,
+  validation.min_rationale_chars, the cluster-cut threshold for
+  FeatureSelectorEvidence)?
+
+✻ Sautéed for 1m 52s
+
+❯ update the plan according to the spec                                         
+
+  Read 1 file (ctrl+o to expand)
+
+● Updating plan.md to reflect the spec changes. I'll work top-to-bottom.
+
+  1. Foundation phase: add new modules evidence.py and responses.py
+● Update(plan.md)
+  ⎿  Added 4 lines, removed 2 lines
+       7  Four phases. Each phase only starts when the previous is comple
+          te. Later phases depend on earlier ones structurally.
+       8  
+       9  ```
+      10 -Phase 1 — Foundation       config.yaml, config.py, state.py, ba
+         -se.py, parallel.py                                             
+      10 +Phase 1 — Foundation       config.yaml, config.py, state.py, ba
+         +se.py, parallel.py,                                            
+      11 +                           evidence.py, responses.py           
+      12  Phase 2 — Tools            all 10 tools in pipeline/tools/ (eac
+          h also exposed as an ADK tool function)
+      12 -Phase 3 — Orchestrator     orchestrator.py — ADK Agent + ADK to
+         -ol registration                                                
+      13 +                           plus the Judge sub-agent in pipeline
+         +/judge_agent.py                                                
+      14 +Phase 3 — Orchestrator     orchestrator.py — ADK Agent + ADK to
+         +ol registration + Judge construction                           
+      15  Phase 4 — Entry point      main.py (ADK Runner), schema.md, REA
+          DME.md
+      16  ```
+      17  
+
+● 2. config.yaml: add validation keys and selector additions
+
+● Update(plan.md)
+  ⎿  Added 14 lines
+      49    rf_n_estimators: 100
+      50    pca_variance_retained: 0.95
+      51    top_k_features: 20
+      52 +  cluster_cut_threshold: 0.30         # 1 - |corr| distance cut
+         + for average-linkage hierarchical clustering                   
+      53 +  linear_baseline_k: 10               # number of top-MI featur
+         +es used to fit the linear baseline score                       
+      54  
+      55  scaling:
+      56    power_transformer_method: yeo-johnson
+     ...
+      60    random_state: 42
+      61    max_workers: 8
+      62    task_infer_nunique_threshold: 20   # if --task omitted: targe
+          t with >20 unique values → regression, else classification
+      63 +  downstream_model_hint: tree        # "linear" | "tree" — supp
+         +lied to OutlierHandlerEvidence                                 
+      64  
+      65 +validation:                                                    
+      66 +  min_rationale_chars: 60            # responses shorter than t
+         +his are rejected                                               
+      67 +  min_alternatives: 1                # `alternatives_considered
+         +` must have at least this many entries                         
+      68 +  lazy_response_threshold: 0.80      # batched response is dege
+         +nerate if > this fraction share one strategy                   
+      69 +  boilerplate_denylist:              # case-insensitive substri
+         +ng matches; matching rationales are rejected                   
+      70 +    - "based on the data"                                      
+      71 +    - "because it is appropriate"                              
+      72 +    - "it is the best choice"                                  
+      73 +    - "looks suitable"                                         
+      74 +    - "as per the guidance"                                    
+      75 +                                                               
+      76  llm:
+      77    max_tokens: 2048                    # passed to ADK GenerateC
+          ontentConfig on every model call
+      78    api_key_env_var: GOOGLE_API_KEY     # name of the env var the
+           orchestrator injects the key into before ADK init
+
+● 3. config.py: add the new sub-models
+
+● Update(plan.md)
+  ⎿  Added 4 lines, removed 2 lines
+      83  
+      84  ### `pipeline/config.py`
+      85  - Pydantic model `ConfigSchema` mirroring every key above with 
+          types and defaults.
+      86 -- `PipelineSettings` includes `task_infer_nunique_threshold: in
+         -t` for auto task inference.                                    
+      87 -- New `LlmConfig` sub-model: `max_tokens: int`, `api_key_env_va
+         -r: str`, `api_key: str` (non-empty).                           
+      86 +- `PipelineSettings` includes `task_infer_nunique_threshold: in
+         +t` and `downstream_model_hint: Literal["linear","tree"]`.      
+      87 +- `LlmConfig` sub-model: `max_tokens: int`, `api_key_env_var: s
+         +tr`, `api_key: str` (non-empty).                               
+      88 +- New `ValidationSettings` sub-model: `min_rationale_chars: int
+         +`, `min_alternatives: int`, `lazy_response_threshold: float` (∈
+         + [0,1]), `boilerplate_denylist: list[str]`.                    
+      89 +- `FeatureSelectionSettings` includes `cluster_cut_threshold: f
+         +loat` and `linear_baseline_k: int`.                            
+      90  - Module-level `load_config(path) -> ConfigSchema` — loads yaml
+          , validates, returns.
+      91  - Any missing key raises `ValidationError` at import time.
+      92  
+
+● 4. Add evidence.py and responses.py sections after parallel.py
+
+● Update(plan.md)
+  ⎿  Added 165 lines
+      168  - Helper `run_parallel(remote_fn, items) -> list` — calls `ray
+           .get([remote_fn.remote(item) for item in items])`.
+      169  - Ray is not initialised here. `ray.init(num_cpus=8)` is calle
+           d once by the orchestrator at startup.
+      170  - No tool calls `ray.init` or sets worker limits.
+      171 +- Also exposes `compute_mini_profile(df, cols) -> dict` (share
+          +d utility used by SemanticTypeInfer's datetime decomposition a
+          +nd FeatureCreator's `run_post`).                              
+      172 +- Exposes `compute_correlation_clusters(X, cut_threshold) -> d
+          +ict[int, list[str]]` (average-linkage hierarchical clustering 
+          +on `1 - |corr|`, returns `cluster_id -> [columns]`). Used by `
+          +FeatureSelectorEvidence`.                                     
+      173 +- Exposes `compute_linear_baseline(X, y, task, k) -> float` (f
+          +its LogisticRegression / LinearRegression on the top-`k` MI fe
+          +atures, returns CV-AUC for classification or CV-R² for regress
+          +ion). Used by `FeatureSelectorEvidence`.                      
+      174  
+      175  ---
+      176  
+      177 +### `pipeline/evidence.py`                                    
+      178 +Typed dataclasses for every decision point. One dataclass per 
+          +LLM call site. Tools must build these — no ad-hoc f-string pro
+          +mpts over the profile dict.                                   
+      179 +                                                              
+      180 +```python                                                     
+      181 +@dataclass                                                    
+      182 +class SemanticTypeInferEvidence:                              
+      183 +    columns: list[ColumnTypeEvidence]   # per-column packet   
+      184 +                                                              
+      185 +@dataclass                                                    
+      186 +class ColumnTypeEvidence:                                     
+      187 +    name: str                                                 
+      188 +    dtype: str                                                
+      189 +    null_rate: float                                          
+      190 +    nunique: int                                              
+      191 +    top_values: list[str]               # up to 5             
+      192 +    random_samples: list[str]           # 5 string-cast values
+      193 +    regex_signature: dict[str, int]     # {"uuid": n, "email":
+          + n, "iso_date": n, "phone": n, "numeric_string": n}           
+      194 +                                                              
+      195 +@dataclass                                                    
+      196 +class MissingValueEvidence:                                   
+      197 +    columns: list[NullColumnEvidence]                         
+      198 +                                                              
+      199 +@dataclass                                                    
+      200 +class NullColumnEvidence:                                     
+      201 +    name: str                                                 
+      202 +    null_rate: float                                          
+      203 +    null_run_lengths: list[int]                       # histog
+          +ram of consecutive-null streaks                               
+      204 +    null_mask_corr_top5: dict[str, float]                     
+      205 +    target_rate_when_null: float | None                       
+      206 +    target_rate_when_present: float | None                    
+      207 +    random_present_values: list[str]                  # 10    
+      208 +    dtype: str                                                
+      209 +    semantic_type: str                                        
+      210 +                                                              
+      211 +@dataclass                                                    
+      212 +class OutlierEvidence:                                        
+      213 +    columns: list[OutlierColumnEvidence]                      
+      214 +    downstream_model_hint: str                        # "linea
+          +r" | "tree", from config                                      
+      215 +                                                              
+      216 +@dataclass                                                    
+      217 +class OutlierColumnEvidence:                                  
+      218 +    name: str                                                 
+      219 +    histogram_10bin: list[int]                                
+      220 +    extreme_top5: list[tuple[float, float | str]]     # (value
+          +, target_at_that_row)                                         
+      221 +    extreme_bottom5: list[tuple[float, float | str]]          
+      222 +    mi_with_target: float                                     
+      223 +    target_corr: float                                        
+      224 +                                                              
+      225 +@dataclass                                                    
+      226 +class ScalerEvidence:                                         
+      227 +    columns: list[ScalerColumnEvidence]                       
+      228 +                                                              
+      229 +@dataclass                                                    
+      230 +class ScalerColumnEvidence:                                   
+      231 +    name: str                                                 
+      232 +    histogram_20bin: list[int]                                
+      233 +    skewness: float                                           
+      234 +    kurtosis: float                                           
+      235 +    outlier_rate: float                                       
+      236 +    bounded: bool                                             
+      237 +    bounds: tuple[float, float] | None                        
+      238 +    monotonic_with_target: float                      # Spearm
+          +an                                                            
+      239 +                                                              
+      240 +@dataclass                                                    
+      241 +class FeatureCreatorEvidence:                                 
+      242 +    columns: list[CreatorColumnEvidence]                      
+      243 +    co_occurring_pairs: list[tuple[str, str, float]]  # (col_a
+          +, col_b, joint_mi)                                            
+      244 +                                                              
+      245 +@dataclass                                                    
+      246 +class CreatorColumnEvidence:                                  
+      247 +    name: str                                                 
+      248 +    semantic_type: str                                        
+      249 +    mi_with_target: float                                     
+      250 +    nunique: int                                              
+      251 +    correlated_with_top3: dict[str, float]                    
+      252 +    decomposed_from: str | None                               
+      253 +                                                              
+      254 +@dataclass                                                    
+      255 +class FeatureSelectorEvidence:                                
+      256 +    n_rows: int                                               
+      257 +    n_features: int                                           
+      258 +    task: str                                                 
+      259 +    linear_baseline_score: float                      # CV-AUC
+          + or CV-R² on top-k MI                                         
+      260 +    clusters: list[ClusterEvidence]                           
+      261 +                                                              
+      262 +@dataclass                                                    
+      263 +class ClusterEvidence:                                        
+      264 +    cluster_id: int                                           
+      265 +    members: list[str]                                        
+      266 +    mean_mi: float                                            
+      267 +    max_mi: float                                             
+      268 +    intra_cluster_corr: float                                 
+      269 +```                                                           
+      270 +                                                              
+      271 +A single serializer in `evidence.py` renders each dataclass to
+          + a deterministic prompt block. The dataclass *is* the contract
+          +: adding a field requires changing the dataclass plus a config
+          + entry, never a prompt edit.                                  
+      272 +                                                              
+      273 +---                                                           
+      274 +                                                              
+      275 +### `pipeline/responses.py`                                   
+      276 +Pydantic models for every model response. Each per-item decisi
+          +on carries `strategy`, `rationale`, `evidence_cited`, `alterna
+          +tives_considered`. Parsing failure → coercion path (§7-G). Con
+          +tent failure → revision path (§5).                            
+      277 +                                                              
+      278 +```python                                                     
+      279 +class DecisionItem(BaseModel):                                
+      280 +    rationale: str = Field(min_length=1)             # actual 
+          +length checked against config.validation.min_rationale_chars  
+      281 +    evidence_cited: list[str]                        # must be
+          + non-empty and a subset of the EvidencePacket field names sent
+      282 +    alternatives_considered: list[str]               # must ha
+          +ve >= config.validation.min_alternatives entries              
+      283 +                                                              
+      284 +class TypeAssignment(DecisionItem):                           
+      285 +    column: str                                               
+      286 +    type: Literal["numeric","categorical","datetime","id","tex
+          +t","binary","target"]                                         
+      287 +                                                              
+      288 +class SemanticTypeInferResponse(BaseModel):                   
+      289 +    assignments: list[TypeAssignment]                         
+      290 +                                                              
+      291 +class ImputationDecision(DecisionItem):                       
+      292 +    column: str                                               
+      293 +    strategy: Literal["median","mode","knn","iterative","drop"
+          +]                                                             
+      294 +                                                              
+      295 +class MissingValueResponse(BaseModel):                        
+      296 +    decisions: list[ImputationDecision]                       
+      297 +                                                              
+      298 +class OutlierDecision(DecisionItem):                          
+      299 +    column: str                                               
+      300 +    detector: Literal["iqr","zscore","isolation_forest"]      
+      301 +    action: Literal["scale","flag","drop_row"]                
+      302 +                                                              
+      303 +class OutlierResponse(BaseModel):                             
+      304 +    decisions: list[OutlierDecision]                          
+      305 +                                                              
+      306 +class ScalerDecision(DecisionItem):                           
+      307 +    column: str                                               
+      308 +    scaler: Literal["standard","robust","minmax","power"]     
+      309 +                                                              
+      310 +class ScalerResponse(BaseModel):                              
+      311 +    decisions: list[ScalerDecision]                           
+      312 +                                                              
+      313 +class CreatorSpec(DecisionItem):                              
+      314 +    operation: Literal[<the 15 VALID_OPS>]                    
+      315 +    sources: list[str]                                        
+      316 +    name: str                                                 
+      317 +    temporal_class: Literal["pre_encoding","post_encoding"]   
+      318 +                                                              
+      319 +class FeatureCreatorResponse(BaseModel):                      
+      320 +    specs: list[CreatorSpec]                                  
+      321 +                                                              
+      322 +class ClusterAction(DecisionItem):                            
+      323 +    cluster_id: int                                           
+      324 +    action: Literal["mrmr","pca","mrmr_then_pca","drop","lasso
+          +","rf_importance"]                                            
+      325 +                                                              
+      326 +class SelectionPlanResponse(BaseModel):                       
+      327 +    plan: list[ClusterAction]                                 
+      328 +```                                                           
+      329 +                                                              
+      330 +A single helper `validate_response(model_cls, raw_text, eviden
+          +ce_field_names, cfg) -> tuple[BaseModel | None, list[str]]` pe
+          +rforms:                                                       
+      331 +1. JSON extraction + Pydantic parse → on failure, return (None
+          +, ["parse"]).                                                 
+      332 +2. Field-level content checks: rationale length, `evidence_cit
+          +ed` non-empty + subset of provided fields, `alternatives_consi
+          +dered` count.                                                 
+      333 +3. Batch-level degeneracy check: if >`lazy_response_threshold`
+          + of items share the same strategy, returns `["lazy"]`.        
+      334 +                                                              
+      335 +Returns (parsed_model, failure_reasons). Callers handle revisi
+          +on and fall-through per §5.                                   
+      336 +                                                              
+      337 +---                                                           
+      338 +                                                              
+      339  ## Phase 2: Tools
+      340  
+      341  Build in this order — each tool depends on the state fields po
+           pulated by tools before it.
+
+● 5. Update each tool description to use Evidence packets + structured 
+  responses. Profiler first (adds cluster + baseline outputs).
+
+● Update(plan.md)
+  ⎿  Added 4 lines, removed 1 line
+      363  Multivariate (single pass after univariate):
+      364  - pairwise Pearson correlation matrix
+      365  - mutual information between each feature and target
+      366 +- correlation clusters via `compute_correlation_clusters` (use
+          +d later by `FeatureSelectorEvidence`)                         
+      367 +- linear baseline score via `compute_linear_baseline` on the t
+          +op-`linear_baseline_k` MI features (used later by `FeatureSele
+          +ctorEvidence`)                                                
+      368 +- top column pairs by joint MI (used later by `FeatureCreatorE
+          +vidence.co_occurring_pairs`)                                  
+      369  
+      367 -Output: populates `state.profile`.                            
+      370 +Output: populates `state.profile`. Also writes `state.profile[
+          +"_clusters"]`, `state.profile["_linear_baseline_score"]`, and 
+          +`state.profile["_joint_mi_pairs"]`.                           
+      371  
+      372  ---
+      373  
+
+● Update(plan.md)
+  ⎿  Added 1 line, removed 1 line
+      376  **Precondition:** `state.profile` not None.
+      377  **Postcondition:** `state.column_types` not None.
+      378  
+      379 -One `model_fn` call. Prompt includes column names, dtypes, nul
+          -l rates, sample values from profile. Response is a JSON array 
+          -`[{"column": "...", "type": "..."}]`.                         
+      379 +Builds `SemanticTypeInferEvidence` from `state.profile`. Promp
+          +t template describes the seven types mechanically (what each o
+          +ne means) — it does **not** enumerate when to assign them. One
+          + model call. Response parsed via `validate_response(SemanticTy
+          +peInferResponse, ...)`. Content failures trigger one retry wit
+          +h `prior_response_was_uninformative=True` plus a delta-evidenc
+          +e pack contrasting columns that received the same type. Fall-t
+          +hrough: dtype-based assignment per ambiguity #21.             
+      380  
+      381  Valid types: `numeric`, `categorical`, `datetime`, `id`, `text
+           `, `binary`, `target`.
+      382  
+
+● Update(plan.md)
+  ⎿  Added 1 line, removed 1 line
+      395  **Precondition:** `state.column_types` not None.
+      396  **Postcondition:** zero nulls remain in all non-dropped column
+           s.
+      397  
+      398 -One `model_fn` call. Prompt includes null rate, MCAR/MAR signa
+          -l (correlation of null mask with other columns), column type. 
+          -Response is JSON `[{"column": "...", "strategy": "..."}]`.    
+      398 +Builds `MissingValueEvidence` from `state.profile` (null_rate,
+          + null_run_lengths, null_mask_corr_top5, target_rate_when_null/
+          +present, random_present_values, dtype, semantic_type). Prompt 
+          +describes the five strategies mechanically and **omits any whe
+          +n-to-use guidance**. One model call → `validate_response(Missi
+          +ngValueResponse, ...)` → one retry on content failure → fall-t
+          +hrough to median (numeric) / mode (other).                    
+      399  
+      400  Strategies: `median`, `mode`, `knn`, `iterative`, `drop`.
+      401  
+
+● Update(plan.md)
+  ⎿  Added 1 line, removed 1 line
+      413  **Precondition:** `state.df` has no nulls (imputer ran).
+      414  **Postcondition:** `state.df` updated per chosen action.
+      415  
+      416 -One `model_fn` call per numeric column (batched into one promp
+          -t). Response is JSON `[{"column": "...", "detector": "...", "a
+          -ction": "..."}]`.                                             
+      416 +Builds `OutlierEvidence` per numeric column (10-bin histogram,
+          + top-5 extremes with aligned target values, mi_with_target, ta
+          +rget_corr) plus the global `downstream_model_hint` from `pipel
+          +ine.downstream_model_hint`. One batched model call → `validate
+          +_response(OutlierResponse, ...)` → one retry on content failur
+          +e → fall-through to `(iqr, scale)`.                           
+      417  
+      418  Detectors: `iqr`, `zscore`, `isolation_forest` (`random_state=
+           42`).
+      419  Actions: `scale`, `flag`, `drop_row`.
+
+● Update(plan.md)
+  ⎿  Added 6 lines, removed 10 lines
+      440  
+      441  ### `pipeline/tools/creator.py` — `FeatureCreator`
+      442  
+      443 -**Precondition:** encoding complete.                          
+      443 +**Precondition:** encoding complete (for `run_post`); see ambi
+          +guity #13 for `run_pre`.                                      
+      444  **Postcondition:** new feature columns added to `state.df`.
+      445  
+      446 -One `model_fn` call. Prompt includes column stats from profile
+          -. Response is JSON list of operation specs:                   
+      446 +Builds `FeatureCreatorEvidence` from `state.profile` (per-colu
+          +mn semantic_type, mi_with_target, nunique, correlated_with_top
+          +3, decomposed_from, plus global co_occurring_pairs). Prompt de
+          +scribes each of the 15 operations mechanically and **does not 
+          +enumerate when to use any of them**. One model call → `validat
+          +e_response(FeatureCreatorResponse, ...)` → one retry on conten
+          +t failure → fall-through: skip creation.                      
+      447  
+      448 -```json                                                       
+      449 -[{"operation": "ratio", "sources": ["col1", "col2"], "name": "
+          -col1_div_col2", "temporal_class": "post_encoding"}]           
+      450 -```                                                           
+      448 +After the parsed specs pass validation, they are sent to the *
+          +*Judge Agent** for ranking and capping (§7-F). Judge returns a
+          + capped, ranked subset; falls back to proxy-MI ranking if Judg
+          +e LLM is unavailable.                                         
+      449  
+      452 -Each spec must have `temporal_class`: `pre_encoding` or `post_
+          -encoding`. Specs missing `temporal_class` are rejected at vali
+          -dation.                                                       
+      450 +Each surviving spec must have `temporal_class`: `pre_encoding`
+          + or `post_encoding`. Specs missing `temporal_class` are reject
+          +ed at Pydantic parse time.                                    
+      451  
+      454 -`cross_categorical` specs → `temporal_class: pre_encoding` (al
+          -ready executed before encoder ran).                           
+      455 -All other specs → `temporal_class: post_encoding`, executed no
+          -w.                                                            
+      452 +`cross_categorical` specs → `temporal_class: pre_encoding` (ex
+          +ecuted before encoder runs in `run_pre`).                     
+      453 +All other specs → `temporal_class: post_encoding`, executed in
+          + `run_post`.                                                  
+      454  
+      457 -Cap: top `max_created_features` proposals kept, ranked by expe
+          -cted MI with target using profile data. Remainder discarded be
+          -fore any column is materialized.                              
+      458 -                                                              
+      455  Each created column appended to `state.created_columns`.
+      456  
+      457  ---
+
+● Update(plan.md)
+  ⎿  Added 1 line, removed 1 line
+      461  **Precondition:** feature creation complete.
+      462  **Postcondition:** all numeric feature columns are scaled floa
+           ts.
+      463  
+      464 -One `model_fn` call. Prompt includes skewness, kurtosis, outli
+          -er rate per column from profile. Response is JSON `[{"column":
+          - "...", "scaler": "..."}]`.                                   
+      464 +Builds `ScalerEvidence` per numeric feature (20-bin histogram,
+          + skewness, kurtosis, outlier_rate, bounded + bounds, monotonic
+          +_with_target). Prompt describes each scaler mechanically — wha
+          +t it does to the column — and **omits when-to-use guidance**. 
+          +One batched model call → `validate_response(ScalerResponse, ..
+          +.)` → one retry on content failure → fall-through to `standard
+          +`.                                                            
+      465  
+      466  Scalers: `standard`, `robust`, `minmax`, `power` (Yeo-Johnson,
+            `random_state=42`).
+      467  
+
+● Update(plan.md)
+  ⎿  Added 6 lines, removed 8 lines
+      476  **Precondition:** scaling complete.
+      477  **Postcondition:** `state.selected_columns` not None.
+      478  
+      479 -One `model_fn` call. Prompt includes task type, feature count,
+          - dataset size, correlation matrix summary, MI scores from prof
+          -ile. Response is JSON `{"method": "..."}` or `{"method": "mrmr
+          -+pca", "mrmr_k": 20}`.                                        
+      479 +Builds `FeatureSelectorEvidence` from `state.profile` (`_clust
+          +ers`, `_linear_baseline_score`, per-cluster mean/max MI + intr
+          +a-cluster correlation, n_rows, n_features, task).             
+      480  
+      481 -Decision logic (from spec):                                   
+      482 -- High inter-correlation + low MI → PCA                       
+      483 -- Low inter-correlation + high MI → mRMR                      
+      484 -- Mixed → mRMR on significant features, PCA on residual block 
+      485 -- Default fallback → mRMR                                     
+      481 +**Method selection is delegated to the Judge Agent (§7-F).** T
+          +he selector hands the EvidencePacket to Judge, which returns a
+          + `SelectionPlanResponse` — an ordered list of per-cluster acti
+          +ons. Code executes the plan cluster by cluster. No standalone 
+          +selector model call.                                          
+      482  
+      487 -Selection methods run in parallel where independent (e.g., mul
+          -tiple scoring methods before final pick). Uses Ray (`run_paral
+          -lel` from `parallel.py`).                                     
+      483 +Per-cluster actions: `mrmr`, `pca`, `mrmr_then_pca`, `drop`, `
+          +lasso`, `rf_importance`. Cluster execution runs in parallel vi
+          +a Ray (`run_parallel` from `parallel.py`).                    
+      484  
+      489 -Target column excluded from selection entirely. Populates `sta
+          -te.selected_columns` and `state.selection_method`.            
+      485 +Judge unavailable → fall-through: mRMR over all features with 
+          +`top_k_features` from config.                                 
+      486  
+      487 +Target column excluded from selection entirely. Populates `sta
+          +te.selected_columns` and `state.selection_method` (where `sele
+          +ction_method` is the serialized plan, e.g. `"plan:[c0:mrmr_the
+          +n_pca,c1:pca,c2:drop]"`).                                     
+      488 +                                                              
+      489  ---
+      490  
+      491  ### `pipeline/tools/validator.py` — `FeatureValidator`
+
+● 6. Phase 3 Orchestrator — Judge construction is now mandatory for both Creator
+   and Selector
+
+● Update(plan.md)
+  ⎿  Added 1 line
+      571  9. Initialise `PipelineState` (no `model_fn` field).
+      572  10. Construct the ADK model wrapper with `max_tokens=config.ll
+           m.max_tokens` baked into every call's `GenerateContentConfig`.
+      573  11. Run ADK connectivity smoke test — send a minimal test mess
+           age to the agent, verify a non-empty response.
+      574 +12. Construct **one** `JudgeAgent` instance (its own Agent + I
+          +nMemoryRunner, isolated context). Inject it into FeatureCreato
+          +r and FeatureSelector at tool construction time. Judge reuses 
+          +the same model string, api_key, base_url, and `max_tokens` as 
+          +the orchestrator agent.                                       
+      575  
+      576  **Run:**
+      577  ```python
+
+● 7. Update Agent Call Summary table
+
+● Update(plan.md)
+  ⎿  Added 8 lines, removed 8 lines
+      628  
+      629  All model calls are made by the ADK orchestrator agent. The us
+           er supplies the model and API key; the pipeline never calls a 
+           model directly. ADK tool functions return plain dicts; the age
+           nt parses them and decides what to call next.
+      630  
+      631 -| ADK Tool Function | Underlying Tool | Call type | Agent inpu
+          -t | Agent output |                                            
+      631 +| ADK Tool Function | Underlying Tool | Call type | Agent inpu
+          +t (EvidencePacket) | Agent output (Pydantic model) |          
+      632  |---|---|---|---|---|
+      633 -| `infer_types` | SemanticTypeInfer | one-shot | column names 
+          -+ stats | JSON array of type assignments |                    
+      634 -| `handle_missing` | MissingValueHandler | one-shot (batched) 
+          -| null profiles per column | JSON array of strategies |       
+      635 -| `handle_outliers` | OutlierHandler | one-shot (batched) | ou
+          -tlier profiles per column | JSON array of detector + action | 
+      636 -| `create_features_pre/post` | FeatureCreator | one-shot | col
+          -umn stats | JSON list of operation specs |                    
+      637 -| `scale_features` | Scaler | one-shot (batched) | distributio
+          -n profiles | JSON array of scaler assignments |               
+      638 -| `select_features` | FeatureSelector | one-shot | profile sum
+          -mary | JSON method selection |                                
+      639 -| `write_report` | FeatureReporter | one-shot | structured pip
+          -eline summary | Markdown text |                               
+      633 +| `infer_types` | SemanticTypeInfer | one-shot + ≤1 revision |
+          + `SemanticTypeInferEvidence` | `SemanticTypeInferResponse` |  
+      634 +| `handle_missing` | MissingValueHandler | one-shot batched + 
+          +≤1 revision | `MissingValueEvidence` | `MissingValueResponse` 
+          +|                                                             
+      635 +| `handle_outliers` | OutlierHandler | one-shot batched + ≤1 r
+          +evision | `OutlierEvidence` | `OutlierResponse` |             
+      636 +| `create_features_pre/post` | FeatureCreator | one-shot + ≤1 
+          +revision → Judge | `FeatureCreatorEvidence` | `FeatureCreatorR
+          +esponse` (then Judge-ranked) |                                
+      637 +| `scale_features` | Scaler | one-shot batched + ≤1 revision |
+          + `ScalerEvidence` | `ScalerResponse` |                        
+      638 +| `select_features` | FeatureSelector (via Judge) | one-shot t
+          +o Judge | `FeatureSelectorEvidence` | `SelectionPlanResponse` 
+          +|                                                             
+      639 +| `write_report` | FeatureReporter | one-shot | structured pip
+          +eline summary | Markdown text (no validation) |               
+      640  | Orchestrator (ADK loop) | — | loop | tool return dict | next
+            tool to call |
+      641  
+      642  ---
+
+● 8. Key Constraints Checklist additions
+
+● Update(plan.md)
+  ⎿  Added 7 lines
+      658  - [ ] `drop_row` outlier action: drops target rows atomically 
+           with feature rows
+      659  - [ ] `id` and `text` columns: dropped before any transformati
+           on
+      660  - [ ] All model output validated before touching dataframe
+      661 +- [ ] Every LLM call uses a typed `EvidencePacket` from `pipel
+          +ine/evidence.py` — no ad-hoc f-string prompts over `state.prof
+          +ile`                                                          
+      662 +- [ ] Every LLM response parsed via a Pydantic model in `pipel
+          +ine/responses.py` carrying `rationale`, `evidence_cited`, `alt
+          +ernatives_considered`                                         
+      663 +- [ ] Content failures (lazy rationale, empty `evidence_cited`
+          +, degenerate batch) trigger exactly **one** revision retry wit
+          +h a delta-evidence pack; second failure → deterministic fall-t
+          +hrough with rejected response logged to `state.warnings`      
+      664 +- [ ] Prompt templates describe what each strategy does mechan
+          +ically; they **must not** enumerate when to use it            
+      665 +- [ ] Single `JudgeAgent` instance constructed once at orchest
+          +rator startup; injected into FeatureCreator and FeatureSelecto
+          +r                                                             
+      666 +- [ ] FeatureSelector method choice **always** goes through Ju
+          +dge — no standalone selector LLM call                         
+      667 +- [ ] Coercion (float → timestamp → label) handles malformed t
+          +ypes only; revision is the only path for lazy content         
+      668  - [ ] `run_id` generated at orchestrator init, stored in state
+           , returned to caller
+      669  
+      670  ---
+
+● 9. Add new resolved ambiguities at the end of Plan Ambiguities
+
+● Update(plan.md)
+  ⎿  Added 28 lines
+      842  
+      843  ### 20. ~~Ray serialization: `model_fn` callable is not Ray-se
+           rializable~~
+      844  Resolved by ADK adoption. `model_fn` has been removed from Pip
+           elineState entirely. ADK manages all model calls on the main p
+           rocess through the orchestrator agent. Ray remote functions st
+           ill receive only plain data (numpy arrays, dicts, lists) — tha
+           t constraint holds for other reasons (zero-copy Arrow serializ
+           ation), but the `model_fn` serialization problem no longer exi
+           sts.
+      845 +                                                              
+      846 +---                                                           
+      847 +                                                              
+      848 +### 24. Where the `evidence_cited` whitelist comes from       
+      849 +Pydantic responses require `evidence_cited` to be a subset of 
+          +the EvidencePacket field names sent. The list of "field names 
+          +sent" needs a deterministic source so the validator can check 
+          +membership.                                                   
+      850 +                                                              
+      851 +Solution: the EvidencePacket serializer in `pipeline/evidence.
+          +py` returns `(prompt_text, sent_field_names: set[str])`. Tools
+          + pass `sent_field_names` directly into `validate_response(...)
+          +`. The validator membership-checks against this set. Nested da
+          +taclass fields are flattened with dotted paths (`columns.null_
+          +run_lengths`) so the model can cite them precisely.           
+      852 +                                                              
+      853 +---                                                           
+      854 +                                                              
+      855 +### 25. Delta-evidence pack format for the revision retry     
+      856 +The spec mandates one retry with a delta-evidence pack contras
+          +ting the columns that received the same answer, but the contra
+          +st format is not specified.                                   
+      857 +                                                              
+      858 +Solution: when the lazy-batch check fires, the validator group
+          +s items by their assigned strategy. For each group with >1 mem
+          +ber, it picks the two columns whose EvidencePacket fields diff
+          +er most (max-L1 over normalised numeric fields). The delta pac
+          +k is a JSON block: `{"columns": ["col_a","col_b"], "differing_
+          +fields": {"skewness": [0.1, 2.3], "outlier_rate": [0.0, 0.18]}
+          +, "your_previous_answer": "standard"}` for each contrast pair.
+          + Appended to the revision prompt under a `## REVISION` header.
+      859 +                                                              
+      860 +---                                                           
+      861 +                                                              
+      862 +### 26. Judge Agent invocation site for the selector          
+      863 +FeatureCreator already calls Judge after its own LLM call. For
+          + FeatureSelector, who calls Judge — the selector's `run()`, th
+          +e orchestrator, or an ADK tool wrapper?                       
+      864 +                                                              
+      865 +Solution: FeatureSelector's `run()` calls `self.judge.plan(evi
+          +dence=..., cfg=...)` directly. Judge instance is injected at c
+          +onstruction (same pattern as FeatureCreator). The selector nev
+          +er makes its own LLM call. If `self.judge is None`, falls thro
+          +ugh to mRMR.                                                  
+      866 +                                                              
+      867 +---                                                           
+      868 +                                                              
+      869 +### 27. Histogram counts in EvidencePacket are not Ray-seriali
+          +zable issues but verbose                                      
+      870 +10-bin and 20-bin histograms per column inflate prompt size li
+          +nearly with `n_features`. For wide datasets this can blow `llm
+          +.max_tokens`.                                                 
+      871 +                                                              
+      872 +Solution: `evidence.py` truncates verbose EvidencePackets when
+          + the rendered prompt exceeds 70% of `llm.max_tokens`. Truncati
+          +on drops histograms first, then `random_samples`, then `extrem
+          +e_top5/bottom5`. A trailing `## TRUNCATED` note lists which fi
+          +elds were removed and how many. The Pydantic validator does no
+          +t require those fields to appear in `evidence_cited`.         
+
+● All edits applied. Summary of plan.md changes aligned to the new spec:
+
+  - Build order — adds evidence.py, responses.py to Phase 1, and the Judge
+  sub-agent to Phase 2.
+  - config.yaml — new validation.* block (min_rationale_chars, min_alternatives,
+   lazy_response_threshold, boilerplate_denylist), new
+  feature_selection.cluster_cut_threshold and linear_baseline_k, new
+  pipeline.downstream_model_hint.
+  - config.py — adds ValidationSettings sub-model and new fields on
+  PipelineSettings / FeatureSelectionSettings.
+  - parallel.py — exposes compute_correlation_clusters, compute_linear_baseline,
+   compute_mini_profile.
+  - New pipeline/evidence.py — full dataclass schemas for all six decision
+  points + single serializer.
+  - New pipeline/responses.py — Pydantic models with DecisionItem base
+  (rationale / evidence_cited / alternatives_considered) and a
+  validate_response(...) helper that does parse → content-check →
+  degeneracy-check.
+  - profiler.py — now also writes _clusters, _linear_baseline_score,
+  _joint_mi_pairs.
+  - Each tool description (Infer, Imputer, Outlier, Creator, Scaler, Selector) —
+   replaced "One model_fn call" with EvidencePacket → Pydantic → one revision
+  retry → deterministic fall-through; added "prompts describe, don't prescribe"
+  caveat.
+  - Selector — explicitly delegates method choice to Judge; no standalone
+  selector LLM call.
+  - Orchestrator startup — step 12 constructs the single Judge instance.
+  - Agent Call Summary table — input/output columns now reference the typed
+  EvidencePacket and Response classes.
+  - Key Constraints Checklist — 8 new boxes covering evidence packets, response
+  validation, prompt discipline, Judge wiring, coercion vs revision.
+  - Plan Ambiguities — added 24–27 covering: the evidence_cited whitelist
+  source, delta-evidence pack format, Judge invocation site for the selector,
+  and prompt-size truncation rules.
+
+  Want me to also draft the actual code module skeletons for evidence.py and
+  responses.py so the implementation can start?
+
+✻ Cogitated for 3m 58s
+❯ look at the plan and spec and fortify it                                      
+
+  Read 2 files (ctrl+o to expand)
+
+● Both files are now in good shape, but reading them together I can see weak
+  spots where the if-else trap could still re-emerge, plus internal
+  contradictions left over from earlier edits. Let me consult the advisor on the
+   prioritized fortification list before editing.
+
+● Advising using Opus 4.7
+  ⎿  ✔ Advisor has reviewed the conversation and will apply the feedback 
+     (ctrl+o to expand)
+
+● Net deletion: cleaning up contradictions and closing four loophole gaps, no
+  new mechanisms.
+
+  Spec edits
+
+  §2 — fix auth contradiction (env-var injection is the truth)
+
+● Update(Fe_Spec.md)
+  ⎿  Added 1 line, removed 1 line
+      24  - dataclasses (stdlib)
+      25  - logging (stdlib)
+      26  - ast (stdlib)
+      27 -**Bring-your-own model.** The pipeline is model-provider-agnost
+         -ic. The caller supplies a model string (e.g., `gemini/gemini-2.
+         -0-flash`, `openai/gpt-4o`) and sets the API key in `config.yaml
+         -` under `llm.api_key`. The provider base URL is declared under 
+         -`llm.base_url`. At startup the orchestrator reads both from con
+         -fig and passes them directly to ADK — no environment variable i
+         -njection needed. ADK resolves the provider from the model strin
+         -g. No model client library is bundled — the caller installs wha
+         -tever their provider requires. `config/config.yaml` must be add
+         -ed to `.gitignore` since it holds the real key.                
+      27 +**Bring-your-own model.** The pipeline is model-provider-agnost
+         +ic. The caller supplies a model string (e.g., `gemini/gemini-2.
+         +0-flash`, `openai/gpt-4o`) and sets the API key in `config.yaml
+         +` under `llm.api_key`. The orchestrator copies the key into `os
+         +.environ[llm.api_key_env_var]` at the very start of startup, be
+         +fore any ADK or provider-client import. ADK resolves the provid
+         +er from the model string. No model client library is bundled — 
+         +the caller installs whatever their provider requires. `config/c
+         +onfig.yaml` must be added to `.gitignore` since it holds the re
+         +al key.                                                        
+      28  
+      29  ---
+      30  
+
+● §5 — match the auth statement, then delete the dead "three decision points" 
+  paragraph block
+
+● Update(Fe_Spec.md)
+  ⎿  Added 1 line, removed 1 line
+      129  ## 5. CONSTRAINTS
+      130  
+      131  **Agent harness: Google ADK.** The orchestrator is a `google.a
+           dk.agents.Agent`. The caller supplies a model string; the pipe
+           line is model-provider-agnostic. ADK resolves the provider and
+            handles all model calls. There is no `model_fn` callable anyw
+           here in the codebase. A model string is required — the pipelin
+           e refuses to start without one. There is no offline fallback m
+           ode.
+      132 -The API key and base URL are read from `config.yaml` under `ll
+          -m.api_key` and `llm.base_url` and passed directly to ADK at st
+          -artup. The pipeline refuses to start if either is empty or mis
+          -sing.                                                         
+      132 +The API key is read from `config.yaml/llm.api_key` and injecte
+          +d into `os.environ[llm.api_key_env_var]` as the first step of 
+          +orchestrator startup, before any ADK import. The pipeline refu
+          +ses to start if `llm.api_key` is empty or missing.            
+      133  
+      134  Each pipeline tool (DataProfiler, SemanticTypeInfer, etc.) is 
+           wrapped as a plain Python function and registered on the orche
+           strator agent as an ADK tool. Tool functions are stateless fro
+           m ADK's perspective — they close over a shared `PipelineState`
+            instance that is set once at startup. ADK tools never receive
+            `PipelineState` as an argument.
+      135  
+
+● Update(Fe_Spec.md)
+  ⎿  Added 1 line, removed 9 lines
+      151  
+      152  EvidencePacket fields are the only data the model sees. Adding
+            a field is a code change in `evidence.py` plus a config entry
+           , never a prompt edit.
+      153  
+      154 -The model is invoked by the ADK orchestrator agent in three de
+          -cision points. Each works differently.                        
+      154 +The orchestrator agent runs ADK's agent loop — it calls a tool
+          +, receives the result, and decides what to call next. ADK mana
+          +ges this loop internally. The decision points that call the mo
+          +del are SemanticTypeInfer, MissingValueHandler, OutlierHandler
+          +, FeatureCreator, Scaler, and FeatureReporter, plus the Judge 
+          +sub-agent for FeatureCreator ranking and FeatureSelector metho
+          +d choice. All except FeatureReporter follow the Evidence-Packe
+          +t → Pydantic-response → revise-once → fall-through contract be
+          +low.                                                          
+      155  
+      156 -SemanticTypeInfer sends all column names, dtypes, null rates, 
+          -and sample values in one call and gets back a JSON array of ty
+          -pe assignments. One call, one response.                       
+      157 -                                                              
+      158 -FeatureCreator sends column stats and gets back a JSON list of
+          - operation specs. The model makes one pass of suggestions and 
+          -code handles execution from there.                            
+      159 -                                                              
+      160 -FeatureReporter sends a structured summary of pipeline decisio
+          -ns and gets back a Markdown report. No JSON, no validation, ju
+          -st text.                                                      
+      161 -                                                              
+      162 -The orchestrator agent runs ADK's agent loop — it calls a tool
+          -, receives the result, and decides what to call next. ADK mana
+          -ges this loop internally. The number of model calls depends on
+          - how many tools return errors; in a clean run it is one call p
+          -er decision point listed above.                               
+      163 -                                                              
+      156  **Prompts describe, do not prescribe.** Prompt templates may s
+           tate what each strategy does mechanically (e.g. "RobustScaler 
+           centres by median and scales by IQR") but may not enumerate wh
+           en to apply it (e.g. "use RobustScaler when the column is skew
+           ed"). The latter is the deterministic policy written in Englis
+           h — it converts the LLM into a lookup table and defeats the re
+           ason for calling it. If a strategy can be selected by a fixed 
+           rule over scalar features, the call is replaced with code; if 
+           it cannot, the model must derive the mapping from the Evidence
+           Packet without a hint sheet in the prompt.
+      157  
+      158  Nothing the model outputs is applied to data directly. Every m
+           odel response is parsed against a Pydantic model `<ToolName>Re
+           sponse` defined in `pipeline/responses.py`. Each per-item deci
+           sion must carry four fields: `strategy` (or `type` / `operatio
+           n` depending on the call), `rationale` (free text, minimum len
+           gth from `config.yaml`), `evidence_cited` (list of EvidencePac
+           ket field names the rationale references), and `alternatives_c
+           onsidered` (list of other strategies the model weighed before 
+           picking).
+
+● §5 — append STRATEGY_DEFINITIONS enforcement to "Prompts describe, do not 
+  prescribe"
+
+● Update(Fe_Spec.md)
+  ⎿  Added 2 lines
+      155  
+      156  **Prompts describe, do not prescribe.** Prompt templates may s
+           tate what each strategy does mechanically (e.g. "RobustScaler 
+           centres by median and scales by IQR") but may not enumerate wh
+           en to apply it (e.g. "use RobustScaler when the column is skew
+           ed"). The latter is the deterministic policy written in Englis
+           h — it converts the LLM into a lookup table and defeats the re
+           ason for calling it. If a strategy can be selected by a fixed 
+           rule over scalar features, the call is replaced with code; if 
+           it cannot, the model must derive the mapping from the Evidence
+           Packet without a hint sheet in the prompt.
+      157  
+      158 +To make this rule auditable, each tool with a strategy choice 
+          +owns a module-level `STRATEGY_DEFINITIONS: dict[str, str]` con
+          +stant — one entry per allowed strategy, value is its mechanica
+          +l description only. The prompt template injects this dict verb
+          +atim. A `when-to-use` mapping must not appear in the same file
+          + as `STRATEGY_DEFINITIONS` or anywhere in the prompt template;
+          + review of any change to either is bound to this rule.        
+      159 +                                                              
+      160  Nothing the model outputs is applied to data directly. Every m
+           odel response is parsed against a Pydantic model `<ToolName>Re
+           sponse` defined in `pipeline/responses.py`. Each per-item deci
+           sion must carry four fields: `strategy` (or `type` / `operatio
+           n` depending on the call), `rationale` (free text, minimum len
+           gth from `config.yaml`), `evidence_cited` (list of EvidencePac
+           ket field names the rationale references), and `alternatives_c
+           onsidered` (list of other strategies the model weighed before 
+           picking).
+      161  
+      162  A response is rejected — and the call is retried exactly once 
+           with `prior_response_was_uninformative=true` plus a delta-evid
+           ence pack contrasting the columns that received the same answe
+           r — if any of the following hold:
+
+● §5 — joint-strategy degeneracy fix on rejection rule #4
+
+● Update(Fe_Spec.md)
+  ⎿  Added 1 line, removed 1 line
+      164  1. `evidence_cited` is empty or references field names absent 
+           from the prompt.
+      165  2. `rationale` is shorter than the configured minimum or match
+           es a denylist of boilerplate phrases stored in `config.yaml/va
+           lidation.boilerplate_denylist`.
+      166  3. `alternatives_considered` is empty.
+      167 -4. The batched response is degenerate: more than `validation.l
+          -azy_response_threshold` (default 0.8) of items share the same 
+          -strategy across a heterogeneous EvidencePacket (i.e. the colum
+          -ns visibly differ on the cited fields but the strategy does no
+          -t).                                                           
+      167 +4. The batched response is degenerate: more than `validation.l
+          +azy_response_threshold` (default 0.8) of items share the same 
+          +strategy *tuple* — the joint of every `Literal` field on the r
+          +esponse item (e.g. `(detector, action)` for OutlierDecision, `
+          +(operation, temporal_class)` for CreatorSpec) — across a heter
+          +ogeneous EvidencePacket. Single-field degeneracy checks miss "
+          +all 50 columns got `(iqr, scale)`"; the joint check catches it
+          +.                                                             
+      168  
+      169  If the retry also fails the four checks, the tool falls throug
+           h to its deterministic default and the failure is recorded in 
+           `state.warnings` with the rejected response attached. The retr
+           y budget is one per tool call, not per item.
+      170  
+
+● §6 — file tree: add the three new modules
+
+● Update(Fe_Spec.md)
+  ⎿  Added 3 lines
+      192      config.py                   ConfigSchema Pydantic model; l
+           oads and validates config.yaml at import time
+      193      base.py                     BaseTool ABC; precondition che
+           cks inputs not None, postcondition checks output not None, __c
+           all__ chains both around run()
+      194      parallel.py                 Ray remote function definition
+           s; ray.init(num_cpus=8) called once at orchestrator startup
+      195 +    evidence.py                 EvidencePacket dataclasses + s
+          +erializer; sole contract for what each tool sends to the model
+      196 +    responses.py                Pydantic response models + val
+          +idate_response(...) helper (parse + content checks + degenerac
+          +y check)                                                      
+      197 +    judge_agent.py              JudgeAgent — isolated ADK sub-
+          +agent; ranks FeatureCreator proposals and produces SelectionPl
+          +anResponse                                                    
+      198      orchestrator.py             FeatureEngineerOrchestrator; c
+           onstructs ADK Agent, sets pipeline state, runs ADK Runner
+      199      tools/
+      200          __init__.py
+
+● §3 — drop the stale 32–38 numbered list (action vocabulary in the new prose is
+   the source of truth)
+
+● Update(Fe_Spec.md)
+  ⎿  Added 2 lines, removed 8 lines
+       86  
+       87  ### Feature Selection (8) — [agent] picks method via Judge, [c
+           ode] executes
+       88  
+       89 -Method selection is delegated to the Judge Agent, not the orch
+          -estrator. The orchestrator sends the `FeatureSelectorEvidence`
+          - packet to Judge, which returns a `selection_plan` — an ordere
+          -d list of per-cluster actions (`mrmr`, `pca`, `mrmr_then_pca`,
+          - `drop`, `lasso`, `rf_importance`) keyed by cluster ID. Code e
+          -xecutes the plan cluster by cluster. The plan format and the c
+          -luster ID scheme are defined in `pipeline/responses.py::Select
+          -ionPlanResponse`.                                             
+       89 +Method selection is delegated to the Judge Agent, not the orch
+          +estrator. The orchestrator sends the `FeatureSelectorEvidence`
+          + packet to Judge, which returns a `selection_plan` — an ordere
+          +d list of per-cluster actions keyed by cluster ID. Code execut
+          +es the plan cluster by cluster. The plan format and the cluste
+          +r ID scheme are defined in `pipeline/responses.py::SelectionPl
+          +anResponse`.                                                  
+       90  
+       91 -32. VarianceThreshold                                         
+       92 -33. Mutual information (classification / regression)          
+       93 -34. ANOVA F-test                                              
+       94 -35. Lasso path                                                
+       95 -36. RandomForest importance                                   
+       96 -37. PCA                                                       
+       97 -38. mRMR                                                      
+       91 +Per-cluster action vocabulary (6): `mrmr`, `pca`, `mrmr_then_p
+          +ca`, `drop`, `lasso`, `rf_importance`. These are the only valu
+          +es Judge may emit; any other value is rejected at Pydantic par
+          +se time. VarianceThreshold, mutual-information scoring, and AN
+          +OVA F-test from earlier drafts are not actions — they are scor
+          +ing primitives used internally by mRMR / lasso / rf_importance
+          +, not exposed to Judge.                                       
+       92  
+       93  ### Type Inference — [agent]
+       94  The model is called once with all column names, dtypes, null r
+           ates, and sample values to assign a type to every column. This
+            is the only step where the model sees the data, and even then
+            only as summary statistics, not raw rows.
+
+● §7-E — drop the stale Judge-escalation sentence; §7-F — Judge response also 
+  runs validate_response; §7-J — point at the new fall-through path
+
+● Update(Fe_Spec.md)
+  ⎿  Added 1 line, removed 1 line
+      267  ### E. Orchestrator Loop vs. Fixed Pipeline Order
+      268  The tools list in §6 implies a fixed sequence (profiler → infe
+           r → imputer → outlier → encoder → creator → scaler → selector 
+           → validator → reporter). The orchestrator description says it 
+           "picks a tool, runs it, looks at the result, and decides what 
+           to do next." Can tools run out of order? Can any tool re run? 
+           What conditions trigger a deviation from the default sequence?
+      269  Solution : 1. Orchestrator dispatches based on input satisfact
+           ion, not fixed sequence. Default order is a recommendation, no
+           t a constraint.
+      270 -           2. Any tool may rerun up to 5 times if validator id
+          -entifies a correctable failure in its output. Third failure es
+          -calates to Judge Agent.                                       
+      270 +           2. Any tool may rerun up to `max_tool_retries` (con
+          +fig) times if its postcondition fails. The LLM-call revision l
+          +oop (§5 / §7-G) is separate and capped at one retry per call. 
+      271             3. The orchestrator decides tool execution order at
+            runtime. When multiple tools are queued and their inputs are 
+           all satisfied, the orchestrator dispatches them in parallel. S
+           equential execution applies only when a tool is waiting on ano
+           ther tool's output.
+      272  
+      273  ### F. FeatureCreator Output Cap
+
+● Update(Fe_Spec.md)
+  ⎿  Added 1 line, removed 1 line
+      282  
+      283  Other tools (Imputer, Outlier, Scaler, Encoder, FeatureValidat
+           or) do not use Judge. Their decision spaces are small enough t
+           hat the structured-response checks in §5 / §7-G are sufficient
+            and adding Judge would violate the token-sparse principle in 
+           §2.
+      284  
+      285 -Judge runs in its own ADK Agent + InMemoryRunner. Its prompt c
+          -ontext never enters the orchestrator's context window. Fallbac
+          -k when Judge is unavailable: FeatureCreator uses proxy-MI rank
+          -ing; FeatureSelector falls back to mRMR over all features.    
+      285 +Judge runs in its own ADK Agent + InMemoryRunner. Its prompt c
+          +ontext never enters the orchestrator's context window. Judge's
+          + response is parsed through `validate_response` against its de
+          +clared schema (`FeatureCreatorResponse` for ranking, `Selectio
+          +nPlanResponse` for selection) and is subject to the same four 
+          +content checks — one retry, then fall-through. Fallback when J
+          +udge is unavailable or fails the retry: FeatureCreator uses pr
+          +oxy-MI ranking; FeatureSelector falls back to mRMR over all fe
+          +atures with `top_k_features` from config.                     
+      286  
+      287  ### G. Validation and Revision
+      288  "Type assignments and operation specs both go through a valida
+           tion step before anything touches the dataframe." What happens
+            on failure — is the operation silently skipped, is an excepti
+           on raised, or is the model retried with an error message? The 
+           validator.py tool listed in §6 is never described.
+
+● Update(Fe_Spec.md)
+  ⎿  Added 1 line, removed 1 line
+      304  
+      305  ### J. model_fn Offline Fallbacks
+      306  "All steps that need a model fall back to their fixed defaults
+           ." The concrete fallback for each agent step is not defined. S
+           emanticTypeInfer — infer from pandas dtype only? FeatureCreato
+           r skip feature creation entirely or apply a minimal fixed set?
+            Orchestrator — run tools in the fixed sequential order from s
+           ection 6?
+      307 -Solution: no fallback needed at this stage the execution is do
+          -ne only if the agents clear the smoke test.                   
+      307 +Solution: there is no global offline mode — startup aborts if 
+          +the smoke test fails. Per-call fallbacks are defined inside §5
+          + / §7-G: every LLM call goes through `validate_response`; a pa
+          +rse or content failure triggers exactly one revision retry; a 
+          +second failure falls through to the per-tool deterministic def
+          +ault (median for imputation, `(iqr, scale)` for outliers, `sta
+          +ndard` for scaling, skip for feature creation, dtype-based inf
+          +erence for SemanticTypeInfer, mRMR over all features for Featu
+          +reSelector, template report for FeatureReporter). The rejected
+          + response is attached to `state.warnings`.                    
+      308  
+      309  ### K. Cross-Categorical Timing
+      310  cross_categorical (operation #27) is listed under Feature Crea
+           tion, which runs after Encoding per the tool order in §6. By t
+           hat point, categorical columns have already been label encoded
+            to integers. Does cross_categorical operate on the encoded nu
+           meric values or is it expected to run before encoding? The int
+           ended pipeline order is not explicitly stated.
+
+● §5 Evidence Packets — pin Selector's re-cluster behavior on its actual input
+
+● Update(Fe_Spec.md)
+  ⎿  Added 1 line, removed 1 line
+      141  
+      142  - `FeatureCreatorEvidence` — per column: `semantic_type`, `mi_
+           with_target`, `nunique`, `correlated_with_top3`, `decomposed_f
+           rom` (provenance for datetime children), and a global `co_occu
+           rring_pairs` list (top column pairs by joint MI).
+      143  
+      144 -- `FeatureSelectorEvidence` — `correlation_clusters` (output o
+          -f average-linkage hierarchical clustering on |corr|, cut at a 
+          -threshold from `config.yaml`), per-cluster `n_features`, `mean
+          -_mi`, `max_mi`, `intra_cluster_corr`, plus global `n_rows`, `t
+          -ask`, and `linear_baseline_score` (CV-AUC or CV-R² of a logist
+          -ic/linear baseline on the top-K MI features — a cheap proxy fo
+          -r whether linear methods will work).                          
+      144 +- `FeatureSelectorEvidence` — `correlation_clusters` (output o
+          +f average-linkage hierarchical clustering on |corr|, cut at a 
+          +threshold from `config.yaml`), per-cluster `n_features`, `mean
+          +_mi`, `max_mi`, `intra_cluster_corr`, plus global `n_rows`, `t
+          +ask`, and `linear_baseline_score` (CV-AUC or CV-R² of a logist
+          +ic/linear baseline on the top-K MI features — a cheap proxy fo
+          +r whether linear methods will work). FeatureSelector recompute
+          +s the clusters and the baseline over its actual input datafram
+          +e (which includes FeatureCreator-added columns); the Profiler'
+          +s cached values are not reused, since the column set has chang
+          +ed.                                                           
+      145  
+      146  EvidencePacket fields are the only data the model sees. Adding
+            a field is a code change in `evidence.py` plus a config entry
+           , never a prompt edit.
+      147  
+
+● Now the plan.
+
+  Plan edits
+
+  Phase 2 — add pipeline/judge_agent.py section after FeatureReporter, and 
+  rename the order block to include it
+● Update(plan.md)
+  ⎿  Added 1 line
+      342  
+      343  ```
+      344  profiler → infer → imputer → outlier → encoder → creator → sca
+           ler → selector → validator → reporter
+      345 +(judge_agent.py is built alongside creator; it has no state de
+          +pendency and is constructed once at orchestrator startup)     
+      346  ```
+      347  
+      348  `cross_categorical` inside creator must run before encoder. Th
+           e creator splits its work: pre-encoding operations first, then
+            the rest after encoding. The orchestrator handles this split.
+
+● Update(plan.md)
+  ⎿  Added 13 lines
+      518  
+      519  ---
+      520  
+      521 +### `pipeline/judge_agent.py` — `JudgeAgent`                  
+      522 +                                                              
+      523 +Isolated ADK sub-agent (its own `Agent` + `InMemoryRunner`) so
+          + its context never enters the orchestrator's. Constructed once
+          + at orchestrator startup with the same model string, `api_key`
+          +, `base_url`, and `max_tokens`. Injected into FeatureCreator a
+          +nd FeatureSelector via constructor.                           
+      524 +                                                              
+      525 +Two entry points:                                             
+      526 +                                                              
+      527 +- `rank(specs, profile, target_column, task, cap) -> tuple[lis
+          +t[dict], str]` — used by FeatureCreator. Builds the candidate 
+          +prompt with proxy-MI per source, calls the LLM, parses through
+          + `validate_response(FeatureCreatorResponse, ...)`. Returns the
+          + capped, ranked subset plus a source tag (`"judge"` or `"fallb
+          +ack:proxy_mi"`).                                              
+      528 +- `plan(evidence: FeatureSelectorEvidence, cfg) -> SelectionPl
+          +anResponse | None` — used by FeatureSelector. Sends the cluste
+          +r decomposition, parses through `validate_response(SelectionPl
+          +anResponse, ...)`. Returns `None` on hard failure; the selecto
+          +r then falls back to mRMR over all features.                  
+      529 +                                                              
+      530 +Both entry points use exactly the same content-check + one-rev
+          +ision + fall-through contract as a tool LLM call. The retry bu
+          +dget is one per Judge invocation, not shared with the calling 
+          +tool.                                                         
+      531 +                                                              
+      532 +---                                                           
+      533 +                                                              
+      534  ## Phase 3: Orchestrator
+      535  
+      536  ### `pipeline/orchestrator.py` — `FeatureEngineerOrchestrator`
+
+● Plan — explicit construction site at startup step 12
+
+● Update(plan.md)
+  ⎿  Added 8 lines, removed 1 line
+      585  9. Initialise `PipelineState` (no `model_fn` field).
+      586  10. Construct the ADK model wrapper with `max_tokens=config.ll
+           m.max_tokens` baked into every call's `GenerateContentConfig`.
+      587  11. Run ADK connectivity smoke test — send a minimal test mess
+           age to the agent, verify a non-empty response.
+      588 -12. Construct **one** `JudgeAgent` instance (its own Agent + I
+          -nMemoryRunner, isolated context). Inject it into FeatureCreato
+          -r and FeatureSelector at tool construction time. Judge reuses 
+          -the same model string, api_key, base_url, and `max_tokens` as 
+          -the orchestrator agent.                                       
+      588 +12. Construct **one** `JudgeAgent` instance (its own Agent + I
+          +nMemoryRunner, isolated context). Inject it into FeatureCreato
+          +r and FeatureSelector at construction time. Judge reuses the s
+          +ame model string, api_key, base_url, and `max_tokens` as the o
+          +rchestrator agent. Construction site:                         
+      589 +    ```python                                                 
+      590 +    judge = JudgeAgent(model_string=cfg.llm.model, api_key=cfg
+          +.llm.api_key,                                                 
+      591 +                       base_url=cfg.llm.base_url, max_tokens=c
+          +fg.llm.max_tokens)                                            
+      592 +    creator = FeatureCreator(judge=judge)                     
+      593 +    selector = FeatureSelector(judge=judge)                   
+      594 +    ```                                                       
+      595 +    All other tools are constructed without a judge argument. 
+      596  
+      597  **Run:**
+      598  ```python
+
+● Plan — Selector re-clusters over current df (matches the new spec line)
+
+● Update(plan.md)
+  ⎿  Added 1 line, removed 1 line
+      477  **Precondition:** scaling complete.
+      478  **Postcondition:** `state.selected_columns` not None.
+      479  
+      480 -Builds `FeatureSelectorEvidence` from `state.profile` (`_clust
+          -ers`, `_linear_baseline_score`, per-cluster mean/max MI + intr
+          -a-cluster correlation, n_rows, n_features, task).             
+      480 +Builds `FeatureSelectorEvidence` by re-running `compute_correl
+          +ation_clusters` and `compute_linear_baseline` over the **curre
+          +nt** `state.df` (which includes FeatureCreator-added columns),
+          + not from the Profiler's cached `_clusters` / `_linear_baselin
+          +e_score`. The Profiler's values are stale at this point becaus
+          +e the column set has grown. Per-cluster mean/max MI + intra-cl
+          +uster correlation are computed from the fresh clusters; `n_row
+          +s`, `n_features`, `task` from current state.                  
+      481  
+      482  **Method selection is delegated to the Judge Agent (§7-F).** T
+           he selector hands the EvidencePacket to Judge, which returns a
+            `SelectionPlanResponse` — an ordered list of per-cluster acti
+           ons. Code executes the plan cluster by cluster. No standalone 
+           selector model call.
+      483  
+
+● Plan — clarify validate_response is the sole source of truth for content 
+  checks (tighten the existing wording)
+
+● Update(plan.md)
+  ⎿  Added 2 lines, removed 2 lines
+      330  A single helper `validate_response(model_cls, raw_text, eviden
+           ce_field_names, cfg) -> tuple[BaseModel | None, list[str]]` pe
+           rforms:
+      331  1. JSON extraction + Pydantic parse → on failure, return (None
+           , ["parse"]).
+      332  2. Field-level content checks: rationale length, `evidence_cit
+           ed` non-empty + subset of provided fields, `alternatives_consi
+           dered` count.
+      333 -3. Batch-level degeneracy check: if >`lazy_response_threshold`
+          - of items share the same strategy, returns `["lazy"]`.        
+      333 +3. Batch-level degeneracy check: if >`lazy_response_threshold`
+          + of items share the same *strategy tuple* (the joint of every 
+          +`Literal` field on the response item), returns `["lazy"]`.    
+      334  
+      335 -Returns (parsed_model, failure_reasons). Callers handle revisi
+          -on and fall-through per §5.                                   
+      335 +Returns (parsed_model, failure_reasons). **All LLM-call sites 
+          +— every tool and the Judge sub-agent — must use this helper; n
+          +o tool may implement its own JSON-parse or content check.** Ca
+          +llers wire the (one-revision → fall-through) loop around the h
+          +elper per §5.                                                 
+      336  
+      337  ---
+      338  
+
+● Plan — add STRATEGY_DEFINITIONS per tool to the Key Constraints Checklist
+
+● Update(plan.md)
+  ⎿  Added 1 line
+      683  - [ ] Every LLM response parsed via a Pydantic model in `pipel
+           ine/responses.py` carrying `rationale`, `evidence_cited`, `alt
+           ernatives_considered`
+      684  - [ ] Content failures (lazy rationale, empty `evidence_cited`
+           , degenerate batch) trigger exactly **one** revision retry wit
+           h a delta-evidence pack; second failure → deterministic fall-t
+           hrough with rejected response logged to `state.warnings`
+      685  - [ ] Prompt templates describe what each strategy does mechan
+           ically; they **must not** enumerate when to use it
+      686 +- [ ] Each tool with a strategy choice has a module-level `STR
+          +ATEGY_DEFINITIONS: dict[str, str]` constant; prompt template i
+          +njects it verbatim; no when-to-use mapping in the same file or
+          + template                                                     
+      687  - [ ] Single `JudgeAgent` instance constructed once at orchest
+           rator startup; injected into FeatureCreator and FeatureSelecto
+           r
+      688  - [ ] FeatureSelector method choice **always** goes through Ju
+           dge — no standalone selector LLM call
+      689  - [ ] Coercion (float → timestamp → label) handles malformed t
+           ypes only; revision is the only path for lazy content
+
+● All fortification edits applied. Net change: contradictions removed, four
+  loophole closures added, no new mechanisms.
+
+  Spec deltas
+  - §2 — auth flow now matches plan #22 (env-var injection); removed the
+  conflicting "passed directly to ADK" claim and the llm.base_url mention that
+  no longer fits.
+  - §5 — deleted the dead "three decision points" block (predated the current
+  six-call inventory); replaced with one sentence listing the actual decision
+  points and pointing at the contract.
+  - §5 — appended the STRATEGY_DEFINITIONS enforcement clause to "Prompts
+  describe, do not prescribe" (auditable in code review).
+  - §5 — rule #4 of the rejection list now checks the strategy tuple (joint of
+  all Literal fields), closing the "all 50 columns got (iqr, scale)" loophole.
+  - §5 — Selector's evidence bullet now says it recomputes clusters over its
+  actual input, not the Profiler's cached value.
+  - §6 — file tree adds evidence.py, responses.py, judge_agent.py.
+  - §3 — dropped the stale 32–38 numbered method list; replaced with the
+  6-action vocabulary and a one-line note on what the older entries actually
+  were.
+  - §7-E — removed the stale "Third failure escalates to Judge Agent" sentence;
+  replaced with the actual two-tier retry model (tool postcondition retries vs
+  LLM-call revision).
+  - §7-F — Judge's response is now explicitly subject to validate_response and
+  the same revise-once contract.
+  - §7-J — fallback ambiguity now resolved to point at the per-tool defaults
+  defined inline (no global offline mode).
+
+  Plan deltas
+  - Phase 2 — new pipeline/judge_agent.py section with the two entry points and
+  the same content-check contract.
+  - Phase 3 startup step 12 — now shows the actual construction site with
+  FeatureCreator(judge=judge) and FeatureSelector(judge=judge).
+  - Selector tool description — explicit re-cluster over current df (mirrors
+  spec).
+  - validate_response description — "All LLM-call sites … must use this helper;
+  no tool may implement its own JSON-parse or content check."
+  - Checklist — adds the STRATEGY_DEFINITIONS audit item.
+
+✻ Churned for 5m 51s
+
+※ recap: Goal was to fortify Fe_Spec.md and plan.md so the LLM pipeline can't degenerate into if-else policy. Both files are now updated with contradictions removed and loophole closures added. Next: confirm whether you want code module skeletons drafted for evidence.py and responses.py. (disable recaps in /config)
+
+❯ update the code to match the spec and plan                                    
+
+● This is a substantial refactor across ~10 files. Let me get the lay of the
+  land on the files I haven't seen yet, then work foundation-first.
+
+  Read 2 files (ctrl+o to expand)  ⎿  Interrupted · What should Claude do instead?
+
+※ recap: We're hardening the FE agent spec and plan so LLM calls do real reasoning instead of degenerating into if-else lookups. Both files are now fortified; next action is to start implementing `pipeline/evidence.py` and `pipeline/responses.py`. (disable recaps in /config)

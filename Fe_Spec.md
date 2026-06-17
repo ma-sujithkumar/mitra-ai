@@ -24,7 +24,7 @@ The model is only called where a human looking at column names and sample values
 - dataclasses (stdlib)
 - logging (stdlib)
 - ast (stdlib)
-**Bring-your-own model.** The pipeline is model-provider-agnostic. The caller supplies a model string (e.g., `gemini/gemini-2.0-flash`, `openai/gpt-4o`) and sets the API key in `config.yaml` under `llm.api_key`. The provider base URL is declared under `llm.base_url`. At startup the orchestrator reads both from config and passes them directly to ADK — no environment variable injection needed. ADK resolves the provider from the model string. No model client library is bundled — the caller installs whatever their provider requires. `config/config.yaml` must be added to `.gitignore` since it holds the real key.
+**Bring-your-own model.** The pipeline is model-provider-agnostic. The caller supplies a model string (e.g., `gemini/gemini-2.0-flash`, `openai/gpt-4o`) and sets the API key in `config.yaml` under `llm.api_key`. The orchestrator copies the key into `os.environ[llm.api_key_env_var]` at the very start of startup, before any ADK or provider-client import. ADK resolves the provider from the model string. No model client library is bundled — the caller installs whatever their provider requires. `config/config.yaml` must be added to `.gitignore` since it holds the real key.
 
 ---
 
@@ -84,14 +84,11 @@ Original datetime column is dropped after decomposition.
 30. MinMaxScaler
 31. PowerTransformer (Yeo-Johnson)
 
-### Feature Selection (8) — [code] execution, [agent] picks which method to run
-32. VarianceThreshold
-33. Mutual information (classification / regression)
-34. ANOVA F-test
-35. Lasso path
-36. RandomForest importance
-37. PCA
-38. mRMR
+### Feature Selection (8) — [agent] picks method via Judge, [code] executes
+
+Method selection is delegated to the Judge Agent, not the orchestrator. The orchestrator sends the `FeatureSelectorEvidence` packet to Judge, which returns a `selection_plan` — an ordered list of per-cluster actions keyed by cluster ID. Code executes the plan cluster by cluster. The plan format and the cluster ID scheme are defined in `pipeline/responses.py::SelectionPlanResponse`.
+
+Per-cluster action vocabulary (6): `mrmr`, `pca`, `mrmr_then_pca`, `drop`, `lasso`, `rf_importance`. These are the only values Judge may emit; any other value is rejected at Pydantic parse time. VarianceThreshold, mutual-information scoring, and ANOVA F-test from earlier drafts are not actions — they are scoring primitives used internally by mRMR / lasso / rf_importance, not exposed to Judge.
 
 ### Type Inference — [agent]
 The model is called once with all column names, dtypes, null rates, and sample values to assign a type to every column. This is the only step where the model sees the data, and even then only as summary statistics, not raw rows.
@@ -107,9 +104,15 @@ The model is called once at the end to write the report from the structured pipe
 
 **How it gets called.** The caller passes a dataset path, task type, target column name, and a model string. The corresponding API key must be set as an environment variable before the pipeline starts. The pipeline runs end to end and returns the engineered dataset and the artifact file. No other configuration is needed.
 
+**Null detection in categoricals.** For columns SemanticTypeInfer assigns the type `categorical` or `binary`, the string tokens `"None"`, `"NA"`, `"N/A"`, `"na"`, `"n/a"`, `"none"`, and `"NaN"` are preserved as a literal category value — they are *not* treated as missing data. Many real datasets use these strings as meaningful labels (e.g., `Alley="NA"` means "no alley access" in the House Prices dataset), and converting them to nulls erases that signal. Concretely: pandas' default `read_csv` NaN coercion is disabled (`keep_default_na=False`, explicit `na_values=[""]`) so the strings reach SemanticTypeInfer intact. After typing, only columns assigned `numeric`, `datetime`, or `target` participate in null detection by `MissingValueHandler`; for categorical and binary columns the imputer never sees these tokens as nulls. The token list lives in `config.yaml/imputation.categorical_null_literals` so a caller can extend or shrink it without code changes.
+
+**Numeric placeholder normalization.** The same `keep_default_na=False` setting that protects categorical columns also lets `"NA"`-style tokens reach SemanticTypeInfer in *numeric* columns — `LotFrontage`, `MasVnrArea`, `GarageYrBlt` in House Prices all use `"NA"` for missing measurements. Those columns arrive as `dtype=object` mixing numeric strings and `"NA"`, and SemanticTypeInfer correctly assigns them type `numeric` from the regex signature and sample values. Immediately after SemanticTypeInfer returns, the orchestrator runs a single normalization pass: every column whose assigned type is `numeric` and whose dtype is not already numeric is coerced via `pd.to_numeric(col, errors="coerce")`. The `"NA"` tokens become real `NaN`s at this point and reach `MissingValueHandler` as actual nulls. The categorical-null-literals rule above still applies because only columns typed `numeric` are coerced — a `"NA"` in a categorical column stays a category label. The pass runs once, before any other tool sees the dataframe.
+
 **Imputation decisions.** The model looks at the null pattern, the column's correlation with other features, and the null rate before picking a strategy. A column with random low rate nulls gets median. A column where nulls correlate with other columns gets KNN because the surrounding structure carries signal. A column with more than 50% nulls is dropped (`null_drop_threshold: 0.50` in config.yaml). Whether missingness is random or tied to other variables (MCAR vs MAR vs MNAR) changes the right answer, and a fixed rule can't detect that — the model reads the profile and decides.
 
-**Outlier decisions.** The agent picks a detector (IQR, Z-score, or IsolationForest) and then picks an action separately. A column with a few values ten standard deviations out is probably a data entry error — use drop_row. A column where outliers follow a pattern relative to the target might carry signal — use flag. A tree model tolerates outliers; a linear model does not — use scale for numeric columns going into linear models. The three valid actions are scale, flag, and drop_row as defined in §3.
+**Outlier decisions.** The agent picks a detector (IQR, Z-score, or IsolationForest) and an action. A column with a few values ten standard deviations out is probably a data entry error — use drop_row. A column where outliers follow a pattern relative to the target might carry signal — use flag. A tree model tolerates outliers; a linear model does not — use scale for numeric columns going into linear models. The three valid actions are scale, flag, and drop_row as defined in §3.
+
+The detector field is conditional on the action: it is required for `flag` and `drop_row` (the detector mask is what gets flagged or what gets dropped), and it is optional — and ignored if supplied — for `scale` (the whole column is RobustScaled regardless of which rows the detector would have flagged). The `OutlierDecision` Pydantic schema declares `detector: Literal["iqr","zscore","isolation_forest"] | None`, and the prompt instructs the model to omit the field when picking `scale`.
 
 **Feature selection decisions.** After profiling, the model looks at task type, number of features, dataset size, and correlation structure and picks the right method. Small linear datasets get Lasso. Non-linear patterns get tree importance. If features are collectively redundant and individually weak (high inter-correlation, low MI), apply PCA. If features are individually significant (high MI, low inter-correlation), apply mRMR. If both conditions partially hold, apply mRMR on significant features first, then PCA on the residual redundant block. Default fallback: mRMR.
 
@@ -126,27 +129,62 @@ The model is called once at the end to write the report from the structured pipe
 ## 5. CONSTRAINTS
 
 **Agent harness: Google ADK.** The orchestrator is a `google.adk.agents.Agent`. The caller supplies a model string; the pipeline is model-provider-agnostic. ADK resolves the provider and handles all model calls. There is no `model_fn` callable anywhere in the codebase. A model string is required — the pipeline refuses to start without one. There is no offline fallback mode.
-The API key and base URL are read from `config.yaml` under `llm.api_key` and `llm.base_url` and passed directly to ADK at startup. The pipeline refuses to start if either is empty or missing.
+The API key is read from `config.yaml/llm.api_key` and injected into `os.environ[llm.api_key_env_var]` as the first step of orchestrator startup, before any ADK import. The pipeline refuses to start if `llm.api_key` is empty or missing.
 
 Each pipeline tool (DataProfiler, SemanticTypeInfer, etc.) is wrapped as a plain Python function and registered on the orchestrator agent as an ADK tool. Tool functions are stateless from ADK's perspective — they close over a shared `PipelineState` instance that is set once at startup. ADK tools never receive `PipelineState` as an argument.
 
-The model is invoked by the ADK orchestrator agent in three decision points. Each works differently.
+**Evidence Packets.** Every model call receives a typed `EvidencePacket` constructed by the calling tool. Packets are defined as dataclasses in `pipeline/evidence.py` and rendered to prompts by a single serializer. Tools must not build prompt strings from ad-hoc f-strings over the profile dict — the dataclass is the contract.
 
-SemanticTypeInfer sends all column names, dtypes, null rates, and sample values in one call and gets back a JSON array of type assignments. One call, one response.
+The required schema per decision point:
 
-FeatureCreator sends column stats and gets back a JSON list of operation specs. The model makes one pass of suggestions and code handles execution from there.
+- `SemanticTypeInferEvidence` — per column: `dtype`, `null_rate`, `nunique`, `top_values` (up to 5), `random_samples` (5 string-cast values), `regex_signature` (hits for UUID / email / ISO date / phone / numeric-string patterns).
 
-FeatureReporter sends a structured summary of pipeline decisions and gets back a Markdown report. No JSON, no validation, just text.
+- `MissingValueHandlerEvidence` — per column with nulls: `null_rate`, `null_run_lengths` (histogram of consecutive-null streak lengths; distinguishes MCAR from MNAR), `null_mask_corr_top5` (other columns whose values correlate with this column's null mask), `target_rate_when_null` vs `target_rate_when_present`, `random_present_values` (10), `dtype`, `semantic_type`.
 
-The orchestrator agent runs ADK's agent loop — it calls a tool, receives the result, and decides what to call next. ADK manages this loop internally. The number of model calls depends on how many tools return errors; in a clean run it is one call per decision point listed above.
+- `OutlierHandlerEvidence` — per numeric column: 10-bin histogram, `extreme_values_top5` and `extreme_values_bottom5` with their aligned target values, `mi_with_target`, `target_corr`, `downstream_model_hint` (`linear` or `tree`, supplied by the caller in `config.yaml`).
 
-Nothing the model outputs is applied to data directly. Type assignments and operation specs both go through a validation step before anything touches the dataframe. On validation failure the pipeline attempts coercion in order: cast to float, then parse as timestamp, then apply LabelEncoder. If all three fail the operation is skipped and a warning is logged. The model decides what to do; code does it.
+- `ScalerEvidence` — per numeric column: 20-bin histogram, `skewness`, `kurtosis`, `outlier_rate`, `bounded` (boolean + range if true), `monotonic_with_target` (Spearman rank correlation).
+
+- `FeatureCreatorEvidence` — per column: `semantic_type`, `mi_with_target`, `nunique`, `correlated_with_top3`, `decomposed_from` (provenance for datetime children), and a global `co_occurring_pairs` list (top column pairs by joint MI).
+
+- `FeatureSelectorEvidence` — `correlation_clusters` (output of average-linkage hierarchical clustering on |corr|, cut at a threshold from `config.yaml`), per-cluster `n_features`, `mean_mi`, `max_mi`, `intra_cluster_corr`, plus global `n_rows`, `task`, and `linear_baseline_score` (CV-AUC or CV-R² of a logistic/linear baseline on the top-K MI features — a cheap proxy for whether linear methods will work). FeatureSelector recomputes the clusters and the baseline over its actual input dataframe (which includes FeatureCreator-added columns); the Profiler's cached values are not reused, since the column set has changed.
+
+EvidencePacket fields are the only data the model sees. Adding a field is a code change in `evidence.py` plus a config entry, never a prompt edit.
+
+**`evidence_cited` form.** The renderer emits dotted paths in the sent-field whitelist (`columns.dtype`, `columns.null_run_lengths`). Models cite fields naturally in either dotted form (`columns.dtype`) or indexed form (`columns[3].dtype`) since the serialized JSON they see contains a list under `columns`. Both forms are accepted: the validator strips `[<int>]` brackets from each `evidence_cited` entry before whitelist membership (`re.sub(r"\[\d+\]", "", cited)`). The whitelist itself stays dotted; the equivalence is enforced at the matcher, not at the renderer. Prompts do not advertise either form — the model picks whichever is natural for it.
+
+The orchestrator agent runs ADK's agent loop — it calls a tool, receives the result, and decides what to call next. ADK manages this loop internally. The decision points that call the model are SemanticTypeInfer, MissingValueHandler, OutlierHandler, FeatureCreator, Scaler, and FeatureReporter, plus the Judge sub-agent for FeatureCreator ranking and FeatureSelector method choice. All except FeatureReporter follow the Evidence-Packet → Pydantic-response → revise-once → fall-through contract below.
+
+**Prompts describe, do not prescribe.** Prompt templates may state what each strategy does mechanically (e.g. "RobustScaler centres by median and scales by IQR") but may not enumerate when to apply it (e.g. "use RobustScaler when the column is skewed"). The latter is the deterministic policy written in English — it converts the LLM into a lookup table and defeats the reason for calling it. If a strategy can be selected by a fixed rule over scalar features, the call is replaced with code; if it cannot, the model must derive the mapping from the EvidencePacket without a hint sheet in the prompt.
+
+To make this rule auditable, each tool with a strategy choice owns a module-level `STRATEGY_DEFINITIONS: dict[str, str]` constant — one entry per allowed strategy, value is its mechanical description only. The prompt template injects this dict verbatim. A `when-to-use` mapping must not appear in the same file as `STRATEGY_DEFINITIONS` or anywhere in the prompt template; review of any change to either is bound to this rule.
+
+Nothing the model outputs is applied to data directly. Every model response is parsed against a Pydantic model `<ToolName>Response` defined in `pipeline/responses.py`. Each per-item decision must carry four fields: `strategy` (or `type` / `operation` depending on the call), `rationale` (free text, minimum length from `config.yaml`), `evidence_cited` (list of EvidencePacket field names the rationale references), and `alternatives_considered` (list of other strategies the model weighed before picking).
+
+A response is rejected — and the call is retried exactly once with `prior_response_was_uninformative=true` plus a delta-evidence pack contrasting the columns that received the same answer — if any of the following hold:
+
+1. `evidence_cited` is empty or references field names absent from the prompt.
+2. `rationale` is shorter than the configured minimum or matches a denylist of boilerplate phrases stored in `config.yaml/validation.boilerplate_denylist`.
+3. `alternatives_considered` is empty.
+4. The batched response is degenerate: more than `validation.lazy_response_threshold` (default 0.8) of items share the same strategy *tuple* — the joint of every `Literal` field on the response item (e.g. `(detector, action)` for OutlierDecision, `(operation, temporal_class)` for CreatorSpec) — across a heterogeneous EvidencePacket. Single-field degeneracy checks miss "all 50 columns got `(iqr, scale)`"; the joint check catches it. The degeneracy check fires only when the batch has at least `validation.lazy_min_batch_size` items (default 3); smaller batches skip the check because the "share-one-strategy" signal is uninformative at that scale.
+
+If the retry also fails the four checks, the tool falls through to its deterministic default and the failure is recorded in `state.warnings` with the rejected response attached. The retry budget is one per tool call, not per item.
+
+On schema parse failure the pipeline attempts coercion in order: cast to float, then parse as timestamp, then apply LabelEncoder. If all three fail the operation is skipped and a warning is logged. Coercion handles malformed types; the four checks above handle lazy content. The two paths are distinct and run in this order: parse → coerce → content-check → revise-once → fall through.
+
+**FeatureValidator coercion is stricter.** The validator runs after FeatureSelector and is the last gate before the dataframe is written. Its `_try_coerce` path is float → datetime only — LabelEncoding inside the validator is **forbidden**. Encoding belongs to the Encoder; if a column reaches the validator still non-numeric and non-datetime, it is dropped from `state.selected_columns` and a warning is logged. Silent LabelEncoding at this stage hides upstream typing or normalization bugs (e.g. an object-dtype numeric column that bypassed the §4 normalization pass), so the validator refuses to paper over them.
 
 `cross_categorical` operations carry `temporal_class: pre_encoding` and execute before the Encoder runs. Any FeatureCreator operation spec missing a `temporal_class` is rejected at plan-validation time.
 
 Parallelism uses Ray. Ray is initialised once at orchestrator startup via `ray.init(num_cpus=8)` which enforces the global cap of eight workers. Ray uses shared memory for numpy arrays and pandas DataFrames (zero-copy via Apache Arrow) so there is no serialisation overhead for sklearn objects. All parallel work is expressed as `@ray.remote` functions in `pipeline/parallel.py`. No tool initialises Ray or sets worker counts — that is the orchestrator's responsibility at startup.
 
-Every stochastic operation takes `random_state=42`. Same inputs must produce the same outputs on every run. KNNImputer is deterministic by algorithm and does not accept a seed. IterativeImputer is the only imputer that requires `random_state=42`.
+Every stochastic operation takes `random_state=42`. Same inputs must produce the same outputs on every run. KNNImputer is deterministic by algorithm and does not accept a seed. IterativeImputer is the only imputer that requires `random_state=42`. The seed is read from `config.pipeline.random_state` — no `random_state=42` literal is allowed in tool code.
+
+**Deterministic naming.** Tools that synthesize column names (FeatureSelector PCA expansion, any future tool that derives names from a set of source columns) must produce the same names on every run for the same inputs. Python's built-in `hash()` is salted per process and is forbidden anywhere a name lands in `state.df` or in `feature_artifact.json`. Use `hashlib.md5("|".join(sources).encode()).hexdigest()[:8]` or a state-carried counter for any generated identifier.
+
+**Tool idempotency.** The ADK orchestrator agent may call any tool more than once if its decision loop re-enters a state. Every tool function must therefore be idempotent on `PipelineState`: if its postcondition predicate is already satisfied at entry (e.g. `state.column_types is not None` for SemanticTypeInfer, `state.row_count_after_outlier is not None` for OutlierHandler, zero nulls remaining for MissingValueHandler), the tool wrapper returns `{"status": "ok", "detail": "already done"}` without re-running. Append-only fields (`state.transformers`, `state.dropped_columns`, `state.created_columns`, `state.warnings`) must not grow on a re-entry. The base check lives in `adk_tools.py`; per-tool predicates are module-level functions next to the wrapper.
+
+**Startup smoke test.** Before the ADK runner starts, the orchestrator sends one structured prompt — a minimal `EvidencePacket` plus the matching `## RESPONSE SHAPE` header — through the same `_make_model_call` path the tools use. The response is parsed via `validate_response` with thresholds relaxed (`min_rationale_chars=1`, `min_alternatives=0`, no boilerplate denylist) so the smoke check probes only the JSON-shape and field-citation pathway, not response quality. If `validate_response` returns `failures=['parse']` the pipeline aborts at startup with the raw response attached to the error. Content failures other than `parse` are logged but do not abort — the smoke prompt is not a content benchmark, only a transport + parse + whitelist test.
 
 No hardcoding in any .py file. All default values, thresholds, algorithm parameters, and model hyperparameters live in `config/config.yaml`. The schema is a Pydantic model `ConfigSchema` defined in `pipeline/config.py`. At startup `config.yaml` is loaded with pyyaml and validated via `ConfigSchema(**raw_dict)` — a missing or wrong-typed key raises at import time, not mid run.
 
@@ -164,6 +202,9 @@ pipeline/
     config.py                   ConfigSchema Pydantic model; loads and validates config.yaml at import time
     base.py                     BaseTool ABC; precondition checks inputs not None, postcondition checks output not None, __call__ chains both around run()
     parallel.py                 Ray remote function definitions; ray.init(num_cpus=8) called once at orchestrator startup
+    evidence.py                 EvidencePacket dataclasses + serializer; sole contract for what each tool sends to the model
+    responses.py                Pydantic response models + validate_response(...) helper (parse + content checks + degeneracy check)
+    judge_agent.py              JudgeAgent — isolated ADK sub-agent; ranks FeatureCreator proposals and produces SelectionPlanResponse
     orchestrator.py             FeatureEngineerOrchestrator; constructs ADK Agent, sets pipeline state, runs ADK Runner
     tools/
         __init__.py
@@ -216,6 +257,10 @@ Use this file to replay the same transforms on new data without re-running the p
 
 `run_id` is generated as `YYYYMMDDTHHMMSS_<8-char uuid>` (e.g. `20260609T143022_a3f1b2c4`) at orchestrator init, stored in `PipelineState`, and returned to the caller alongside the output paths.
 
+**Observability detail.**
+- `execution_log.txt` is the canonical per-tool record. One line per tool with: ISO timestamp, tool name, status (`ok` / `error`), elapsed seconds, and a short detail string. For tools that make a model call the detail string includes the LLM call source tag from `call_with_revision` (`ok`, `ok:revised`, or `fallback`) so a reader can see at a glance whether the deterministic default was used.
+- `raw_responses.txt` records every LLM attempt (first and revision) for every tool and the Judge sub-agent. One entry per attempt with `caller`, `attempt`, `status` (`ok`, `ok:revised`, `rejected`, `fallback`), failure reasons, and the raw response body. The body is capped per attempt at `validation.raw_log_max_chars` (default 60000); longer bodies are truncated with a tail marker `... [truncated, total N chars]`. The cap is configurable because long batched responses (a 100-column SemanticTypeInfer batch can run past 20kB) need to land in the log intact for post-hoc debugging.
+
 ---
 
 ## 7. OPEN AMBIGUITIES
@@ -242,16 +287,33 @@ Solution: ensemble is not needed, If features are collectively redundant and ind
 ### E. Orchestrator Loop vs. Fixed Pipeline Order
 The tools list in §6 implies a fixed sequence (profiler → infer → imputer → outlier → encoder → creator → scaler → selector → validator → reporter). The orchestrator description says it "picks a tool, runs it, looks at the result, and decides what to do next." Can tools run out of order? Can any tool re run? What conditions trigger a deviation from the default sequence?
 Solution : 1. Orchestrator dispatches based on input satisfaction, not fixed sequence. Default order is a recommendation, not a constraint.
-           2. Any tool may rerun up to 5 times if validator identifies a correctable failure in its output. Third failure escalates to Judge Agent.
+           2. Any tool may rerun up to `max_tool_retries` (config) times if its postcondition fails. The LLM-call revision loop (§5 / §7-G) is separate and capped at one retry per call.
            3. The orchestrator decides tool execution order at runtime. When multiple tools are queued and their inputs are all satisfied, the orchestrator dispatches them in parallel. Sequential execution applies only when a tool is waiting on another tool's output.
 
 ### F. FeatureCreator Output Cap
 No upper bound is defined on the number of operations the model may propose. Twenty source columns can produce hundreds of pairwise ratios, products, and differences. Without a cap, feature count can explode before selection runs. Should config.yaml hold a max_created_features key?
-Solution: The Judge Agent decides on the best set of features based on ranking for feature selection.
+Solution: FeatureCreator and FeatureSelector both run through the Judge Agent.
 
-### G. Validation Failure Behavior
+The Judge Agent is the critique layer for any decision whose space is too large for a single greedy LLM call. Two decisions qualify:
+
+- **FeatureCreator proposals.** FeatureCreator generates candidate operation specs; Judge ranks and caps them to `cap` items from `config.yaml`. Ranking weighs proxy MI of source columns, redundancy against already-selected proposals, and operation-type diversity.
+
+- **FeatureSelector method choice.** The selector sends the cluster-decomposed `FeatureSelectorEvidence` packet and receives a `selection_plan` (per-cluster action list). Judge is required here because the §4 prose describes a multi-cluster strategy ("mRMR on significant features, PCA on the residual redundant block") that a single greedy prompt cannot produce reliably.
+
+Other tools (Imputer, Outlier, Scaler, Encoder, FeatureValidator) do not use Judge. Their decision spaces are small enough that the structured-response checks in §5 / §7-G are sufficient and adding Judge would violate the token-sparse principle in §2.
+
+Judge runs in its own ADK Agent + InMemoryRunner. Its prompt context never enters the orchestrator's context window. Judge's response is parsed through `validate_response` against its declared schema (`FeatureCreatorResponse` for ranking, `SelectionPlanResponse` for selection) and is subject to the same four content checks — one retry, then fall-through. Fallback when Judge is unavailable or fails the retry: FeatureCreator uses proxy-MI ranking; FeatureSelector falls back to mRMR over all features with `top_k_features` from config.
+
+### G. Validation and Revision
 "Type assignments and operation specs both go through a validation step before anything touches the dataframe." What happens on failure — is the operation silently skipped, is an exception raised, or is the model retried with an error message? The validator.py tool listed in §6 is never described.
-Solution: it should be try eccept block first try to convert to float next try time stamp except label encode.
+
+Solution: two failure modes are handled separately.
+
+**Type failures (malformed output).** When the model returns a value that does not fit the response schema — wrong type, missing field, bad JSON — the pipeline attempts coercion in order: cast to float, then parse as timestamp, then apply LabelEncoder. If all three fail the operation is skipped and a warning is logged.
+
+**Content failures (lazy or unjustified output).** When the model returns a syntactically valid response that fails the four content checks in §5 (empty `evidence_cited`, boilerplate `rationale`, empty `alternatives_considered`, or a degenerate batch where more than `validation.lazy_response_threshold` of items share a strategy despite heterogeneous evidence), the call is retried exactly once with a delta-evidence pack that highlights the contrasts the model missed. If the retry fails the same checks the tool falls through to its deterministic default with the rejected response attached to `state.warnings`.
+
+These are the only revision paths. Coercion is not revision; a coerced response still has to pass the content checks.
 ### H. Target Column Handling
 The target column is never mentioned in the context of transformations. Is it excluded from imputation, encoding, scaling, and selection automatically? Is it passed through unchanged? Does its presence affect feature creation (e.g., should features be created relative to the target)?
 Solution: Target is separated from features at ingestion. It goes through imputation if it has missing values. If the target is categorical (classification with string labels) it must be label encoded. It is never scaled or included in feature selection. Feature creation uses it as a reference for MI scoring only. It is always passed through to the output as the last column.
@@ -262,7 +324,7 @@ Solution: only label encoder is in scope
 
 ### J. model_fn Offline Fallbacks
 "All steps that need a model fall back to their fixed defaults." The concrete fallback for each agent step is not defined. SemanticTypeInfer — infer from pandas dtype only? FeatureCreator skip feature creation entirely or apply a minimal fixed set? Orchestrator — run tools in the fixed sequential order from section 6?
-Solution: no fallback needed at this stage the execution is done only if the agents clear the smoke test.
+Solution: there is no global offline mode — startup aborts if the smoke test fails. Per-call fallbacks are defined inside §5 / §7-G: every LLM call goes through `validate_response`; a parse or content failure triggers exactly one revision retry; a second failure falls through to the per-tool deterministic default (median for imputation, `(iqr, scale)` for outliers, `standard` for scaling, skip for feature creation, dtype-based inference for SemanticTypeInfer, mRMR over all features for FeatureSelector, template report for FeatureReporter). The rejected response is attached to `state.warnings`.
 
 ### K. Cross-Categorical Timing
 cross_categorical (operation #27) is listed under Feature Creation, which runs after Encoding per the tool order in §6. By that point, categorical columns have already been label encoded to integers. Does cross_categorical operate on the encoded numeric values or is it expected to run before encoding? The intended pipeline order is not explicitly stated.
@@ -324,3 +386,43 @@ Solution: IsolationForest is a detector only. After detection the agent picks on
 ### U. run_id Generation
 Output paths use `<run_id>` but the generation strategy is not defined timestamp, UUID4, hash of inputs, or caller supplied. Callers cannot predict or reference run output paths without knowing this.
 Solution: `run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%S") + "_" + uuid4().hex[:8]`. Example: `20260609T143022_a3f1b2c4`. Generated once at orchestrator init, stored in `PipelineState`, and returned to the caller alongside the output paths.
+
+### V. `evidence_cited` form: dotted vs indexed
+The validator membership-checks `evidence_cited` against the EvidencePacket field names returned by `render()`. The renderer emits dotted paths (`columns.dtype`). When the EvidencePacket contains a list-of-dataclasses field (`columns: list[ColumnTypeEvidence]`), the serialized JSON the model sees is an array, and models naturally cite array entries by index (`columns[3].dtype`). The whitelist contains only `columns.dtype`, so `columns[3].dtype` fails the check and every batched response gets rejected with `failures=['evidence']`.
+
+Solution: both forms are accepted. The validator normalizes each `evidence_cited` entry by stripping `[<int>]` brackets before whitelist membership (`re.sub(r"\[\d+\]", "", cited)`). The whitelist itself stays dotted; the equivalence is enforced at the matcher in `responses.py::_field_known`, not at the renderer. Prompts must not advertise either form — the model picks whichever is natural.
+
+### W. Numeric columns arriving as object dtype
+Many real datasets encode missing-numeric values as the string `"NA"` in object-dtype columns (House Prices `LotFrontage`, `MasVnrArea`, `GarageYrBlt` all do this). After `read_csv(keep_default_na=False, na_values=[""])` — required by §4 to preserve `"NA"` as a categorical label — those columns reach SemanticTypeInfer as object dtype mixing numeric strings and `"NA"`. SemanticTypeInfer correctly types them `numeric`, but `df[col].isna()` is False everywhere because `"NA"` is a string, so MissingValueHandler skips them and downstream tools see object-typed data they cannot scale.
+
+Solution: see §4 "Numeric placeholder normalization". After SemanticTypeInfer returns, the orchestrator runs a single normalization pass — for every column with assigned semantic type `numeric` whose pandas dtype is not numeric, `pd.to_numeric(col, errors='coerce')` is applied in place. `"NA"` tokens become real `NaN` and reach `MissingValueHandler` as nulls. The pass runs once, before any other tool sees the dataframe, and is gated on the assigned semantic type so categorical `"NA"` is untouched.
+
+### X. Validator coercion path
+`FeatureValidator._try_coerce` attempts float → datetime → label-encoding in order. The label-encoding leg silently replaces non-coercible columns with integer codes, hiding upstream typing or normalization bugs.
+
+Solution: see §5 "FeatureValidator coercion is stricter". The validator tries float → datetime only. If both fail the column is dropped from `state.selected_columns` and a warning is logged. LabelEncoding inside the validator is removed — encoding belongs to the Encoder, not the validator's fallback path.
+
+### Y. Smoke-test scope
+The startup smoke test checks only that the model returns non-empty text. A model that returns reasoning-channel content only, or that ignores the response shape entirely, would still pass — and the cascading failures would only surface after an hour-long pipeline run.
+
+Solution: see §5 "Startup smoke test". The orchestrator sends one structured prompt (a minimal EvidencePacket plus the matching response-shape header) through the same `_make_model_call` path the tools use, and parses the response via `validate_response` with relaxed thresholds (`min_rationale_chars=1`, `min_alternatives=0`, denylist empty). The smoke check probes JSON-shape, field-citation, and transport — not response quality. `failures=['parse']` aborts startup with the raw response attached; other content failures are logged only.
+
+### Z. Tool idempotency under ADK re-dispatch
+The ADK orchestrator agent may call any tool more than once if its decision loop re-enters a state. Tool side effects (`state.transformers.append(...)`, `state.dropped_columns.extend(...)`) would duplicate, polluting the artifact.
+
+Solution: see §5 "Tool idempotency". Each tool wrapper in `adk_tools.py` checks a postcondition predicate at entry; if it is already satisfied the wrapper returns `{"status": "ok", "detail": "already done"}` without re-running. Per-tool predicates: `SemanticTypeInfer → state.column_types is not None`, `MissingValueHandler → no nulls in non-categorical columns`, `OutlierHandler → state.row_count_after_outlier is not None`, `Encoder → state.pre_encoding_done and no object-dtype columns left`, `FeatureCreator.run_pre → state.pre_encoding_done`, `FeatureCreator.run_post → all post-encoding specs executed`, `Scaler → all numeric feature columns are float and not in outlier_scaled set`, `FeatureSelector → state.selected_columns is not None`, `FeatureValidator → target column is last and df is all float`, `FeatureReporter → report.md exists`. The check lives in `adk_tools._wrap`; predicates are module-level functions next to each wrapper.
+
+### AA. Deterministic component naming
+FeatureSelector's `_pca` names new components via `abs(hash(tuple(X.columns))) % 10_000`. Python's `hash` is salted per process. Re-running produces different column names; `feature_artifact.json` becomes unreplayable across processes.
+
+Solution: see §5 "Deterministic naming". The Python built-in `hash` is forbidden for any name that lands in `state.df` or in the artifact. Use `hashlib.md5("|".join(sources).encode()).hexdigest()[:8]` for hashed identifiers. PCA component names take the form `pca_<md5_8>_<i>` where `md5_8` is the deterministic hash of the source columns and `i` is the component index. Any future tool that synthesizes column names must use the same construction.
+
+### BB. Lazy-batch degeneracy minimum size
+`validate_response`'s degeneracy check (joint strategy tuple) currently fires only when the batch has at least 3 items. The floor is hardcoded.
+
+Solution: promote the floor to `validation.lazy_min_batch_size` in config (default 3). `validate_response` reads it. Batches smaller than the floor skip the degeneracy check entirely — the "share-one-strategy" signal is meaningless at that scale and would produce false positives on a 1- or 2-column EvidencePacket.
+
+### CC. Outlier `detector` field when action=scale
+The Pydantic `OutlierDecision` schema requires a detector for every decision, but when the action is `scale` the detector mask is computed and immediately discarded — the whole column is RobustScaled regardless. The model is asked to pick a detector with no consequence.
+
+Solution: see §4 "Outlier decisions". `OutlierDecision.detector` becomes `Literal["iqr","zscore","isolation_forest"] | None`. The prompt instructs the model to omit `detector` when picking `scale`. `flag` and `drop_row` still require a detector (the mask is what they act on). The detector-tuple component of the lazy-batch joint-strategy check uses `(detector or "n/a", action)` so a batch of all `(None, scale)` decisions is still caught by the degeneracy check.

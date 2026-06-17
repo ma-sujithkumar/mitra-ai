@@ -130,13 +130,28 @@ class FeatureEngineerOrchestrator:
                 "config.llm.api_key is empty or still set to the placeholder. "
                 "Set a real API key in config/config.yaml before running."
             )
-        # LiteLlm reads OPENAI_API_KEY / OPENAI_API_BASE for `openai/*` model strings.
-        # We also pass api_key/base_url directly to LiteLlm, but env vars provide a safety net.
-        os.environ["OPENAI_API_KEY"] = api_key
+        # Env var name comes from config.llm.api_key_env_var. If it is left as
+        # the default OPENAI_API_KEY but the model_string targets a different
+        # provider, derive from the model prefix as a safety net so the right
+        # provider client picks the key up.
+        env_var = (self.config.llm.api_key_env_var or "").strip() or "OPENAI_API_KEY"
+        if env_var == "OPENAI_API_KEY":
+            prefix = self.model_string.split("/", 1)[0].lower()
+            env_var = {
+                "openai": "OPENAI_API_KEY",
+                "gemini": "GOOGLE_API_KEY",
+                "google": "GOOGLE_API_KEY",
+                "anthropic": "ANTHROPIC_API_KEY",
+            }.get(prefix, "OPENAI_API_KEY")
+        os.environ[env_var] = api_key
         if self.config.llm.base_url:
             os.environ["OPENAI_API_BASE"] = self.config.llm.base_url
 
-        df = pd.read_csv(self.data_path)
+        # Spec §4 "Null detection in categoricals": only empty strings become
+        # NaN. Tokens like "NA", "N/A", "None" reach SemanticTypeInfer as
+        # plain strings so they can be assigned as legitimate category labels
+        # on categorical/binary columns.
+        df = pd.read_csv(self.data_path, keep_default_na=False, na_values=[""])
         if self.target_column not in df.columns:
             raise ValueError(f"target column {self.target_column!r} not in dataset columns {list(df.columns)}")
         target = df[self.target_column].copy()
@@ -156,6 +171,11 @@ class FeatureEngineerOrchestrator:
         run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
         output_dir = Path("pipeline_output") / run_id
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Route every LLM call's raw response + outcome to raw_responses.txt
+        # so fallback paths are debuggable without rerunning.
+        from pipeline import responses as _responses
+        _responses.set_raw_log(str(output_dir / "raw_responses.txt"))
 
         # Log task resolution at startup
         (output_dir / "execution_log.txt").write_text(
@@ -196,8 +216,9 @@ class FeatureEngineerOrchestrator:
                 f"--- traceback ---\n{_tb.format_exc()}"
             ) from e
 
-        # Construct the Judge Agent (Solution F): isolated ADK sub-agent that
-        # ranks FeatureCreator proposals. Reuses the same model/endpoint.
+        # Construct the Judge Agent: isolated ADK sub-agent that ranks
+        # FeatureCreator proposals and plans FeatureSelector actions. Reuses
+        # the same model/endpoint.
         from pipeline.judge_agent import JudgeAgent
         judge_agent = JudgeAgent(
             model_string=self.model_string,
@@ -211,7 +232,7 @@ class FeatureEngineerOrchestrator:
         # Run pipeline via ADK Agent
         self._run_adk_agent(state)
 
-        # Write feature_artifact.json (orchestrator owns this per Plan ambiguity #7)
+        # Write feature_artifact.json (orchestrator owns it; reporter only writes report.md)
         artifact = {
             "run_id": run_id,
             "task": resolved_task,

@@ -10,18 +10,20 @@ pip install -r requirements.txt
 
 ## Quick start
 
+1. Copy your API key into `config/config.yaml` under `llm.api_key`. The orchestrator copies it into the provider-specific environment variable based on the `--model` prefix at startup. `config/config.yaml` is gitignored.
+
 ```
 # Gemini
-export GOOGLE_API_KEY=...
 python main.py run data.csv --task classification --target churn --model gemini/gemini-2.0-flash
 
 # OpenAI
-export OPENAI_API_KEY=...
 python main.py run data.csv --task regression --target price --model openai/gpt-4o
 
 # Anthropic
 python main.py run "test data/train.csv" --target SalePrice --model anthropic/claude-sonnet-4-6
 ```
+
+`--task` is optional; if omitted, it is inferred from the target column.
 
 ## What it does
 
