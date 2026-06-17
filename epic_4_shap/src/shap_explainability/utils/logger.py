@@ -131,9 +131,9 @@ class ExecutionLogger:
         """Logs the explainer-selection event."""
         self._log_event(ExecutionEvent.EXPLAINER_SELECTION, message)
 
-    def log_shap_generation(self, message: str) -> None:
+    def log_shap_generation(self, message: str, level: int = logging.INFO) -> None:
         """Logs the SHAP-generation event."""
-        self._log_event(ExecutionEvent.SHAP_GENERATION, message)
+        self._log_event(ExecutionEvent.SHAP_GENERATION, message, level)
 
     def log_plot_generation(self, message: str) -> None:
         """Logs the plot-generation event."""

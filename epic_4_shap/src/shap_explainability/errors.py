@@ -29,3 +29,9 @@ class SchemaValidationError(SHAPModuleError):
     """Raised when dataset and model feature schemas are incompatible (spec.md
     Sec 12): feature count mismatch, feature name mismatch, or zero features
     remain after target column exclusion."""
+
+
+class SHAPExecutionError(SHAPModuleError):
+    """Raised when explainer construction fails, shap_values() call fails,
+    SHAP value shape normalization cannot produce a canonical form, or the
+    model family has no explainer mapping entry in model_type_detection.json."""

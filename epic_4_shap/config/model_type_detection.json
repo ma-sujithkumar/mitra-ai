@@ -31,5 +31,29 @@
     "logistic_regression": "LogisticRegression",
     "logreg": "LogisticRegression",
     "lr": "LogisticRegression"
+  },
+  "model_family_to_explainer": {
+    "XGBoost": "TreeExplainer",
+    "RandomForest": "TreeExplainer",
+    "LightGBM": "TreeExplainer",
+    "CatBoost": "TreeExplainer",
+    "LogisticRegression": "LinearExplainer"
+  },
+  "class_name_to_prediction_category": {
+    "XGBClassifier": "classification",
+    "XGBRegressor": "regression",
+    "RandomForestClassifier": "classification",
+    "RandomForestRegressor": "regression",
+    "LGBMClassifier": "classification",
+    "LGBMRegressor": "regression",
+    "CatBoostClassifier": "classification",
+    "CatBoostRegressor": "regression",
+    "LogisticRegression": "classification"
+  },
+  "tree_explainer_kwargs_by_family": {
+    "XGBoost": {},
+    "RandomForest": {},
+    "LightGBM": {},
+    "CatBoost": {"check_additivity": false}
   }
 }
