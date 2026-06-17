@@ -35,3 +35,10 @@ class SHAPExecutionError(SHAPModuleError):
     """Raised when explainer construction fails, shap_values() call fails,
     SHAP value shape normalization cannot produce a canonical form, or the
     model family has no explainer mapping entry in model_type_detection.json."""
+
+
+class ExportError(SHAPModuleError):
+    """Raised when a CSV or JSON artifact cannot be written to disk.
+
+    Wraps OSError from file I/O so the pipeline failure path can catch all
+    domain failures uniformly via SHAPModuleError."""
