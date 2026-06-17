@@ -1,0 +1,165 @@
+{
+  "dataset_id": "housing_prices_v2",
+  "candidates": [
+    {
+      "model_name": "LinearRegression",
+      "task_type": "regression",
+      "metrics": {
+        "mse": 4200.5,
+        "rmse": 64.81,
+        "mae": 48.2,
+        "r2": 0.78
+      },
+      "overfitting": {
+        "is_overfitted": false,
+        "gap": 0.04,
+        "train_vs_cv_gap": 0.03
+      },
+      "complexity": {
+        "n_params": 10,
+        "depth": 1,
+        "family_rank": 1
+      },
+      "shap_summary": {
+        "top_features": ["sqft_living", "grade", "bathrooms"],
+        "mean_abs_shap": {"sqft_living": 0.45, "grade": 0.30, "bathrooms": 0.15, "bedrooms": 0.10},
+        "feature_concentration": 0.75
+      },
+      "hyperparam_sensitivity": {
+        "fit_intercept": {"false": 0.73, "true": 0.78},
+        "sensitivity_score": 0.05
+      }
+    },
+    {
+      "model_name": "Ridge",
+      "task_type": "regression",
+      "metrics": {
+        "mse": 4100.2,
+        "rmse": 64.03,
+        "mae": 47.5,
+        "r2": 0.785
+      },
+      "overfitting": {
+        "is_overfitted": false,
+        "gap": 0.03,
+        "train_vs_cv_gap": 0.025
+      },
+      "complexity": {
+        "n_params": 11,
+        "depth": 1,
+        "family_rank": 2
+      },
+      "shap_summary": {
+        "top_features": ["sqft_living", "grade", "bathrooms"],
+        "mean_abs_shap": {"sqft_living": 0.44, "grade": 0.31, "bathrooms": 0.15, "bedrooms": 0.10},
+        "feature_concentration": 0.75
+      },
+      "hyperparam_sensitivity": {
+        "alpha": {"low": 0.78, "default": 0.785, "high": 0.783},
+        "sensitivity_score": 0.005
+      }
+    },
+    {
+      "model_name": "GradientBoostingRegressor",
+      "task_type": "regression",
+      "metrics": {
+        "mse": 2800.1,
+        "rmse": 52.92,
+        "mae": 38.4,
+        "r2": 0.87
+      },
+      "overfitting": {
+        "is_overfitted": true,
+        "gap": 0.21,
+        "train_vs_cv_gap": 0.19
+      },
+      "complexity": {
+        "n_params": 180000,
+        "depth": 5,
+        "family_rank": 8
+      },
+      "shap_summary": {
+        "top_features": ["sqft_living", "grade"],
+        "mean_abs_shap": {"sqft_living": 0.58, "grade": 0.28, "bathrooms": 0.09, "bedrooms": 0.05},
+        "feature_concentration": 0.86
+      },
+      "hyperparam_sensitivity": {
+        "learning_rate": {"low": 0.82, "default": 0.87, "high": 0.86},
+        "n_estimators": {"low": 0.84, "default": 0.87, "high": 0.87},
+        "sensitivity_score": 0.05
+      }
+    },
+    {
+      "model_name": "RandomForestRegressor",
+      "task_type": "regression",
+      "metrics": {
+        "mse": 3100.4,
+        "rmse": 55.68,
+        "mae": 40.1,
+        "r2": 0.84
+      },
+      "overfitting": {
+        "is_overfitted": false,
+        "gap": 0.08,
+        "train_vs_cv_gap": 0.07
+      },
+      "complexity": {
+        "n_params": 60000,
+        "depth": 20,
+        "family_rank": 6
+      },
+      "shap_summary": {
+        "top_features": ["sqft_living", "grade", "bathrooms"],
+        "mean_abs_shap": {"sqft_living": 0.50, "grade": 0.27, "bathrooms": 0.13, "bedrooms": 0.10},
+        "feature_concentration": 0.77
+      },
+      "hyperparam_sensitivity": {
+        "n_estimators": {"low": 0.81, "default": 0.84, "high": 0.84},
+        "max_depth": {"low": 0.83, "default": 0.84, "high": 0.83},
+        "sensitivity_score": 0.03
+      }
+    },
+    {
+      "model_name": "DummyRegressor",
+      "task_type": "regression",
+      "metrics": {
+        "mse": 18000.0,
+        "rmse": 134.16,
+        "mae": 110.0,
+        "r2": 0.10
+      },
+      "overfitting": {
+        "is_overfitted": false,
+        "gap": 0.00,
+        "train_vs_cv_gap": 0.00
+      },
+      "complexity": {
+        "n_params": 1,
+        "depth": 0,
+        "family_rank": 1
+      },
+      "shap_summary": {
+        "top_features": [],
+        "mean_abs_shap": {},
+        "feature_concentration": 0.0
+      },
+      "hyperparam_sensitivity": {
+        "strategy": {"mean": 0.10, "median": 0.09},
+        "sensitivity_score": 0.01
+      }
+    }
+  ],
+  "minidata": {
+    "price":       {"count": 5000, "mean": 540088, "std": 367966, "min": 75000, "25%": 321950, "50%": 450000, "75%": 645000, "max": 7700000},
+    "sqft_living": {"count": 5000, "mean": 2079,   "std": 918,    "min": 290,   "25%": 1427,   "50%": 1910,   "75%": 2550,   "max": 13540},
+    "bedrooms":    {"count": 5000, "mean": 3.37,   "std": 0.93,   "min": 0,     "25%": 3,      "50%": 3,      "75%": 4,      "max": 11},
+    "bathrooms":   {"count": 5000, "mean": 2.11,   "std": 0.77,   "min": 0.5,   "25%": 1.75,   "50%": 2.25,   "75%": 2.5,    "max": 8}
+  },
+  "metadata": {
+    "user_id": "user_17",
+    "dataset_name": "king_county_housing",
+    "target": "price",
+    "num_features": 10,
+    "submitted_at": "2026-06-13T11:00:00Z"
+  }
+}
