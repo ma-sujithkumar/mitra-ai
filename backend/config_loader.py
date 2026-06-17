@@ -59,6 +59,22 @@ class MetadataAgentConfig:
     metadata_context_char_limit: int
 
 
+@dataclass(frozen=True)
+class TrainingApiConfig:
+    model_library_root: Path
+    default_execution_mode: str
+    session_output_dir: str
+    metadata_candidates: list[str]
+    model_config_candidates: list[str]
+    train_candidates: list[str]
+    test_candidates: list[str]
+    run_status_filename: str
+    manifest_filename: str
+    summary_filename: str
+    max_concurrent_runs: int
+    ray_timeout_sec: float
+
+
 class ConfigLoader:
     required_sections = [
         "python",
@@ -134,6 +150,82 @@ class ConfigLoader:
                 "METADATA_CONTEXT_CHAR_LIMIT",
             ),
         )
+        self.training_api = TrainingApiConfig(
+            model_library_root=self._resolve_repo_path(
+                self.parser.get(
+                    "training_api",
+                    "MODEL_LIBRARY_ROOT",
+                    fallback="model_library",
+                )
+            ),
+            default_execution_mode=self.parser.get(
+                "training_api",
+                "DEFAULT_EXECUTION_MODE",
+                fallback="ray",
+            ).strip().lower(),
+            session_output_dir=self.parser.get(
+                "training_api",
+                "SESSION_OUTPUT_DIR",
+                fallback="training",
+            ).strip(),
+            metadata_candidates=self._parse_csv_list(
+                self.parser.get(
+                    "training_api",
+                    "METADATA_CANDIDATES",
+                    fallback="reports/metadata.json,metadata.json",
+                )
+            ),
+            model_config_candidates=self._parse_csv_list(
+                self.parser.get(
+                    "training_api",
+                    "MODEL_CONFIG_CANDIDATES",
+                    fallback="model_config.json,reports/model_config.json",
+                )
+            ),
+            train_candidates=self._parse_csv_list(
+                self.parser.get(
+                    "training_api",
+                    "TRAIN_CANDIDATES",
+                    fallback="data/train.csv,train.csv",
+                )
+            ),
+            test_candidates=self._parse_csv_list(
+                self.parser.get(
+                    "training_api",
+                    "TEST_CANDIDATES",
+                    fallback="data/test.csv,test.csv",
+                )
+            ),
+            run_status_filename=self.parser.get(
+                "training_api",
+                "RUN_STATUS_FILENAME",
+                fallback="training_run.json",
+            ).strip(),
+            manifest_filename=self.parser.get(
+                "training_api",
+                "MANIFEST_FILENAME",
+                fallback="training_jobs.json",
+            ).strip(),
+            summary_filename=self.parser.get(
+                "training_api",
+                "SUMMARY_FILENAME",
+                fallback="training_summary.json",
+            ).strip(),
+            max_concurrent_runs=self.parser.getint(
+                "training_api",
+                "MAX_CONCURRENT_RUNS",
+                fallback=2,
+            ),
+            ray_timeout_sec=self.parser.getfloat(
+                "training_api",
+                "RAY_TIMEOUT_SEC",
+                fallback=300.0,
+            ),
+        )
+        if self.training_api.default_execution_mode not in {"ray", "local"}:
+            raise ValueError(
+                "training_api.DEFAULT_EXECUTION_MODE must be 'ray' or 'local'"
+            )
 
     def base_model_for_provider(self, provider: str) -> str:
         provider_models = self.llm_models.as_provider_map()
