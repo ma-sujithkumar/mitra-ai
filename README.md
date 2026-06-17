@@ -16,6 +16,10 @@
 - [Epic-3 Model Selection](epic_3/model_selection/README.md) — agent-based,
   registry-constrained selection. Every emitted `model_name` is validated against
   `model_library/ml_kit.py::MODEL_REGISTRY` before `model_config.json` is written.
-- [Epic-3 Training Job Orchestrator](epic_3/training_orchestrator/README.md) —
-  validates `model_config.json` against the MLKit registry and prepares the
-  typed `training_jobs.json` hand-off consumed by the training/Ray layer.
+- [Epic-3 Local Training Pipeline](epic_3/training/README.md) — consumes one
+  `TrainingJob`, trains the exact MLKit registry model, writes `model.pkl` and
+  `train_metrics.json`, and returns a typed `TrainingResult`.
+- [Epic-3 Training Orchestrator](epic_3/training_orchestrator/README.md) —
+  validates and routes models, prepares `training_jobs.json`, integrates the
+  local training worker, persists job statuses, isolates per-model failures,
+  and writes `training_summary.json`.
