@@ -1,0 +1,13 @@
+{
+  "class_name_to_model_family": {
+    "XGBClassifier": "XGBoost",
+    "XGBRegressor": "XGBoost",
+    "RandomForestClassifier": "RandomForest",
+    "RandomForestRegressor": "RandomForest",
+    "LGBMClassifier": "LightGBM",
+    "LGBMRegressor": "LightGBM",
+    "CatBoostClassifier": "CatBoost",
+    "CatBoostRegressor": "CatBoost",
+    "LogisticRegression": "LogisticRegression"
+  }
+}
