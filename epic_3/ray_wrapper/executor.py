@@ -8,7 +8,7 @@ updates and ``training_summary.json`` generation.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -208,6 +208,7 @@ class RayExecutor:
         handles: Sequence[RayJobHandle],
         *,
         timeout_sec: float | None = None,
+        on_result: Callable[[TrainingResult], None] | None = None,
     ) -> list[TrainingResult]:
         """Collect in completion order while isolating task-level failures."""
 
@@ -227,7 +228,9 @@ class RayExecutor:
         while pending:
             remaining_time = max(0.0, deadline - monotonic())
             if remaining_time <= 0.0:
-                results.extend(self._timeout_pending(pending))
+                timed_out = self._timeout_pending(pending)
+                results.extend(timed_out)
+                self._notify_results(timed_out, on_result)
                 break
 
             try:
@@ -237,25 +240,51 @@ class RayExecutor:
                     timeout=remaining_time,
                 )
             except Exception as exc:
-                results.extend(
-                    self._fail_pending(
-                        pending,
-                        f"Ray wait failed: {type(exc).__name__}: {exc}",
-                    )
+                failed = self._fail_pending(
+                    pending,
+                    f"Ray wait failed: {type(exc).__name__}: {exc}",
                 )
+                results.extend(failed)
+                self._notify_results(failed, on_result)
                 break
 
             if not ready_refs:
-                results.extend(self._timeout_pending(pending))
+                timed_out = self._timeout_pending(pending)
+                results.extend(timed_out)
+                self._notify_results(timed_out, on_result)
                 break
 
             object_ref = ready_refs[0]
             handle = pending.pop(object_ref)
             result = self._collect_one(handle)
             results.append(result)
+            self._notify_result(result, on_result)
             self.active_handles.pop(object_ref, None)
 
         return results
+
+
+    @staticmethod
+    def _notify_result(
+        result: TrainingResult,
+        callback: Callable[[TrainingResult], None] | None,
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            callback(result)
+        except Exception:
+            # Progress reporting is best-effort and must not alter execution.
+            pass
+
+    @classmethod
+    def _notify_results(
+        cls,
+        results: Sequence[TrainingResult],
+        callback: Callable[[TrainingResult], None] | None,
+    ) -> None:
+        for result in results:
+            cls._notify_result(result, callback)
 
     def run_all(
         self,
@@ -265,11 +294,16 @@ class RayExecutor:
         resource_overrides: Mapping[
             str, RayResourceRequest | Mapping[str, Any]
         ] | None = None,
+        on_result: Callable[[TrainingResult], None] | None = None,
     ) -> list[TrainingResult]:
         """Submit every job, then collect one result per submitted job."""
 
         handles = self.submit_all(jobs, resource_overrides=resource_overrides)
-        return self.collect(handles, timeout_sec=timeout_sec)
+        return self.collect(
+            handles,
+            timeout_sec=timeout_sec,
+            on_result=on_result,
+        )
 
     def cancel(self, handle: RayJobHandle, *, force: bool = True) -> bool:
         """Cancel one active task and remove its local tracking state."""

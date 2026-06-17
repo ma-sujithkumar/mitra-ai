@@ -2,7 +2,7 @@ import { useState } from 'react';
 
 import Dashboard from './screens/Dashboard.jsx';
 import LeaderboardScreen from './screens/LeaderboardScreen.jsx';
-import PipelineScreen from './screens/PipelineScreen.jsx';
+import TrainingPage from './screens/TrainingPage.jsx';
 import Settings from './screens/Settings.jsx';
 import UploadScreen from './screens/UploadScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
@@ -20,8 +20,8 @@ const ROUTE_META = {
     icon: 'upload',
   },
   pipeline: {
-    title: 'Live Pipeline',
-    sub: 'Eight specialist agents with staged outputs',
+    title: 'Live Training',
+    sub: 'Live Ray model training, metrics, and event logs',
     icon: 'flow',
   },
   leaderboard: {
@@ -39,6 +39,9 @@ const ROUTE_META = {
 function App() {
   const [route, setRoute] = useState('dashboard');
   const [runState, setRunState] = useState('idle');
+  const [activeSessionId, setActiveSessionId] = useState(
+    () => window.localStorage.getItem('mitra.activeTrainingSession') || '',
+  );
   const [llmSettings, setLlmSettings] = useState({
     provider: 'anthropic',
     model: '',
@@ -59,7 +62,12 @@ function App() {
     setRoute(nextRoute);
   }
 
-  function startRun() {
+  function startRun(sessionId) {
+    const normalized = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (normalized) {
+      setActiveSessionId(normalized);
+      window.localStorage.setItem('mitra.activeTrainingSession', normalized);
+    }
     setRunState('running');
     setRoute('pipeline');
   }
@@ -75,11 +83,12 @@ function App() {
       />
     ),
     pipeline: (
-      <PipelineScreen
+      <TrainingPage
+        activeSessionId={activeSessionId}
         go={go}
         runState={runState}
+        setActiveSessionId={setActiveSessionId}
         setRunState={setRunState}
-        startRun={startRun}
       />
     ),
     leaderboard: <LeaderboardScreen startRun={startRun} />,

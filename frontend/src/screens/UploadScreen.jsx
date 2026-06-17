@@ -37,6 +37,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
   const [metadataFile, setMetadataFile] = useState(null);
   const [selectedRecent, setSelectedRecent] = useState(null);
   const [sessionSummary, setSessionSummary] = useState(null);
+  const [activeSessionId, setActiveSessionId] = useState('');
   const [validationEvents, setValidationEvents] = useState([]);
   const [metadataEvents, setMetadataEvents] = useState([]);
   const [validationPhase, setValidationPhase] = useState('idle');
@@ -116,6 +117,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
     setValidationPhase('idle');
     setMetadataPhase('idle');
     setSessionSummary(null);
+    setActiveSessionId('');
     setError(null);
   }
 
@@ -126,10 +128,11 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
   }
 
   function handleRecentSelect(uploadRecord) {
+    resetRunState();
     setSelectedRecent(uploadRecord);
+    setActiveSessionId(uploadRecord.session_id);
     setDatasetFile(null);
     setMetadataFile(null);
-    resetRunState();
   }
 
   async function handleValidateAndReview() {
@@ -147,6 +150,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
           metadataFile,
         });
         sessionId = uploadPayload.session_id;
+        setActiveSessionId(sessionId);
         setSessionSummary(uploadPayload.summary);
       } else if (selectedRecent) {
         setSessionSummary({
@@ -155,6 +159,8 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
           file_size_bytes: selectedRecent.file_size_bytes,
         });
       }
+
+      setActiveSessionId(sessionId || '');
 
       if (!sessionId) {
         throw new Error('Select a dataset file or recent upload.');
@@ -465,7 +471,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
         <button
           className="btn btn-primary"
           disabled={!canRunPipeline}
-          onClick={startRun}
+          onClick={() => startRun(activeSessionId)}
           type="button"
         >
           <Icons.play size={16} />
