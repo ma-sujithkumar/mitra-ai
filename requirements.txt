@@ -18,3 +18,4 @@ pytest>=8.0.0
 httpx>=0.27.0
 python-multipart>=0.0.9
 certifi>=2024.8.30
+ray>=2.50.0,<3.0.0

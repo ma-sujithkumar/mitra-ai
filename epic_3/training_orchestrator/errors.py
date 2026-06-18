@@ -1,4 +1,4 @@
-"""Errors raised while converting model-selection output into training jobs."""
+"""Errors raised by Epic-3 model routing and training orchestration."""
 
 
 class TrainingOrchestratorError(RuntimeError):
@@ -15,3 +15,11 @@ class ModelRoutingError(TrainingOrchestratorError):
 
 class MissingDataSplitError(TrainingOrchestratorError):
     """Raised when the train/test artifacts from Epic-2 are unavailable."""
+
+
+class TrainingExecutionError(TrainingOrchestratorError):
+    """Raised when the training worker violates the orchestration contract."""
+
+
+class ResultAggregationError(TrainingOrchestratorError):
+    """Raised when per-model results cannot form a valid session summary."""

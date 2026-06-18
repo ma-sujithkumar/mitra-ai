@@ -23,7 +23,7 @@ function LeaderboardScreen({ startRun }) {
         </div>
         <button className="btn btn-primary" onClick={startRun} type="button">
           <Icons.play size={16} />
-          New preview
+          Back to training
         </button>
       </section>
 

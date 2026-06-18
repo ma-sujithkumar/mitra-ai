@@ -1,0 +1,15 @@
+{
+  "model_name": "RandomForestClassifier",
+  "task_type": "classification",
+  "top_features": ["petal_length", "petal_width", "sepal_length"],
+  "mean_abs_shap": {
+    "petal_length": 0.51,
+    "petal_width": 0.29,
+    "sepal_length": 0.11,
+    "sepal_width": 0.09
+  },
+  "feature_concentration": 0.80,
+  "interaction_effects": {
+    "petal_length x petal_width": 0.12
+  }
+}
