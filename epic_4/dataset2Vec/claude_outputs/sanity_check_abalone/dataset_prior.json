@@ -1,0 +1,324 @@
+{
+  "query_dataset_id": "abalone",
+  "encoder_version": "d2v-v1",
+  "top_k": 5,
+  "primary_metric": "f1_macro",
+  "neighbors": [
+    {
+      "dataset_id": "iris",
+      "similarity": 0.9998546242713928,
+      "best_model": "NuSVC",
+      "recommended_hyperparameters": {
+        "nu": 0.2009343418599359,
+        "gamma": 0.00016929505327289258
+      },
+      "metrics": {
+        "accuracy": 1.0,
+        "f1_macro": 1.0,
+        "f1_weighted": 1.0,
+        "precision_macro": 1.0,
+        "recall_macro": 1.0
+      }
+    },
+    {
+      "dataset_id": "waveform",
+      "similarity": 0.9997337460517883,
+      "best_model": "SVC",
+      "recommended_hyperparameters": {
+        "C": 0.1486759252491731,
+        "gamma": 0.029499719873019893
+      },
+      "metrics": {
+        "accuracy": 0.8848,
+        "f1_macro": 0.8836786106792808,
+        "f1_weighted": 0.8837133402713991,
+        "precision_macro": 0.8864829802662991,
+        "recall_macro": 0.8845394310621035
+      }
+    },
+    {
+      "dataset_id": "teaching",
+      "similarity": 0.9991986155509949,
+      "best_model": "ExtraTreesClassifier",
+      "recommended_hyperparameters": {
+        "n_estimators": 106,
+        "max_depth": 14,
+        "min_samples_split": 8
+      },
+      "metrics": {
+        "accuracy": 0.6842105263157895,
+        "f1_macro": 0.6664073978048569,
+        "f1_weighted": 0.6712607289548735,
+        "precision_macro": 0.690873015873016,
+        "recall_macro": 0.6785714285714285
+      }
+    },
+    {
+      "dataset_id": "statlog-vehicle",
+      "similarity": 0.9990650415420532,
+      "best_model": "MLPClassifier",
+      "recommended_hyperparameters": {
+        "alpha": 0.0016884752242678164,
+        "max_iter": 512
+      },
+      "metrics": {
+        "accuracy": 0.8151658767772512,
+        "f1_macro": 0.8136064199305306,
+        "f1_weighted": 0.8112706405795967,
+        "precision_macro": 0.8240768364762173,
+        "recall_macro": 0.8180953418150183
+      }
+    },
+    {
+      "dataset_id": "pittsburg-bridges-SPAN",
+      "similarity": 0.9984191656112671,
+      "best_model": "DecisionTreeClassifier",
+      "recommended_hyperparameters": {
+        "max_depth": 12,
+        "min_samples_split": 20
+      },
+      "metrics": {
+        "accuracy": 0.782608695652174,
+        "f1_macro": 0.7480842911877393,
+        "f1_weighted": 0.7757371314342829,
+        "precision_macro": 0.8333333333333334,
+        "recall_macro": 0.7076923076923077
+      }
+    }
+  ],
+  "ranked_models": [
+    {
+      "model_name": "LinearSVC",
+      "score": 0.9259027562047393,
+      "recommended_hyperparameters": {
+        "C": 4.5705630998014515,
+        "max_iter": 1997
+      },
+      "expected_metric": 0.9721739130434782,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.6244589519757305,
+        "achieved_full": {
+          "accuracy": 0.6369731800766284,
+          "f1_macro": 0.6244589519757305,
+          "f1_weighted": 0.6286358805914464,
+          "precision_macro": 0.6251493543932387,
+          "recall_macro": 0.6319622016591714
+        },
+        "delta_vs_expected": -0.3477149610677477,
+        "within_tolerance": false
+      }
+    },
+    {
+      "model_name": "SGDClassifier",
+      "score": 0.8770552815401635,
+      "recommended_hyperparameters": {
+        "alpha": 0.00031489116479568613,
+        "max_iter": 1912
+      },
+      "expected_metric": 0.9721739130434782,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.5766895716998529,
+        "achieved_full": {
+          "accuracy": 0.6187739463601533,
+          "f1_macro": 0.5766895716998529,
+          "f1_weighted": 0.5833570442743901,
+          "precision_macro": 0.5922068652261371,
+          "recall_macro": 0.6093867972655852
+        },
+        "delta_vs_expected": -0.3954843413436253,
+        "within_tolerance": false
+      }
+    },
+    {
+      "model_name": "DecisionTreeClassifier",
+      "score": 0.8602095894317027,
+      "recommended_hyperparameters": {
+        "max_depth": 12,
+        "min_samples_split": 20
+      },
+      "expected_metric": 0.9721739130434782,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.606151758912409,
+        "achieved_full": {
+          "accuracy": 0.60727969348659,
+          "f1_macro": 0.606151758912409,
+          "f1_weighted": 0.6085924971790961,
+          "precision_macro": 0.6091897492919071,
+          "recall_macro": 0.605774920926436
+        },
+        "delta_vs_expected": -0.3660221541310692,
+        "within_tolerance": false
+      }
+    },
+    {
+      "model_name": "LinearDiscriminantAnalysis",
+      "score": 0.8199846770480862,
+      "recommended_hyperparameters": {},
+      "expected_metric": 0.8745806168675928,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.6526414843320287,
+        "achieved_full": {
+          "accuracy": 0.6503831417624522,
+          "f1_macro": 0.6526414843320287,
+          "f1_weighted": 0.6547621958638656,
+          "precision_macro": 0.6653763635207369,
+          "recall_macro": 0.6504320595229686
+        },
+        "delta_vs_expected": -0.22193913253556408,
+        "within_tolerance": false
+      }
+    },
+    {
+      "model_name": "AdaBoostClassifier",
+      "score": 0.8161044184551169,
+      "recommended_hyperparameters": {
+        "n_estimators": 167,
+        "learning_rate": 1.8998468212659672
+      },
+      "expected_metric": 1.0,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.619960812208174,
+        "achieved_full": {
+          "accuracy": 0.6340996168582376,
+          "f1_macro": 0.619960812208174,
+          "f1_weighted": 0.624362967805638,
+          "precision_macro": 0.6181549454869651,
+          "recall_macro": 0.6286587710830136
+        },
+        "delta_vs_expected": -0.380039187791826,
+        "within_tolerance": false
+      }
+    },
+    {
+      "model_name": "NuSVC",
+      "score": 0.8149305554660922,
+      "recommended_hyperparameters": {
+        "nu": 0.2009343418599359,
+        "gamma": 0.00016929505327289258
+      },
+      "expected_metric": 1.0,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.43638734951044206,
+        "achieved_full": {
+          "accuracy": 0.5105363984674329,
+          "f1_macro": 0.43638734951044206,
+          "f1_weighted": 0.4453426357555168,
+          "precision_macro": 0.43979085430698334,
+          "recall_macro": 0.49826469826469827
+        },
+        "delta_vs_expected": -0.563612650489558,
+        "within_tolerance": false
+      }
+    },
+    {
+      "model_name": "LogisticRegression",
+      "score": 0.8122981919123371,
+      "recommended_hyperparameters": {
+        "C": 0.0745934328572655,
+        "max_iter": 1912
+      },
+      "expected_metric": 0.9721739130434782,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.6374714669833604,
+        "achieved_full": {
+          "accuracy": 0.64272030651341,
+          "f1_macro": 0.6374714669833604,
+          "f1_weighted": 0.6408470852488105,
+          "precision_macro": 0.637556605284422,
+          "recall_macro": 0.6394535879384363
+        },
+        "delta_vs_expected": -0.3347024460601178,
+        "within_tolerance": false
+      }
+    },
+    {
+      "model_name": "QuadraticDiscriminantAnalysis",
+      "score": 0.8090639581199499,
+      "recommended_hyperparameters": {
+        "reg_param": 0.3745401188473625
+      },
+      "expected_metric": 0.8090639581199499,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.6223116091711524,
+        "achieved_full": {
+          "accuracy": 0.6216475095785441,
+          "f1_macro": 0.6223116091711524,
+          "f1_weighted": 0.6237945014922642,
+          "precision_macro": 0.648801044634378,
+          "recall_macro": 0.6230988988564746
+        },
+        "delta_vs_expected": -0.18675234894879755,
+        "within_tolerance": false
+      }
+    },
+    {
+      "model_name": "RandomForestClassifier",
+      "score": 0.8053724812296187,
+      "recommended_hyperparameters": {
+        "n_estimators": 362,
+        "max_depth": 29,
+        "min_samples_split": 15
+      },
+      "expected_metric": 0.9721739130434782,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.643269810106628,
+        "achieved_full": {
+          "accuracy": 0.6503831417624522,
+          "f1_macro": 0.643269810106628,
+          "f1_weighted": 0.647112542115351,
+          "precision_macro": 0.64152079729192,
+          "recall_macro": 0.646159340098734
+        },
+        "delta_vs_expected": -0.32890410293685024,
+        "within_tolerance": false
+      }
+    },
+    {
+      "model_name": "GradientBoostingClassifier",
+      "score": 0.7966854633985913,
+      "recommended_hyperparameters": {
+        "n_estimators": 181,
+        "max_depth": 10,
+        "learning_rate": 0.1205712628744377
+      },
+      "expected_metric": 0.9721739130434782,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.6373333839197639,
+        "achieved_full": {
+          "accuracy": 0.6417624521072797,
+          "f1_macro": 0.6373333839197639,
+          "f1_weighted": 0.6407262192930068,
+          "precision_macro": 0.6365848917127721,
+          "recall_macro": 0.6382841625265868
+        },
+        "delta_vs_expected": -0.3348405291237143,
+        "within_tolerance": false
+      }
+    }
+  ],
+  "verification_summary": {
+    "tolerance": 0.05,
+    "n_verified": 10,
+    "n_within_tolerance": 0,
+    "best_achieved": {
+      "accuracy": 0.6503831417624522,
+      "f1_macro": 0.6526414843320287,
+      "f1_weighted": 0.6547621958638656,
+      "precision_macro": 0.6653763635207369,
+      "recall_macro": 0.6504320595229686
+    },
+    "mean_abs_delta": 0.346001185442887
+  },
+  "cold_start": false,
+  "caveats": []
+}
