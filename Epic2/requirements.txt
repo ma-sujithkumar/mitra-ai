@@ -1,0 +1,21 @@
+# Agent harness
+google-adk
+
+# Data
+pandas
+numpy
+scipy
+
+# ML
+scikit-learn
+mrmr-selection
+
+# Config
+pyyaml
+pydantic
+
+# Parallelism
+ray
+
+# Async helper (needed when running ADK inside an existing event loop)
+nest_asyncio

@@ -1,0 +1,110 @@
+flowchart TD
+
+    CLI(["CLI  main.py<br/>python main.py run data.csv<br/>--task classification|regression<br/>--target col_name  --model model_string"])
+
+    %% ── PHASE 1: FOUNDATION ──────────────────────────────────────────────────
+    subgraph FOUNDATION["Phase 1 — Foundation  config + state + base + parallel"]
+        direction LR
+        CFG["config/config.yaml<br/>all thresholds + params<br/>null_drop 0.50  iqr 1.5<br/>max_created_features 50<br/>max_workers 8  random_state 42"]
+        CFGPY["pipeline/config.py<br/>ConfigSchema  Pydantic<br/>validates at import time<br/>missing key → ValidationError"]
+        STATEPY["pipeline/state.py<br/>PipelineState dataclass<br/>df  target  task  config<br/>profile  column_types<br/>transformers  dropped_columns<br/>created_columns  warnings<br/>selected_columns  selection_method<br/>pre_encoding_done  row_count_after_outlier<br/>output_dir  run_id"]
+        BASEPY["pipeline/base.py<br/>BaseTool ABC<br/>precondition checks inputs not None<br/>run mutates state in place returns None<br/>postcondition checks output not None<br/>__call__ chains all three"]
+        PARPY["pipeline/parallel.py<br/>Ray remote function definitions<br/>run_parallel helper<br/>mini_profile utility shared<br/>ray.init called once by orchestrator only"]
+        CFG --> CFGPY
+    end
+
+    %% ── STARTUP ──────────────────────────────────────────────────────────────
+    subgraph STARTUP["Orchestrator Startup  pipeline/orchestrator.py"]
+        direction TB
+        S1["1  Validate task type<br/>classification or regression<br/>else raise ValueError"]
+        S2["2  Load config.yaml<br/>ConfigSchema validation"]
+        S3["3  ray.init num_cpus=8<br/>called once here only"]
+        S4["4  Generate run_id<br/>YYYYMMDDTHHMMSS_uuid8"]
+        S5["5  Separate target column<br/>validate target exists in df"]
+        S6["6  Set output_dir<br/>pipeline_output/run_id<br/>create directory"]
+        S7["7  Init PipelineState<br/>no model_fn field"]
+        S8["8  ADK smoke test<br/>send minimal test message<br/>verify non-empty response"]
+        S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8
+    end
+
+    %% ── ADK AGENT LOOP ───────────────────────────────────────────────────────
+    subgraph ADKLOOP["Phase 3 — ADK Agent Loop  google.adk.agents.Agent  orchestrator_agent"]
+
+        subgraph ADKTOOLS["pipeline/tools/adk_tools.py  ADK Tool Wrappers"]
+            direction TB
+            INJ["set_pipeline_state injects shared state<br/>module-level _state reference<br/>all ADK tool functions close over it<br/>ADK tools receive only JSON-serializable args"]
+        end
+
+        subgraph PH1["Pipeline Step 1 — Profiling"]
+            T1["DataProfiler  profiler.py<br/>CODE + RAY PARALLEL<br/>Univariate per column in parallel<br/>null_rate  dtype  nunique  top5<br/>mean  std  skewness  kurtosis<br/>Multivariate single pass<br/>Pearson correlation matrix<br/>MI each feature vs target<br/>Writes: state.profile"]
+        end
+
+        subgraph PH2["Pipeline Step 2 — Type Inference"]
+            T2["SemanticTypeInfer  infer.py<br/>AGENT  one-shot call<br/>Input: names dtypes null_rates samples<br/>Output JSON: column → type<br/>Types: numeric categorical datetime<br/>id  text  binary  target<br/>id cols → dropped_columns<br/>text cols → dropped<br/>datetime → year month day quarter<br/>Mini-profile for new datetime cols<br/>Writes: state.column_types"]
+        end
+
+        subgraph PH3["Pipeline Step 3 — Imputation"]
+            T3["MissingValueHandler  imputer.py<br/>AGENT  batched one-shot call<br/>Input: null_rate MCAR/MAR signal col_type<br/>Strategies: median  mode  knn  iterative  drop<br/>null_rate above 0.50 → drop col<br/>KNNImputer deterministic no seed<br/>IterativeImputer random_state=42<br/>Target imputed first mode/median<br/>Writes: state.transformers  state.dropped_columns"]
+        end
+
+        subgraph PH4["Pipeline Step 4 — Outlier Handling"]
+            T4["OutlierHandler  outlier.py<br/>AGENT  single batched call<br/>Detectors: IQR  ZScore  IsolationForest random_state=42<br/>Actions per column:<br/>scale → RobustScaler on column<br/>flag → add col_is_outlier binary column<br/>drop_row → drops row and target row atomically<br/>Writes: state.transformers  state.row_count_after_outlier"]
+        end
+
+        subgraph PH5["Pipeline Step 5a — Pre-Encoding Feature Creation"]
+            T5A["FeatureCreator.run_pre  creator.py<br/>AGENT one-shot call  caches all specs on self._specs<br/>Executes pre_encoding specs only<br/>Only operation: cross_categorical<br/>Any spec missing temporal_class rejected<br/>Sets: state.pre_encoding_done = True"]
+        end
+
+        subgraph PH6["Pipeline Step 6 — Encoding"]
+            T6["Encoder  encoder.py<br/>CODE only  no model call<br/>Requires: state.column_types not None<br/>Requires: state.pre_encoding_done = True<br/>LabelEncoder on categorical and binary cols<br/>LabelEncoder on target if classification<br/>Fitted classes logged to state.transformers"]
+        end
+
+        subgraph PH7["Pipeline Step 5b — Post-Encoding Feature Creation"]
+            T5B["FeatureCreator.run_post  creator.py<br/>CODE only  executes cached post_encoding specs<br/>Operations: ratio  difference  product  sum_group<br/>square  sqrt  log1p  row_mean  row_max<br/>row_count_positive  days_since  is_recent<br/>equal_width_bins  quantile_bins<br/>Cap: top max_created_features by proxy MI<br/>proxy_MI = mean MI of source cols<br/>Mini-profile for new columns via parallel.py<br/>Merges into state.profile<br/>Writes: state.created_columns"]
+        end
+
+        subgraph PH8["Pipeline Step 7 — Scaling"]
+            T7["Scaler  scaler.py<br/>AGENT + RAY parallel column batches<br/>Picks per column from distribution profile<br/>standard → near-normal cols<br/>robust → skewed or outlier cols<br/>minmax → bounded cols<br/>power → heavily skewed Yeo-Johnson random_state=42<br/>Target col never scaled<br/>Writes: state.transformers"]
+        end
+
+        subgraph PH9["Pipeline Step 8 — Feature Selection"]
+            T8["FeatureSelector  selector.py<br/>AGENT + RAY parallel scoring<br/>Methods available: VarianceThreshold  MI<br/>ANOVA F-test  Lasso  RandomForest<br/>PCA  mRMR<br/>high inter-corr + low MI → PCA<br/>high MI + low inter-corr → mRMR<br/>mixed → mRMR then PCA on residual<br/>default fallback → mRMR<br/>top_k_features from config controls k<br/>Writes: state.selected_columns  state.selection_method"]
+        end
+
+        subgraph PH10["Pipeline Step 9 — Validation"]
+            T9["FeatureValidator  validator.py<br/>CODE only  no model call<br/>All selected cols present in df<br/>No NaN in selected cols<br/>All selected cols are float64<br/>Coerce: cast float → parse timestamp → label encode<br/>If all fail: skip col + log warning<br/>Target col is last column<br/>Row count matches row_count_after_outlier<br/>Orchestrator writes feature_artifact.json here"]
+        end
+
+        subgraph PH11["Pipeline Step 10 — Reporting"]
+            T10["FeatureReporter  reporter.py<br/>AGENT  one-shot call<br/>Input: structured summary from state<br/>dropped_cols  created_cols  transformers<br/>selected_cols  warnings  selection_method<br/>Output: Markdown report.md<br/>Fallback: string constant template in reporter.py<br/>Writes: report.md<br/>Orchestrator appends to execution_log.txt after each tool"]
+        end
+
+        INJ --> PH1
+        PH1 --> PH2 --> PH3 --> PH4 --> PH5 --> PH6 --> PH7 --> PH8 --> PH9 --> PH10 --> PH11
+    end
+
+    %% ── OUTPUTS ──────────────────────────────────────────────────────────────
+    subgraph OUTPUTS["Outputs  pipeline_output/run_id/"]
+        direction TB
+        O1["engineered_dataset.csv<br/>all features numeric scaled selected<br/>all cols float64  target last"]
+        O2["feature_artifact.json<br/>run_id  task  target_column<br/>dropped_columns  created_columns<br/>transformers with fitted params<br/>selected_columns  selection_method  warnings"]
+        O3["report.md<br/>Data Quality  Encoding<br/>Features Created  Selection  Warnings<br/>model-written or template fallback"]
+        O4["execution_log.txt<br/>append-only one line per tool<br/>tool name  duration  status"]
+    end
+
+    %% ── BUILD ORDER (from plan.md) ───────────────────────────────────────────
+    subgraph BUILD["Build Order  plan.md Phase sequence"]
+        direction LR
+        B1["Phase 1<br/>config.yaml  config.py<br/>state.py  base.py  parallel.py"]
+        B2["Phase 2<br/>10 tools in pipeline/tools/<br/>profiler → infer → imputer<br/>outlier → encoder → creator<br/>scaler → selector → validator → reporter"]
+        B3["Phase 3<br/>orchestrator.py<br/>ADK Agent + tool registration"]
+        B4["Phase 4<br/>main.py entry point<br/>schema.md  README.md"]
+        B1 --> B2 --> B3 --> B4
+    end
+
+    %% ── CONNECTIONS ──────────────────────────────────────────────────────────
+    CLI --> STARTUP
+    FOUNDATION --> STARTUP
+    STARTUP --> ADKLOOP
+    ADKLOOP --> OUTPUTS
+    BUILD -.->|"build sequence"| FOUNDATION
