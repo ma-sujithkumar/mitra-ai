@@ -1,0 +1,326 @@
+{
+  "query_dataset_id": "ext-letter-recognition",
+  "encoder_version": "d2v-v1",
+  "top_k": 5,
+  "primary_metric": "f1_macro",
+  "neighbors": [
+    {
+      "dataset_id": "letter",
+      "similarity": 0.9999135732650757,
+      "best_model": "ExtraTreesClassifier",
+      "recommended_hyperparameters": {
+        "n_estimators": 776,
+        "max_depth": 30,
+        "min_samples_split": 2
+      },
+      "metrics": {
+        "accuracy": 0.9744,
+        "f1_macro": 0.9742631230384146,
+        "f1_weighted": 0.9744252938233691,
+        "precision_macro": 0.9747506540966433,
+        "recall_macro": 0.9740905063539476
+      }
+    },
+    {
+      "dataset_id": "steel-plates",
+      "similarity": 0.9994555711746216,
+      "best_model": "ExtraTreesClassifier",
+      "recommended_hyperparameters": {
+        "n_estimators": 497,
+        "max_depth": 25,
+        "min_samples_split": 2
+      },
+      "metrics": {
+        "accuracy": 0.7896907216494845,
+        "f1_macro": 0.8009681834248218,
+        "f1_weighted": 0.7861827185294028,
+        "precision_macro": 0.8275484003367541,
+        "recall_macro": 0.7921061913731128
+      }
+    },
+    {
+      "dataset_id": "pittsburg-bridges-REL-L",
+      "similarity": 0.9988808631896973,
+      "best_model": "GaussianNB",
+      "recommended_hyperparameters": {},
+      "metrics": {
+        "accuracy": 0.8461538461538461,
+        "f1_macro": 0.8300653594771242,
+        "f1_weighted": 0.8457013574660633,
+        "precision_macro": 0.8814814814814814,
+        "recall_macro": 0.8027777777777777
+      }
+    },
+    {
+      "dataset_id": "libras",
+      "similarity": 0.9984006285667419,
+      "best_model": "NuSVC",
+      "recommended_hyperparameters": {
+        "nu": 0.5017154745541766,
+        "gamma": 0.05981345508730721
+      },
+      "metrics": {
+        "accuracy": 0.8444444444444444,
+        "f1_macro": 0.847314254373078,
+        "f1_weighted": 0.8473142543730778,
+        "precision_macro": 0.8834776334776335,
+        "recall_macro": 0.8444444444444444
+      }
+    },
+    {
+      "dataset_id": "chess-krvk",
+      "similarity": 0.9983044266700745,
+      "best_model": "GradientBoostingClassifier",
+      "recommended_hyperparameters": {
+        "n_estimators": 181,
+        "max_depth": 10,
+        "learning_rate": 0.1205712628744377
+      },
+      "metrics": {
+        "accuracy": 0.9114627887082977,
+        "f1_macro": 0.8884017803214339,
+        "f1_weighted": 0.9114284433452482,
+        "precision_macro": 0.8845036451307401,
+        "recall_macro": 0.896773170128269
+      }
+    }
+  ],
+  "ranked_models": [
+    {
+      "model_name": "GradientBoostingClassifier",
+      "score": 0.8695766975610989,
+      "recommended_hyperparameters": {
+        "n_estimators": 201,
+        "max_depth": 4,
+        "learning_rate": 0.08012737503998542
+      },
+      "expected_metric": 0.9571326829365976,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.9564915619591283,
+        "achieved_full": {
+          "accuracy": 0.95675,
+          "f1_macro": 0.9564915619591283,
+          "f1_weighted": 0.9567677593145096,
+          "precision_macro": 0.9568860012949177,
+          "recall_macro": 0.956444281735864
+        },
+        "delta_vs_expected": -0.0006411209774692672,
+        "within_tolerance": true
+      }
+    },
+    {
+      "model_name": "HistGradientBoostingClassifier",
+      "score": 0.8506283352034002,
+      "recommended_hyperparameters": {
+        "max_iter": 150,
+        "max_depth": 19,
+        "learning_rate": 0.12587933563680417
+      },
+      "expected_metric": 0.9656538264921077,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.9663179908178583,
+        "achieved_full": {
+          "accuracy": 0.9665,
+          "f1_macro": 0.9663179908178583,
+          "f1_weighted": 0.9665375429776194,
+          "precision_macro": 0.9664815574183755,
+          "recall_macro": 0.966297508934754
+        },
+        "delta_vs_expected": 0.0006641643257505603,
+        "within_tolerance": true
+      }
+    },
+    {
+      "model_name": "DecisionTreeClassifier",
+      "score": 0.8500307681148221,
+      "recommended_hyperparameters": {
+        "max_depth": 30,
+        "min_samples_split": 2
+      },
+      "expected_metric": 0.8741127743565497,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.8854088874013001,
+        "achieved_full": {
+          "accuracy": 0.88575,
+          "f1_macro": 0.8854088874013001,
+          "f1_weighted": 0.8856456726751856,
+          "precision_macro": 0.8857484357773243,
+          "recall_macro": 0.885566717582911
+        },
+        "delta_vs_expected": 0.011296113044750422,
+        "within_tolerance": true
+      }
+    },
+    {
+      "model_name": "GaussianNB",
+      "score": 0.8300653594771242,
+      "recommended_hyperparameters": {},
+      "expected_metric": 0.8300653594771242,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.6545832988660525,
+        "achieved_full": {
+          "accuracy": 0.659,
+          "f1_macro": 0.6545832988660525,
+          "f1_weighted": 0.6557985863508784,
+          "precision_macro": 0.6696423634224021,
+          "recall_macro": 0.6578749266742694
+        },
+        "delta_vs_expected": -0.17548206061107174,
+        "within_tolerance": false
+      }
+    },
+    {
+      "model_name": "RandomForestClassifier",
+      "score": 0.825440041503193,
+      "recommended_hyperparameters": {
+        "n_estimators": 595,
+        "max_depth": 21,
+        "min_samples_split": 3
+      },
+      "expected_metric": 0.9654921188189636,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.9695735369682524,
+        "achieved_full": {
+          "accuracy": 0.96975,
+          "f1_macro": 0.9695735369682524,
+          "f1_weighted": 0.9697409979807337,
+          "precision_macro": 0.9700785520650743,
+          "recall_macro": 0.9694501203821964
+        },
+        "delta_vs_expected": 0.004081418149288862,
+        "within_tolerance": true
+      }
+    },
+    {
+      "model_name": "SVC",
+      "score": 0.8183368180050257,
+      "recommended_hyperparameters": {
+        "C": 3.863188562382418,
+        "gamma": 0.036451753013526336
+      },
+      "expected_metric": 0.7944449944242514,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.9558932175944358,
+        "achieved_full": {
+          "accuracy": 0.956,
+          "f1_macro": 0.9558932175944358,
+          "f1_weighted": 0.9560685650074282,
+          "precision_macro": 0.9565902045826362,
+          "recall_macro": 0.9557969459370005
+        },
+        "delta_vs_expected": 0.16144822317018437,
+        "within_tolerance": false
+      }
+    },
+    {
+      "model_name": "ExtraTreesClassifier",
+      "score": 0.817404915861344,
+      "recommended_hyperparameters": {
+        "n_estimators": 776,
+        "max_depth": 30,
+        "min_samples_split": 2
+      },
+      "expected_metric": 0.9742631230384146,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.9730777253635314,
+        "achieved_full": {
+          "accuracy": 0.97325,
+          "f1_macro": 0.9730777253635314,
+          "f1_weighted": 0.973243833833524,
+          "precision_macro": 0.9733182388203397,
+          "recall_macro": 0.9730235317582359
+        },
+        "delta_vs_expected": -0.0011853976748831263,
+        "within_tolerance": true
+      }
+    },
+    {
+      "model_name": "BaggingClassifier",
+      "score": 0.8165719651114186,
+      "recommended_hyperparameters": {
+        "n_estimators": 195
+      },
+      "expected_metric": 0.9404278214917577,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.9490610521035884,
+        "achieved_full": {
+          "accuracy": 0.94925,
+          "f1_macro": 0.9490610521035884,
+          "f1_weighted": 0.9492263210727772,
+          "precision_macro": 0.9495854760703052,
+          "recall_macro": 0.9489399834762454
+        },
+        "delta_vs_expected": 0.008633230611830633,
+        "within_tolerance": true
+      }
+    },
+    {
+      "model_name": "MLPClassifier",
+      "score": 0.8114043451780912,
+      "recommended_hyperparameters": {
+        "alpha": 0.008776844435119344,
+        "max_iter": 672
+      },
+      "expected_metric": 0.9627112723918436,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.9582803746128021,
+        "achieved_full": {
+          "accuracy": 0.9585,
+          "f1_macro": 0.9582803746128021,
+          "f1_weighted": 0.9585143902226178,
+          "precision_macro": 0.9586653435845821,
+          "recall_macro": 0.9582959830200616
+        },
+        "delta_vs_expected": -0.004430897779041487,
+        "within_tolerance": true
+      }
+    },
+    {
+      "model_name": "XGBClassifier",
+      "score": 0.7985645532675864,
+      "recommended_hyperparameters": {
+        "n_estimators": 655,
+        "max_depth": 6,
+        "learning_rate": 0.11582303854578126
+      },
+      "expected_metric": 0.7985645532675864,
+      "verification": {
+        "trained": true,
+        "achieved_metric": 0.8172800953952571,
+        "achieved_full": {
+          "accuracy": 0.81525,
+          "f1_macro": 0.8172800953952571,
+          "f1_weighted": 0.8183957623283251,
+          "precision_macro": 0.8542931258777369,
+          "recall_macro": 0.8140233870341216
+        },
+        "delta_vs_expected": 0.018715542127670792,
+        "within_tolerance": true
+      }
+    }
+  ],
+  "verification_summary": {
+    "tolerance": 0.05,
+    "n_verified": 10,
+    "n_within_tolerance": 8,
+    "best_achieved": {
+      "accuracy": 0.97325,
+      "f1_macro": 0.9730777253635314,
+      "f1_weighted": 0.973243833833524,
+      "precision_macro": 0.9733182388203397,
+      "recall_macro": 0.9730235317582359
+    },
+    "mean_abs_delta": 0.038657816847194125
+  },
+  "cold_start": false,
+  "caveats": []
+}
