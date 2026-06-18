@@ -35,7 +35,9 @@ TEMPLATE = """# Feature Engineering Report — run {run_id}
 
 
 class FeatureReporter(BaseTool):
-    def __init__(self, model_call: Callable[[str], str]):
+    def __init__(self, model_call: Callable[[str], str] | None):
+        # model_call is None => write report.md from the deterministic template
+        # (no LLM call). This is the default per config.report.use_llm = false.
         self.model_call = model_call
 
     def precondition(self, state: PipelineState) -> None:
@@ -56,14 +58,17 @@ class FeatureReporter(BaseTool):
             "selection_method": state.selection_method,
             "warnings": state.warnings,
         }
-        prompt = REPORT_PROMPT.format(summary=json.dumps(summary, indent=2, default=str))
-        try:
-            report_md = self.model_call(prompt)
-            if not isinstance(report_md, str) or not report_md.strip():
-                raise ValueError("empty model response")
-        except Exception as e:
-            state.warnings.append(f"Reporter model call failed: {e}; using template")
+        if self.model_call is None:
             report_md = self._template(state, summary)
+        else:
+            prompt = REPORT_PROMPT.format(summary=json.dumps(summary, indent=2, default=str))
+            try:
+                report_md = self.model_call(prompt)
+                if not isinstance(report_md, str) or not report_md.strip():
+                    raise ValueError("empty model response")
+            except Exception as e:
+                state.warnings.append(f"Reporter model call failed: {e}; using template")
+                report_md = self._template(state, summary)
 
         (state.output_dir / "report.md").write_text(report_md, encoding="utf-8")
 

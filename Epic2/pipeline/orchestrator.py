@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -12,33 +13,20 @@ import ray
 from pandas.api.types import is_numeric_dtype
 
 from pipeline.config import ConfigSchema, load_config
+from pipeline.feature_stats import compute_and_write_stats
 from pipeline.state import PipelineState
-from pipeline.tools import adk_tools
-
-ORCHESTRATOR_INSTRUCTION_TEMPLATE = """You orchestrate a feature engineering pipeline. Your job: call the tools below in the right order until the pipeline is complete, then stop.
-
-Default tool sequence:
-1. profile_data
-2. infer_types
-3. handle_missing
-4. handle_outliers
-5. create_features_pre
-6. encode_features
-7. create_features_post
-8. scale_features
-9. select_features
-10. validate_features
-11. write_report
-
-Rules:
-- Call each tool exactly once if it returns {{"status": "ok"}}.
-- If a tool returns {{"status": "error"}}, retry it up to {max_tool_retries} times. On the next failure, skip to the next tool and continue.
-- After write_report returns ok, respond with exactly the text: DONE. Nothing else.
-- CRITICAL: Tool names must be used EXACTLY as listed above. Never append, prepend, or attach any suffix, prefix, annotation, commentary, or extra characters to a tool name. For example, call "create_features_pre" not "create_features_pre..commentary" or "create_features_pre_note". Only the exact name as listed is valid.
-- Do not add any notes, labels, or commentary by modifying the tool name. If you want to reason, do it in plain text before calling the tool.
-"""
-
-START_MESSAGE = "Begin the feature engineering pipeline. Start with profile_data."
+from pipeline.tools.adk_tools import _coerce_object_numeric
+from pipeline.tools.creator import FeatureCreator
+from pipeline.tools.encoder import Encoder
+from pipeline.tools.imputer import MissingValueHandler
+from pipeline.tools.infer import SemanticTypeInfer
+from pipeline.tools.outlier import OutlierHandler
+from pipeline.tools.profiler import DataProfiler
+from pipeline.tools.reporter import FeatureReporter
+from pipeline.tools.scaler import Scaler
+from pipeline.tools.selector import FeatureSelector
+from pipeline.tools.validator import FeatureValidator
+from pipeline.base import PostconditionError, PreconditionError
 
 
 def _make_model_call(
@@ -123,7 +111,7 @@ class FeatureEngineerOrchestrator:
         # Startup sequence (config already validated in __init__)
 
         # Read API key & endpoint from config. Inject into env BEFORE any ADK / LiteLlm import.
-        # ADK imports are deliberately kept inside method bodies (_make_model_call, _run_adk_agent)
+        # ADK / LiteLlm imports are deliberately kept inside method bodies (_make_model_call)
         # so env vars are set before the provider client reads them.
         api_key = (self.config.llm.api_key or "").strip()
         if not api_key or api_key == "your_actual_key_here":
@@ -235,21 +223,14 @@ class FeatureEngineerOrchestrator:
                 f"--- traceback ---\n{_tb.format_exc()}"
             ) from e
 
-        # Construct the Judge Agent: isolated ADK sub-agent that ranks
-        # FeatureCreator proposals and plans FeatureSelector actions. Reuses
-        # the same model/endpoint.
-        from pipeline.judge_agent import JudgeAgent
-        judge_agent = JudgeAgent(
-            model_string=self.model_string,
-            api_key=api_key,
-            base_url=self.config.llm.base_url,
-            max_tokens=self.config.llm.max_tokens,
-        )
+        # Precomputed feature-selection stats go to .mitra/<run_id>/stats.
+        stats_dir = Path(self.config.paths.workspace_root) / run_id / "stats"
+        stats_dir.mkdir(parents=True, exist_ok=True)
+        state.stats_dir = stats_dir
 
-        adk_tools.set_pipeline_state(state, model_call, judge_agent=judge_agent)
-
-        # Run pipeline via ADK Agent
-        self._run_adk_agent(state)
+        # Run the pipeline as a deterministic Python sequence (no ADK agent loop).
+        # Only feature selection uses the LLM; everything else is rule-based.
+        self._run_pipeline(state, model_call)
 
         # Write feature_artifact.json (orchestrator owns it; reporter only writes report.md)
         artifact = {
@@ -270,53 +251,71 @@ class FeatureEngineerOrchestrator:
 
         return output_dir, run_id
 
-    def _run_adk_agent(self, state: PipelineState) -> None:
-        try:
-            from google.adk.agents import Agent
-            from google.adk.runners import InMemoryRunner
-            from google.genai import types as genai_types
-        except ImportError as e:
-            raise RuntimeError(f"google-adk not installed: {e}")
+    def _run_pipeline(self, state: PipelineState, model_call: Callable[[str], str]) -> None:
+        """Deterministic, ordered pipeline. Each step is logged to execution_log.txt.
 
-        from pipeline.openai_llm import OpenAICompatibleLlm
+        Only feature selection consults the LLM (single call). All EDA steps run
+        with model_call=None (rule-based). Precondition/Postcondition errors are
+        logged and the pipeline continues to the next step.
+        """
+        use_report_llm = model_call if self.config.report.use_llm else None
 
-        agent = Agent(
-            name="feature_engineer_orchestrator",
-            model=OpenAICompatibleLlm(
-                model=self.model_string,
-                api_key=self.config.llm.api_key,
-                base_url=self.config.llm.base_url,
-                max_tokens=self.config.llm.max_tokens,
-            ),
-            description="Orchestrates the feature engineering pipeline.",
-            instruction=ORCHESTRATOR_INSTRUCTION_TEMPLATE.format(
-                max_tool_retries=self.config.pipeline.max_tool_retries,
-            ),
-            tools=adk_tools.ALL_TOOLS,
-        )
+        # (step_name, callable) — runs in this exact order.
+        steps: list[tuple[str, Callable[[], object]]] = [
+            ("profile_data", lambda: DataProfiler()(state)),
+            ("infer_types", lambda: SemanticTypeInfer(None)(state)),
+            ("handle_missing", lambda: self._step_missing(state)),
+            ("handle_outliers", lambda: OutlierHandler(None)(state)),
+            # No pre-encoding (cross_categorical) features in deterministic mode;
+            # satisfy the Encoder precondition that expects the pre phase to run.
+            ("encode_features", lambda: self._step_encode(state)),
+            ("create_features", lambda: FeatureCreator(None).create_deterministic(state)),
+            ("scale_features", lambda: Scaler(None)(state)),
+            ("compute_feature_stats", lambda: self._step_stats(state)),
+            ("select_features", lambda: FeatureSelector(model_call=model_call)(state)),
+            ("validate_features", lambda: FeatureValidator()(state)),
+            ("write_report", lambda: FeatureReporter(use_report_llm)(state)),
+        ]
 
-        runner = InMemoryRunner(agent=agent, app_name="fe_pipeline")
-        import asyncio
+        log_path = state.output_dir / "execution_log.txt"
+        for name, fn in steps:
+            state.last_llm_source = None
+            start = time.perf_counter()
+            try:
+                fn()
+                elapsed = time.perf_counter() - start
+                src = f" llm={state.last_llm_source}" if state.last_llm_source else ""
+                self._log_step(log_path, name, "ok", f"({elapsed:.2f}s){src}")
+            except (PreconditionError, PostconditionError) as e:
+                elapsed = time.perf_counter() - start
+                self._log_step(log_path, name, "error", f"({elapsed:.2f}s) {e}")
+                state.warnings.append(f"{name} skipped: {e}")
+            except Exception as e:  # noqa: BLE001 - log and continue, do not abort the whole run
+                elapsed = time.perf_counter() - start
+                self._log_step(log_path, name, "error", f"({elapsed:.2f}s) {type(e).__name__}: {e}")
+                state.warnings.append(f"{name} failed: {e}")
 
-        async def _run():
-            session = await runner.session_service.create_session(
-                app_name="fe_pipeline", user_id="caller", session_id=state.run_id
-            )
-            content = genai_types.Content(role="user", parts=[genai_types.Part(text=START_MESSAGE)])
-            async for _ in runner.run_async(
-                user_id="caller", session_id=session.id, new_message=content
-            ):
-                pass
+    @staticmethod
+    def _step_missing(state: PipelineState) -> None:
+        # Spec §4 numeric-placeholder normalization, then deterministic imputation.
+        _coerce_object_numeric(state)
+        MissingValueHandler(None)(state)
 
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import nest_asyncio
-                nest_asyncio.apply()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        loop.run_until_complete(_run())
+    @staticmethod
+    def _step_encode(state: PipelineState) -> None:
+        # No pre-encoding feature creation in deterministic mode; mark the phase
+        # done so the Encoder precondition is satisfied.
+        state.pre_encoding_done = True
+        Encoder()(state)
+
+    @staticmethod
+    def _step_stats(state: PipelineState) -> None:
+        compute_and_write_stats(state, state.stats_dir)
+
+    @staticmethod
+    def _log_step(log_path: Path, name: str, status: str, detail: str) -> None:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')}] {name} {status} {detail}\n")
 
     def _run_structured_smoke_test(self, model_call: Callable[[str], str], output_dir: Path) -> None:
         """Send one structured-output prompt and parse it through validate_response.
@@ -333,7 +332,22 @@ class FeatureEngineerOrchestrator:
         # Structured probe.
         from pipeline.evidence import ColumnTypeEvidence, SemanticTypeInferEvidence, render
         from pipeline.responses import SemanticTypeInferResponse, validate_response
-        from pipeline.tools.infer import INFER_PROMPT, _strategy_definitions_block
+        from pipeline.tools import infer as infer_module
+
+        # SemanticTypeInfer is heuristic-only in this build and no longer ships an
+        # LLM prompt. When the prompt constants are absent the structured probe
+        # has no template to exercise, so skip it — the bare model_call above
+        # already validated transport, auth, and a non-empty response.
+        if not hasattr(infer_module, "INFER_PROMPT") or not hasattr(infer_module, "_strategy_definitions_block"):
+            log_line = (
+                f"[{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')}] smoke_test "
+                f"structured_probe=skipped (infer is heuristic, no LLM prompt) parsed=n/a\n"
+            )
+            with open(output_dir / "execution_log.txt", "a", encoding="utf-8") as f:
+                f.write(log_line)
+            return
+        INFER_PROMPT = infer_module.INFER_PROMPT
+        _strategy_definitions_block = infer_module._strategy_definitions_block
 
         packet = SemanticTypeInferEvidence(columns=[
             ColumnTypeEvidence(

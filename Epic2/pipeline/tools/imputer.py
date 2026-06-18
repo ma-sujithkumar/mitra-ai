@@ -100,7 +100,9 @@ def _strategy_definitions_block() -> str:
 
 
 class MissingValueHandler(BaseTool):
-    def __init__(self, model_call: Callable[[str], str]):
+    def __init__(self, model_call: Callable[[str], str] | None):
+        # model_call is None => deterministic mode (no LLM): rule-based strategy
+        # per column using the same defaults as the LLM fallback path.
         self.model_call = model_call
 
     def precondition(self, state: PipelineState) -> None:
@@ -135,6 +137,18 @@ class MissingValueHandler(BaseTool):
             and state.column_types.get(c) not in {"categorical", "binary"}
         ]
         if not cols_with_nulls:
+            self._final_pass(df, state)
+            return
+
+        # Deterministic mode: rule-based strategy per column (median for numeric,
+        # mode otherwise). The hard drop-threshold rule below still applies.
+        if self.model_call is None:
+            state.last_llm_source = "deterministic"
+            decision_map: dict[str, str] = {
+                col: ("median" if state.column_types.get(col, "numeric") == "numeric" else "mode")
+                for col in cols_with_nulls
+            }
+            self._apply_decisions(df, state, cols_with_nulls, decision_map, drop_threshold)
             self._final_pass(df, state)
             return
 
@@ -188,7 +202,20 @@ class MissingValueHandler(BaseTool):
             for d in parsed.decisions:  # type: ignore[attr-defined]
                 decision_map[d.column] = d.strategy
 
-        # Hard rule: drop above the configured null threshold regardless of model.
+        self._apply_decisions(df, state, cols_with_nulls, decision_map, drop_threshold)
+        self._final_pass(df, state)
+
+    @staticmethod
+    def _apply_decisions(
+        df: pd.DataFrame,
+        state: PipelineState,
+        cols_with_nulls: list[str],
+        decision_map: dict[str, str],
+        drop_threshold: float,
+    ) -> None:
+        """Apply per-column imputation strategies. Shared by deterministic and LLM modes."""
+        cfg = state.config
+        # Hard rule: drop above the configured null threshold regardless of strategy source.
         for col in cols_with_nulls:
             if state.profile.get(col, {}).get("null_rate", 0.0) > drop_threshold:
                 decision_map[col] = "drop"
@@ -251,8 +278,6 @@ class MissingValueHandler(BaseTool):
                     state.transformers.append(
                         {"step": "imputation", "column": col, "strategy": "iterative", "random_state": cfg.pipeline.random_state}
                     )
-
-        self._final_pass(df, state)
 
     @staticmethod
     def _final_pass(df: pd.DataFrame, state: PipelineState) -> None:

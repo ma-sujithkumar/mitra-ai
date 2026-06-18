@@ -1,19 +1,19 @@
-"""FeatureSelector — method choice delegated to JudgeAgent.plan().
+"""FeatureSelector — single-LLM-call selection over precomputed stat artifacts.
 
-Builds a FeatureSelectorEvidence packet using clusters and a linear baseline
-recomputed on the *current* dataframe (including FeatureCreator-added columns),
-hands it to the Judge sub-agent, then executes the returned
-SelectionPlanResponse cluster by cluster.
+The deterministic stat phase (pipeline/feature_stats.py) writes mutual information,
+RF importance, mRMR ranking, variance, correlation pairs, clusters, linear baseline
+and PCA artifacts to `.mitra/<run_id>/stats/`. This tool reads those artifacts,
+makes ONE LLM call to decide which columns to keep/drop, and applies the result
+deterministically. If the LLM call fails (or no model is configured), it falls back
+to mRMR over all features at top_k_features.
 
-Per-cluster action vocabulary:
-  mrmr, pca, mrmr_then_pca, drop, lasso, rf_importance.
-
-Judge unavailable or both attempts fail → fallback: mRMR over all features
-with top_k_features from config.
+The per-estimator helpers (_mrmr, _pca, _lasso, _rf, _top_mi, _mi_scores,
+_rf_importances) are reused by feature_stats.py so the math lives in one place.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Callable
 
 import numpy as np
@@ -22,8 +22,7 @@ from sklearn.decomposition import PCA
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 
 from pipeline.base import BaseTool, PostconditionError, PreconditionError
-from pipeline.evidence import ClusterEvidence, FeatureSelectorEvidence
-from pipeline.parallel import compute_correlation_clusters, compute_linear_baseline
+from pipeline.responses import FeatureSelectionResponse, call_with_revision
 from pipeline.state import PipelineState
 
 
@@ -36,10 +35,67 @@ def _deterministic_tag(columns) -> str:
     return hashlib.md5("|".join(columns).encode("utf-8")).hexdigest()[:8]
 
 
+SELECT_PROMPT = """You are a feature selection expert. Choose which feature columns to KEEP for a
+{task} model. You are given precomputed statistics — you do NOT have the raw data.
+
+## GOAL
+Keep the most predictive, non-redundant features. Keep AT MOST {top_k} columns.
+- Prefer columns with high mutual information and high RF importance.
+- Respect the mRMR ranking (minimum-redundancy maximum-relevance order).
+- Drop near-zero-variance columns.
+- For each high-correlation pair keep only ONE column (drop the redundant twin).
+
+## PCA DECISION (size-dependent)
+Decide whether to compress the kept features into PCA components (set "use_pca").
+- Favor PCA when the dataset is high-dimensional: many features and/or few rows
+  (rule of thumb: many features relative to rows, or > ~50 informative features),
+  OR when many features are mutually correlated so a few components capture most variance.
+- Skip PCA when there are few features, plenty of rows per feature, or interpretability
+  matters and individual features are already strong and non-redundant.
+- Use the PCA explained-variance stat below to judge how many components retain the variance.
+- If use_pca is true you may set "pca_n_components" (else the pipeline uses the
+  components needed to retain the configured variance). PCA replaces the kept raw
+  columns with components; "keep" should still list the raw columns to feed into PCA.
+
+## STATISTICS
+n_rows: {n_rows}
+n_features: {n_features}
+features_per_row: {features_per_row}
+linear_baseline_score: {linear_baseline}
+
+Mutual information (column: score), highest first:
+{mi_block}
+
+RandomForest importance (column: score), highest first:
+{rf_block}
+
+mRMR ranking (best first):
+{mrmr_block}
+
+Low-variance columns (consider dropping):
+{low_var_block}
+
+Highly correlated pairs (keep one of each):
+{corr_block}
+
+PCA: {pca_block}
+
+## RESPONSE SHAPE
+Return ONLY a JSON object:
+{{
+  "keep": ["<column>", "..."],
+  "drop": ["<column>", "..."],
+  "use_pca": <true|false>,
+  "pca_n_components": <int or null>,
+  "rationale": "<one or two sentences, mention the PCA decision and why>"
+}}
+"""
+
+
 class FeatureSelector(BaseTool):
     def __init__(self, model_call: Callable[[str], str] | None = None, judge=None):
-        # model_call kept for backward-compat with adk_tools; selector itself
-        # never calls the model — Judge does.
+        # model_call drives the single selection LLM call. judge kept only for
+        # backward-compatible construction; no longer used.
         self.model_call = model_call
         self.judge = judge
 
@@ -58,118 +114,133 @@ class FeatureSelector(BaseTool):
 
         X = df[feature_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
         y = state.target.to_numpy()
+        top_k = min(cfg.feature_selection.top_k_features, len(feature_cols))
 
-        clusters_map = compute_correlation_clusters(X, cut_threshold=cfg.feature_selection.cluster_cut_threshold)
-        baseline = compute_linear_baseline(
-            X, y, state.task, k=cfg.feature_selection.linear_baseline_k,
-            seed=cfg.pipeline.random_state,
-        )
-
-        cluster_evidence: list[ClusterEvidence] = []
-        per_col_mi = self._per_col_mi(X, y, state.task, state)
-        for cid, members in clusters_map.items():
-            mis = [per_col_mi.get(c, 0.0) for c in members]
-            if len(members) > 1:
-                sub = X[members]
-                corr = sub.corr().abs().to_numpy()
-                n = corr.shape[0]
-                mask = ~np.eye(n, dtype=bool)
-                intra = float(np.nanmean(corr[mask])) if mask.any() else 0.0
-            else:
-                intra = 0.0
-            cluster_evidence.append(
-                ClusterEvidence(
-                    cluster_id=cid,
-                    members=members,
-                    mean_mi=float(np.mean(mis)) if mis else 0.0,
-                    max_mi=float(np.max(mis)) if mis else 0.0,
-                    intra_cluster_corr=intra,
-                )
-            )
-
-        evidence = FeatureSelectorEvidence(
-            n_rows=len(df),
-            n_features=len(feature_cols),
-            task=state.task,
-            linear_baseline_score=baseline,
-            clusters=cluster_evidence,
-        )
-
-        plan = None
-        if self.judge is not None:
-            try:
-                plan = self.judge.plan(evidence=evidence, cfg=cfg)
-            except Exception as e:
-                state.warnings.append(f"FeatureSelector: judge.plan threw {e}")
-
-        if plan is None:
-            state.warnings.append("FeatureSelector: Judge unavailable; fallback mRMR over all features")
-            state.last_llm_source = "fallback"
-            selected = self._mrmr(X, y, state.task, min(cfg.feature_selection.top_k_features, len(feature_cols)), state)
-            if not selected:
-                selected = feature_cols[: cfg.feature_selection.top_k_features]
-            state.selected_columns = selected
-            state.selection_method = "fallback:mrmr_all"
+        stats = self._load_stats(state)
+        if self.model_call is None or stats is None:
+            self._fallback(state, X, y, feature_cols, top_k,
+                           reason="no model_call" if self.model_call is None else "no stats artifacts")
             return
-        state.last_llm_source = "ok"
 
-        # Execute the plan cluster by cluster.
-        plan_actions = {a.cluster_id: a.action for a in plan.plan}
-        kept: list[str] = []
-        per_cluster_summary: list[str] = []
-        for cid, members in clusters_map.items():
-            action = plan_actions.get(cid, "mrmr")
-            # Per-cluster top-k: split overall budget proportionally.
-            cluster_k = max(1, int(cfg.feature_selection.top_k_features * len(members) / max(1, len(feature_cols))))
-            cluster_k = min(cluster_k, len(members))
-            sub_X = X[members]
-            try:
-                if action == "mrmr":
-                    cols = self._mrmr(sub_X, y, state.task, cluster_k, state)
-                elif action == "pca":
-                    cols = self._pca(sub_X, cluster_k, state, cfg)
-                elif action == "mrmr_then_pca":
-                    half = max(1, cluster_k // 2)
-                    mrmr_cols = self._mrmr(sub_X, y, state.task, half, state)
-                    residual = [c for c in members if c not in mrmr_cols]
-                    if residual:
-                        pca_cols = self._pca(sub_X[residual], cluster_k - len(mrmr_cols), state, cfg)
-                        cols = mrmr_cols + pca_cols
-                    else:
-                        cols = mrmr_cols
-                elif action == "drop":
-                    cols = []
-                elif action == "lasso":
-                    cols = self._lasso(sub_X, y, state.task, cluster_k, cfg, state)
-                elif action == "rf_importance":
-                    cols = self._rf(sub_X, y, state.task, cluster_k, cfg, state)
-                else:
-                    cols = members[:cluster_k]
-            except Exception as e:
-                state.warnings.append(f"Selector cluster {cid} action={action} failed: {e}; fallback top-MI")
-                cols = self._top_mi(sub_X, y, state.task, cluster_k, seed=cfg.pipeline.random_state)
-            kept.extend(cols)
-            per_cluster_summary.append(f"c{cid}:{action}")
+        prompt = self._build_prompt(state, feature_cols, stats, top_k)
+        parsed, source, failures = call_with_revision(
+            self.model_call, prompt, FeatureSelectionResponse, set(), cfg,
+            caller="FeatureSelector",
+        )
+        state.last_llm_source = source
 
-        # De-dup and cap at top_k_features
+        if parsed is None or source == "fallback":
+            state.warnings.append(f"FeatureSelector LLM call failed (failures={failures}); fallback mRMR")
+            self._fallback(state, X, y, feature_cols, top_k, reason="llm_failed")
+            return
+
+        keep = [c for c in parsed.keep if c in feature_cols]  # type: ignore[attr-defined]
+        # De-dup, order-preserving.
         seen: set[str] = set()
-        deduped: list[str] = []
-        for c in kept:
-            if c not in seen:
-                seen.add(c)
-                deduped.append(c)
+        selected = [c for c in keep if not (c in seen or seen.add(c))][:top_k]
+        if not selected:
+            state.warnings.append("FeatureSelector LLM returned no valid columns; fallback mRMR")
+            self._fallback(state, X, y, feature_cols, top_k, reason="empty_keep")
+            return
 
-        if not deduped:
-            deduped = feature_cols[: cfg.feature_selection.top_k_features]
-            state.selection_method = "fallback:first_k"
+        # The agent decided whether to compress the kept features via PCA.
+        if getattr(parsed, "use_pca", False) and len(selected) >= 2:
+            self._apply_pca(state, X[selected], parsed.pca_n_components, stats, top_k)
         else:
-            state.selection_method = "plan:[" + ",".join(per_cluster_summary) + "]"
-        state.selected_columns = deduped[: cfg.feature_selection.top_k_features]
+            state.selected_columns = selected
+            state.selection_method = "llm_select"
 
-    # ---------- helpers ----------
+    def _apply_pca(self, state: PipelineState, X_sub: pd.DataFrame, requested_n, stats: dict, top_k: int) -> None:
+        """Replace the kept raw columns with PCA components. Component count is the
+        agent's pca_n_components when valid, else the #components reaching
+        pca_variance_retained (from the precomputed PCA stat)."""
+        pca_stats = stats.get("pca") or {}
+        default_n = pca_stats.get("n_components_for_threshold") or X_sub.shape[1]
+        n = requested_n if (isinstance(requested_n, int) and requested_n > 0) else default_n
+        n = max(1, min(int(n), X_sub.shape[1], top_k))
+        names = self._pca(X_sub, n, state, state.config)
+        if not names:
+            state.warnings.append("FeatureSelector: PCA produced no components; keeping raw columns")
+            state.selected_columns = list(X_sub.columns)[:top_k]
+            state.selection_method = "llm_select"
+            return
+        state.selected_columns = names
+        state.selection_method = f"llm_select+pca({len(names)})"
 
-    def _per_col_mi(self, X: pd.DataFrame, y, task: str, state) -> dict[str, float]:
-        seed = state.config.pipeline.random_state
+    # ---------- prompt assembly ----------
+
+    def _load_stats(self, state: PipelineState) -> dict | None:
+        if state.stats_dir is None or not state.stats_dir.exists():
+            return None
+        loaded: dict = {}
+        for name in (
+            "mutual_info", "rf_importance", "mrmr_ranking", "variance",
+            "correlation_pearson", "linear_baseline", "pca",
+        ):
+            path = state.stats_dir / f"{name}.json"
+            if path.exists():
+                try:
+                    loaded[name] = json.loads(path.read_text(encoding="utf-8"))
+                except Exception as e:
+                    state.warnings.append(f"FeatureSelector: failed to read {name}.json: {e}")
+        return loaded or None
+
+    @staticmethod
+    def _top_items(scores: dict, limit: int) -> str:
+        items = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+        return "\n".join(f"- {k}: {v:.4f}" for k, v in items) if items else "(none)"
+
+    def _build_prompt(self, state: PipelineState, feature_cols: list[str], stats: dict, top_k: int) -> str:
+        cfg = state.config
+        mi = (stats.get("mutual_info") or {}).get("scores", {})
+        rf = (stats.get("rf_importance") or {}).get("scores", {})
+        mrmr = (stats.get("mrmr_ranking") or {}).get("ranked", [])
+        low_var = (stats.get("variance") or {}).get("low_variance", [])
+        corr_pairs = (stats.get("correlation_pearson") or {}).get("high_pairs", [])
+        baseline = (stats.get("linear_baseline") or {}).get("score", 0.0)
+        pca = stats.get("pca") or {}
+
+        corr_block = "\n".join(
+            f"- {a} <-> {b} (corr={c:.2f})" for a, b, c in corr_pairs[:40]
+        ) if corr_pairs else "(none)"
+        pca_block = (
+            f"{pca.get('n_components_for_threshold', 'n/a')} components explain "
+            f"{pca.get('variance_retained', 'n/a')} of variance"
+            if pca else "(not computed)"
+        )
+        n_rows = len(state.df)
+        n_features = len(feature_cols)
+        features_per_row = f"{n_features / max(1, n_rows):.4f}"
+        return SELECT_PROMPT.format(
+            task=state.task,
+            top_k=top_k,
+            n_rows=n_rows,
+            n_features=n_features,
+            features_per_row=features_per_row,
+            linear_baseline=f"{baseline:.4f}",
+            mi_block=self._top_items(mi, 40),
+            rf_block=self._top_items(rf, 40),
+            mrmr_block="\n".join(f"- {c}" for c in mrmr[:40]) if mrmr else "(none)",
+            low_var_block=("\n".join(f"- {c}" for c in low_var) if low_var else "(none)"),
+            corr_block=corr_block,
+            pca_block=pca_block,
+        )
+
+    def _fallback(self, state: PipelineState, X: pd.DataFrame, y, feature_cols: list[str], top_k: int, reason: str) -> None:
+        state.last_llm_source = "fallback"
+        state.warnings.append(f"FeatureSelector fallback mRMR over all features ({reason})")
+        selected = self._mrmr(X, y, state.task, top_k, state=state)
+        if not selected:
+            selected = feature_cols[:top_k]
+        state.selected_columns = selected
+        state.selection_method = "fallback:mrmr_all"
+
+    # ---------- reusable estimators (shared with feature_stats.py) ----------
+
+    @staticmethod
+    def _mi_scores(X: pd.DataFrame, y, task: str, seed: int = 42) -> dict[str, float]:
+        if X.shape[1] == 0:
+            return {}
         try:
             if task == "classification":
                 mi = mutual_info_classif(X.to_numpy(), y, random_state=seed)
@@ -179,10 +250,15 @@ class FeatureSelector(BaseTool):
         except Exception:
             return {c: 0.0 for c in X.columns}
 
+    def _per_col_mi(self, X: pd.DataFrame, y, task: str, state) -> dict[str, float]:
+        return self._mi_scores(X, y, task, seed=state.config.pipeline.random_state)
+
     @staticmethod
-    def _mrmr(X: pd.DataFrame, y, task: str, k: int, state) -> list[str]:
+    def _mrmr(X: pd.DataFrame, y, task: str, k: int, state=None, seed: int = 42) -> list[str]:
         if X.shape[1] == 0:
             return []
+        if state is not None:
+            seed = state.config.pipeline.random_state
         try:
             from mrmr import mrmr_classif, mrmr_regression
             y_series = pd.Series(y)
@@ -190,8 +266,9 @@ class FeatureSelector(BaseTool):
                 return mrmr_classif(X=X, y=y_series, K=min(k, X.shape[1]))
             return mrmr_regression(X=X, y=y_series, K=min(k, X.shape[1]))
         except Exception as e:
-            state.warnings.append(f"mrmr unavailable: {e}; using top-MI proxy")
-            return FeatureSelector._top_mi(X, y, task, k, seed=state.config.pipeline.random_state)
+            if state is not None:
+                state.warnings.append(f"mrmr unavailable: {e}; using top-MI proxy")
+            return FeatureSelector._top_mi(X, y, task, k, seed=seed)
 
     @staticmethod
     def _top_mi(X: pd.DataFrame, y, task: str, k: int, seed: int = 42) -> list[str]:
@@ -206,6 +283,21 @@ class FeatureSelector(BaseTool):
             return [X.columns[i] for i in order]
         except Exception:
             return X.columns.tolist()[:k]
+
+    @staticmethod
+    def _rf_importances(X: pd.DataFrame, y, task: str, cfg, seed: int = 42) -> dict[str, float]:
+        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+        if X.shape[1] == 0:
+            return {}
+        try:
+            if task == "classification":
+                model = RandomForestClassifier(n_estimators=cfg.feature_selection.rf_n_estimators, random_state=seed)
+            else:
+                model = RandomForestRegressor(n_estimators=cfg.feature_selection.rf_n_estimators, random_state=seed)
+            model.fit(X.to_numpy(), y)
+            return {c: float(i) for c, i in zip(X.columns, model.feature_importances_)}
+        except Exception:
+            return {c: 0.0 for c in X.columns}
 
     @staticmethod
     def _pca(X: pd.DataFrame, k: int, state, cfg) -> list[str]:
@@ -249,20 +341,11 @@ class FeatureSelector(BaseTool):
 
     @staticmethod
     def _rf(X: pd.DataFrame, y, task: str, k: int, cfg, state) -> list[str]:
-        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-        if X.shape[1] == 0:
+        scores = FeatureSelector._rf_importances(X, y, task, cfg, seed=cfg.pipeline.random_state)
+        if not scores:
             return []
-        if task == "classification":
-            model = RandomForestClassifier(
-                n_estimators=cfg.feature_selection.rf_n_estimators, random_state=cfg.pipeline.random_state
-            ).fit(X.to_numpy(), y)
-        else:
-            model = RandomForestRegressor(
-                n_estimators=cfg.feature_selection.rf_n_estimators, random_state=cfg.pipeline.random_state
-            ).fit(X.to_numpy(), y)
-        importance = model.feature_importances_
-        order = np.argsort(importance)[::-1][: min(k, X.shape[1])]
-        return [X.columns[i] for i in order]
+        order = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[: min(k, X.shape[1])]
+        return [c for c, _ in order]
 
     def postcondition(self, state: PipelineState) -> None:
         if state.selected_columns is None:

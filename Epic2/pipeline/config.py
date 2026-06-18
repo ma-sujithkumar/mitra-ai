@@ -71,6 +71,23 @@ class LlmConfig(BaseModel):
     base_url: str | None = None  # optional; if set, used as the OpenAI-compatible endpoint
 
 
+class PathsConfig(BaseModel):
+    # Root for precomputed feature-selection stat artifacts (.mitra/<run_id>/stats).
+    workspace_root: str = ".mitra"
+
+
+class FeatureStatsConfig(BaseModel):
+    # Whether the PCA artifact also materialises the transformed components on disk.
+    keep_pca_components: bool = False
+    # Cap on base columns used to build pairwise correlation/MI artifacts on wide data.
+    max_corr_pairs: int = Field(gt=0, default=200)
+
+
+class ReportConfig(BaseModel):
+    # Default off: the report is written from a deterministic template (no LLM call).
+    use_llm: bool = False
+
+
 class ConfigSchema(BaseModel):
     imputation: ImputationConfig
     outlier: OutlierConfig
@@ -80,6 +97,10 @@ class ConfigSchema(BaseModel):
     pipeline: PipelineSettings
     validation: ValidationSettings
     llm: LlmConfig
+    # New blocks default to safe values so older config.yaml files still validate.
+    paths: PathsConfig = Field(default_factory=PathsConfig)
+    feature_stats: FeatureStatsConfig = Field(default_factory=FeatureStatsConfig)
+    report: ReportConfig = Field(default_factory=ReportConfig)
 
 
 def load_config(path: str | Path) -> ConfigSchema:

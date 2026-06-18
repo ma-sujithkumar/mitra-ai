@@ -129,6 +129,52 @@ class FeatureCreator(BaseTool):
     def __call__(self, state: PipelineState) -> PipelineState:
         return state  # FeatureCreator dispatches through run_pre / run_post
 
+    def create_deterministic(self, state: PipelineState) -> None:
+        """Deterministic feature engineering (no LLM): degree-2 ratio + product
+        features from the top mutual-information numeric columns, capped by
+        feature_creation.max_created_features. Run AFTER encoding so every source
+        is numeric. Matches DESIGN_PLAN.md §9 (degree-2 poly + ratio only).
+        """
+        cfg = state.config
+        cap = cfg.feature_creation.max_created_features
+        if cap <= 0:
+            return
+        df = state.df
+        numeric_cols = [
+            c for c in df.columns
+            if c != state.target_column
+            and state.column_types.get(c) == "numeric"
+            and pd.api.types.is_numeric_dtype(df[c])
+        ]
+        if len(numeric_cols) < 2:
+            return
+        # Rank by mutual information with the target (from the profile) and bound
+        # the base set to keep the pair count small/cheap.
+        ranked = sorted(
+            numeric_cols,
+            key=lambda c: state.profile.get(c, {}).get("mi_with_target") or 0.0,
+            reverse=True,
+        )
+        top = ranked[: min(len(ranked), 6)]
+        specs: list[dict] = []
+        for i, a in enumerate(top):
+            for b in top[i + 1:]:
+                specs.append({"operation": "ratio", "sources": [a, b], "name": f"{a}_div_{b}", "temporal_class": "post_encoding"})
+                specs.append({"operation": "product", "sources": [a, b], "name": f"{a}_x_{b}", "temporal_class": "post_encoding"})
+        specs = specs[:cap]
+
+        new_cols: list[str] = []
+        for spec in specs:
+            if self._execute(state, spec):
+                new_cols.append(spec["name"])
+        if new_cols:
+            mini = compute_mini_profile(state.df, new_cols)
+            for nc, p in mini.items():
+                p["mi_with_target"] = 0.0
+                p["null_mask_corr"] = {}
+                state.profile[nc] = p
+                state.column_types[nc] = "numeric"
+
     def _ensure_specs(self, state: PipelineState) -> None:
         if self._specs is not None:
             return
