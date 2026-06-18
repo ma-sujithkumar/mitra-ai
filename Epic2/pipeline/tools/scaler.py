@@ -51,8 +51,25 @@ def _strategy_definitions_block() -> str:
 
 
 class Scaler(BaseTool):
-    def __init__(self, model_call: Callable[[str], str]):
+    def __init__(self, model_call: Callable[[str], str] | None):
+        # model_call is None => deterministic mode (no LLM): rule-based scaler
+        # choice from profile signals (skewness / outlier_rate / bounded).
         self.model_call = model_call
+
+    @staticmethod
+    def _deterministic_scaler(col: str, df: pd.DataFrame, profile: dict) -> str:
+        """Pick a scaler from cheap distribution signals (no LLM).
+
+        robust -> heavy outliers; power -> strongly skewed; standard -> default.
+        """
+        p = profile.get(col, {})
+        outlier_rate = float(p.get("outlier_rate") or 0.0)
+        skew = abs(float(p.get("skewness") or 0.0))
+        if outlier_rate > 0.10:
+            return "robust"
+        if skew > 1.0:
+            return "power"
+        return "standard"
 
     def precondition(self, state: PipelineState) -> None:
         non_numeric = [c for c in state.df.columns if not pd.api.types.is_numeric_dtype(state.df[c])]
@@ -71,6 +88,13 @@ class Scaler(BaseTool):
             and c not in outlier_scaled
         ]
         if not scale_targets:
+            return
+
+        # Deterministic mode: rule-based scaler per column from profile signals.
+        if self.model_call is None:
+            state.last_llm_source = "deterministic"
+            decision_map = {c: self._deterministic_scaler(c, df, state.profile or {}) for c in scale_targets}
+            self._apply_decisions(df, state, scale_targets, decision_map)
             return
 
         per_col: list[ScalerColumnEvidence] = []
@@ -131,6 +155,17 @@ class Scaler(BaseTool):
             for c in scale_targets:
                 decision_map.setdefault(c, "standard")
 
+        self._apply_decisions(df, state, scale_targets, decision_map)
+
+    def _apply_decisions(
+        self,
+        df: pd.DataFrame,
+        state: PipelineState,
+        scale_targets: list[str],
+        decision_map: dict[str, str],
+    ) -> None:
+        """Fit/transform each column with its chosen scaler. Shared by both modes."""
+        cfg = state.config
         for col in scale_targets:
             scaler_name = decision_map[col]
             arr = df[[col]].to_numpy()

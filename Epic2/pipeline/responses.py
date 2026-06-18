@@ -157,6 +157,21 @@ class SelectionPlanResponse(BaseModel):
     plan: list[ClusterAction]
 
 
+class FeatureSelectionResponse(BaseModel):
+    # Single-call feature selection over precomputed stat artifacts: the model
+    # reads the stats and returns the columns to keep (and, for transparency,
+    # the columns to drop + a short rationale). No per-item DecisionItem checks
+    # apply — validate_response only content-checks assignments/decisions/specs/plan.
+    keep: list[str]
+    drop: list[str] = Field(default_factory=list)
+    # The agent decides, from dataset size + PCA explained-variance stats, whether
+    # to compress the kept features into PCA components. pca_n_components is optional;
+    # when omitted the pipeline uses the #components reaching pca_variance_retained.
+    use_pca: bool = False
+    pca_n_components: int | None = None
+    rationale: str = ""
+
+
 # ---------- validation helper ----------
 
 

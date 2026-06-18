@@ -28,6 +28,7 @@ class PipelineState:
     selection_method: str | None = None
 
     output_dir: Path | None = None
+    stats_dir: Path | None = None  # .mitra/<run_id>/stats — precomputed feature-selection artifacts
 
     pre_encoding_done: bool = False
     row_count_after_outlier: int | None = None

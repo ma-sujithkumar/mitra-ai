@@ -65,7 +65,9 @@ def _extreme_pairs(series: pd.Series, target: pd.Series, k: int, ascending: bool
 
 
 class OutlierHandler(BaseTool):
-    def __init__(self, model_call: Callable[[str], str]):
+    def __init__(self, model_call: Callable[[str], str] | None):
+        # model_call is None => deterministic mode (no LLM): (iqr, default_action)
+        # for every numeric column, matching the LLM fallback policy.
         self.model_call = model_call
 
     def precondition(self, state: PipelineState) -> None:
@@ -81,6 +83,13 @@ class OutlierHandler(BaseTool):
         ]
         if not numeric_cols:
             state.row_count_after_outlier = len(df)
+            return
+
+        # Deterministic mode: rule-based (iqr detector, configured default action).
+        if self.model_call is None:
+            state.last_llm_source = "deterministic"
+            decision_map = {c: ("iqr", cfg.outlier.default_action) for c in numeric_cols}
+            self._apply_decisions(df, state, numeric_cols, decision_map)
             return
 
         per_col: list[OutlierColumnEvidence] = []
@@ -140,6 +149,17 @@ class OutlierHandler(BaseTool):
             for c in numeric_cols:
                 decision_map.setdefault(c, ("iqr", cfg.outlier.default_action))
 
+        self._apply_decisions(df, state, numeric_cols, decision_map)
+
+    def _apply_decisions(
+        self,
+        df: pd.DataFrame,
+        state: PipelineState,
+        numeric_cols: list[str],
+        decision_map: dict,
+    ) -> None:
+        """Apply (detector, action) per column. Shared by deterministic and LLM modes."""
+        cfg = state.config
         drop_indices: set[int] = set()
         for col in numeric_cols:
             detector, action = decision_map[col]
