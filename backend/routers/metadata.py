@@ -29,6 +29,9 @@ from backend.llm_failures import has_llm_quota_error
 from backend.llm_failures import has_ssl_certificate_error
 from backend.llm_failures import has_tool_calling_unsupported_error
 from backend.session import SessionManager
+from backend.user_metadata import UserMetadataHints
+from backend.user_metadata import find_user_metadata_path
+from backend.user_metadata import parse_user_metadata
 
 
 router = APIRouter(prefix="/api", tags=["metadata"])
@@ -77,6 +80,7 @@ def start_metadata(
         session_path=session_path,
         max_characters=config_loader.metadata_agent.metadata_context_char_limit,
     )
+    user_metadata_hints = _read_user_metadata_hints(session_path=session_path)
 
     job_registry.append_event(
         session_id=metadata_request.session_id,
@@ -84,8 +88,18 @@ def start_metadata(
         event={
             "type": "progress",
             "step": "llm_settings_resolved",
+            "message": f"Using {llm_settings.provider}/{llm_settings.model}",
             "provider": llm_settings.provider,
             "model": llm_settings.model,
+        },
+    )
+    job_registry.append_event(
+        session_id=metadata_request.session_id,
+        job_type="metadata",
+        event={
+            "type": "progress",
+            "step": "reading_data",
+            "message": "Reading dataset sample",
         },
     )
     generation_input = MetadataGenerationInput(
@@ -96,6 +110,9 @@ def start_metadata(
         target_col=metadata_request.target_col,
         problem_type=metadata_request.problem_type,
         user_metadata_context=user_metadata_context,
+        pii_patterns=config_loader.upload.pii_patterns,
+        user_metadata_descriptions=user_metadata_hints.descriptions,
+        user_metadata_important_cols=user_metadata_hints.important_cols,
     )
 
     try:
@@ -104,7 +121,13 @@ def start_metadata(
             job_type="metadata",
             event={
                 "type": "progress",
-                "step": "metadata_agent_started",
+                "step": "inferring_schema",
+                "message": (
+                    f"Inferring schema with {llm_settings.provider}/"
+                    f"{llm_settings.model}"
+                ),
+                "provider": llm_settings.provider,
+                "model": llm_settings.model,
             },
         )
         result = metadata_agent_runner.generate_metadata(
@@ -273,11 +296,17 @@ def _read_user_metadata_context(
     session_path: Path,
     max_characters: int,
 ) -> str | None:
-    for metadata_filename in ["user_metadata.json", "user_metadata.csv"]:
-        metadata_path = session_path / "data" / metadata_filename
-        if metadata_path.is_file():
-            return metadata_path.read_text(encoding="utf-8")[:max_characters]
-    return None
+    metadata_path = find_user_metadata_path(session_path=session_path)
+    if metadata_path is None:
+        return None
+    return metadata_path.read_text(encoding="utf-8")[:max_characters]
+
+
+def _read_user_metadata_hints(session_path: Path) -> UserMetadataHints:
+    metadata_path = find_user_metadata_path(session_path=session_path)
+    if metadata_path is None:
+        return UserMetadataHints()
+    return parse_user_metadata(metadata_path=metadata_path)
 
 
 def _metadata_generation_failed(

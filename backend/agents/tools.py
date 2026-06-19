@@ -23,8 +23,14 @@ class MetadataWriteResult:
 
 
 class MetadataTools:
-    def __init__(self, workspace_root: Path, schema_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        workspace_root: Path,
+        schema_path: Path | None = None,
+        pii_patterns: list[str] | None = None,
+    ) -> None:
         self.session_manager = SessionManager(workspace_root=workspace_root)
+        self.pii_patterns = pii_patterns or []
         self.schema_path = (
             schema_path
             or Path(__file__).resolve().parents[1]
@@ -37,15 +43,37 @@ class MetadataTools:
     def read_mini_data(self, session_id: str) -> str:
         return self._mini_data_path(session_id=session_id).read_text(encoding="utf-8")
 
-    def build_statistics(self, session_id: str) -> dict[str, dict[str, Any]]:
+    def mini_data_columns(self, session_id: str) -> list[str]:
+        # mini_data.csv is describe().transpose(), so its index holds the dataset
+        # column names.
+        mini_data_path = self._mini_data_path(session_id=session_id)
+        describe_frame = pd.read_csv(mini_data_path, index_col=0)
+        return [str(column_name) for column_name in describe_frame.index]
+
+    def build_statistics(
+        self,
+        session_id: str,
+        exclude_columns: set[str] | None = None,
+        descriptions: dict[str, str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
         # mini_data.csv is already df.describe(include="all").transpose(), so the
         # per-column statistics are read straight back rather than asking the LLM
-        # to transcribe them (which it does unreliably).
+        # to transcribe them (which it does unreliably). Dropped columns (PII or
+        # user-excluded) are omitted, and per-column descriptions are injected only
+        # from the user-uploaded metadata file (never invented by the LLM).
+        excluded = exclude_columns or set()
+        column_descriptions = descriptions or {}
         mini_data_path = self._mini_data_path(session_id=session_id)
         describe_frame = pd.read_csv(mini_data_path, index_col=0)
         statistics: dict[str, dict[str, Any]] = {}
         for column_name, column_row in describe_frame.iterrows():
+            column_key = str(column_name)
+            if column_key in excluded:
+                continue
             column_statistics: dict[str, Any] = {}
+            description = column_descriptions.get(column_key)
+            if description:
+                column_statistics["description"] = description
             for number_key in STATISTIC_NUMBER_KEYS:
                 if number_key in column_row.index:
                     column_statistics[number_key] = self._to_number_or_none(
@@ -56,8 +84,25 @@ class MetadataTools:
                     column_statistics[string_key] = self._to_string_or_none(
                         value=column_row[string_key]
                     )
-            statistics[str(column_name)] = column_statistics
+            statistics[column_key] = column_statistics
         return statistics
+
+    def prune_mini_data(self, session_id: str, drop_columns: set[str]) -> None:
+        # Physically remove dropped columns (PII / user-excluded) from the persisted
+        # mini_data.csv so the saved artifact no longer contains them. mini_data.csv
+        # is describe().transpose(), so each column is one row indexed by its name.
+        if not drop_columns:
+            return
+        mini_data_path = self._mini_data_path(session_id=session_id)
+        describe_frame = pd.read_csv(mini_data_path, index_col=0)
+        kept_frame = describe_frame.loc[
+            [
+                column_name
+                for column_name in describe_frame.index
+                if str(column_name) not in drop_columns
+            ]
+        ]
+        kept_frame.to_csv(mini_data_path)
 
     def _mini_data_path(self, session_id: str) -> Path:
         session_path = self.session_manager.get_session_path(session_id=session_id)

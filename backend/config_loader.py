@@ -28,6 +28,7 @@ class UploadConfig:
     min_rows: int
     null_threshold: float
     pii_patterns: list[str]
+    metadata_match_min_overlap: float
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,9 @@ class ConfigLoader:
             null_threshold=self.parser.getfloat("upload", "NULL_THRESHOLD"),
             pii_patterns=self._parse_json_string_list(
                 self.parser.get("upload", "PII_PATTERNS")
+            ),
+            metadata_match_min_overlap=self.parser.getfloat(
+                "upload", "METADATA_MATCH_MIN_OVERLAP"
             ),
         )
         self.pipeline = PipelineConfig(

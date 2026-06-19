@@ -74,14 +74,6 @@ function App() {
 
   const screens = {
     dashboard: <Dashboard go={go} startRun={startRun} />,
-    upload: (
-      <UploadScreen
-        go={go}
-        llmSettings={llmSettings}
-        llmSmokeStatus={llmSmokeStatus}
-        startRun={startRun}
-      />
-    ),
     pipeline: (
       <TrainingPage
         activeSessionId={activeSessionId}
@@ -107,7 +99,21 @@ function App() {
       <Sidebar go={go} route={route} runState={runState} />
       <main className="workspace">
         <TopBar icon={meta.icon} sub={meta.sub} title={meta.title} />
-        <div className="screen-frame">{screens[route]}</div>
+        <div className="screen-frame">
+          {/* UploadScreen stays mounted across navigation so the selected
+              file, form inputs, and validation/metadata results persist until
+              the user picks a different file. Hidden (not unmounted) when the
+              active route is not upload. */}
+          <div className={route === 'upload' ? undefined : 'screen-hidden'}>
+            <UploadScreen
+              go={go}
+              llmSettings={llmSettings}
+              llmSmokeStatus={llmSmokeStatus}
+              startRun={startRun}
+            />
+          </div>
+          {route === 'upload' ? null : screens[route]}
+        </div>
       </main>
     </div>
   );

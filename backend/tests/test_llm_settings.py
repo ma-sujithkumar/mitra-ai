@@ -244,6 +244,10 @@ def test_metadata_agent_tool_adapter_returns_json_schema_friendly_dict(
 ) -> None:
     session_manager = SessionManager(workspace_root=tmp_path)
     session_info = session_manager.create_session(original_filename="dataset.csv")
+    (session_info.data_dir / "mini_data.csv").write_text(
+        ",count,mean\nfeature,2,1.5\n",
+        encoding="utf-8",
+    )
     adapter = MetadataAgentToolAdapter(
         metadata_tools=MetadataTools(workspace_root=tmp_path)
     )

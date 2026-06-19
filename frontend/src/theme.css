@@ -284,6 +284,11 @@ h2 {
   padding: 24px 28px;
 }
 
+/* Keeps a route's component mounted (state preserved) while hidden. */
+.screen-hidden {
+  display: none;
+}
+
 .screen-stack {
   display: flex;
   flex-direction: column;
@@ -589,6 +594,85 @@ h2 {
   width: 9px;
   height: 9px;
   border-width: 1.5px;
+}
+
+.metadata-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.metadata-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.metadata-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+
+.metadata-step-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+
+.metadata-step.done {
+  color: var(--success);
+}
+
+.metadata-step.active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.metadata-step.error {
+  color: var(--error);
+}
+
+.metadata-step-label small {
+  color: var(--ink-muted);
+}
+
+.progress-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.progress-bar.indeterminate span {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 35%;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: indeterminate-slide 1.2s ease-in-out infinite;
+}
+
+.callout.compact {
+  padding: 10px 12px;
+  border: 1px solid var(--error-line);
+  border-radius: 8px;
+}
+
+@keyframes indeterminate-slide {
+  0% {
+    left: -35%;
+  }
+  100% {
+    left: 100%;
+  }
 }
 
 .gate-hint {

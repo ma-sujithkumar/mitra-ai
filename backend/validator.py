@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import csv
-import re
+import json
 from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from typing import Iterator
 
 import pandas as pd
+
+from backend.pii import match_pii_columns
 
 
 @dataclass(frozen=True)
@@ -54,7 +57,15 @@ class ValidationReport:
 
 
 class DataValidator:
-    check_order = ["format", "rows", "nulls", "variance", "pii", "target"]
+    check_order = [
+        "format",
+        "rows",
+        "nulls",
+        "variance",
+        "pii",
+        "target",
+        "metadata_match",
+    ]
     check_labels = {
         "format": "File format & encoding",
         "rows": "Row count",
@@ -62,6 +73,7 @@ class DataValidator:
         "variance": "Zero-variance scan",
         "pii": "PII heuristic",
         "target": "Target separability",
+        "metadata_match": "Metadata file match",
     }
     blocker_statuses = {
         "format": {"fail"},
@@ -69,6 +81,7 @@ class DataValidator:
         "nulls": {"fail"},
         "variance": {"fail"},
         "target": {"fail"},
+        "metadata_match": {"fail"},
     }
 
     def __init__(
@@ -76,11 +89,13 @@ class DataValidator:
         min_rows: int,
         null_threshold: float,
         pii_patterns: list[str],
+        metadata_match_min_overlap: float,
         chunk_size_rows: int = 50000,
     ) -> None:
         self.min_rows = min_rows
         self.null_threshold = null_threshold
         self.pii_patterns = pii_patterns
+        self.metadata_match_min_overlap = metadata_match_min_overlap
         self.chunk_size_rows = chunk_size_rows
 
     def validate(
@@ -88,6 +103,7 @@ class DataValidator:
         data_file: Path,
         session_id: str,
         target_col: str | None,
+        user_metadata_path: Path | None = None,
     ) -> Iterator[ValidationCheckResult]:
         summary = self._summarize_csv(
             data_file=data_file,
@@ -105,8 +121,16 @@ class DataValidator:
                 target_col=target_col,
             ),
         }
+        # The metadata file is optional, so only validate it when the user
+        # actually uploaded one. With no file there is nothing to match.
+        if user_metadata_path is not None and user_metadata_path.is_file():
+            checks_by_key["metadata_match"] = self._check_metadata_match(
+                summary=summary,
+                user_metadata_path=user_metadata_path,
+            )
         for check_key in self.check_order:
-            yield checks_by_key[check_key]
+            if check_key in checks_by_key:
+                yield checks_by_key[check_key]
 
     def build_report(
         self,
@@ -227,11 +251,10 @@ class DataValidator:
         )
 
     def _check_pii(self, column_names: list[str]) -> ValidationCheckResult:
-        pii_columns = [
-            column_name
-            for column_name in column_names
-            if self._matches_pii_pattern(column_name=column_name)
-        ]
+        pii_columns = match_pii_columns(
+            column_names=column_names,
+            pii_patterns=self.pii_patterns,
+        )
         if pii_columns:
             matched_columns = ", ".join(pii_columns)
             return ValidationCheckResult(
@@ -278,11 +301,97 @@ class DataValidator:
             detail=f"{normalized_target_col}, {unique_target_count} unique values",
         )
 
-    def _matches_pii_pattern(self, column_name: str) -> bool:
-        return any(
-            re.search(pattern, column_name) is not None
-            for pattern in self.pii_patterns
+    def _check_metadata_match(
+        self,
+        summary: DatasetValidationSummary,
+        user_metadata_path: Path,
+    ) -> ValidationCheckResult:
+        # Only called when the user uploaded a metadata file (see validate()).
+        try:
+            metadata_tokens = self._extract_metadata_tokens(
+                user_metadata_path=user_metadata_path
+            )
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            # A metadata file that cannot be parsed cannot be matched, so it is
+            # treated as a hard block per the consistency requirement.
+            return ValidationCheckResult(
+                key="metadata_match",
+                label=self.check_labels["metadata_match"],
+                status="fail",
+                detail=f"Could not parse metadata file: {error}",
+            )
+
+        total_columns = len(summary.column_names)
+        if total_columns == 0:
+            return ValidationCheckResult(
+                key="metadata_match",
+                label=self.check_labels["metadata_match"],
+                status="pass",
+                detail="No dataset columns to match",
+            )
+
+        matched_columns = [
+            column_name
+            for column_name in summary.column_names
+            if column_name.strip().lower() in metadata_tokens
+        ]
+        overlap_ratio = len(matched_columns) / total_columns
+        if overlap_ratio < self.metadata_match_min_overlap:
+            return ValidationCheckResult(
+                key="metadata_match",
+                label=self.check_labels["metadata_match"],
+                status="fail",
+                detail=(
+                    f"Metadata file references {len(matched_columns)}/{total_columns} "
+                    "dataset columns; appears unrelated to this dataset"
+                ),
+            )
+
+        return ValidationCheckResult(
+            key="metadata_match",
+            label=self.check_labels["metadata_match"],
+            status="pass",
+            detail=f"Metadata file matches {len(matched_columns)}/{total_columns} columns",
         )
+
+    def _extract_metadata_tokens(self, user_metadata_path: Path) -> set[str]:
+        # Collect every candidate column-name token from the metadata file so a
+        # dataset column counts as referenced if it appears as a JSON key/value
+        # or any CSV header/cell. Tokens are normalized (strip + lower).
+        file_text = user_metadata_path.read_text(encoding="utf-8")
+        if user_metadata_path.suffix.lower() == ".json":
+            parsed_payload = json.loads(file_text)
+            return self._normalize_tokens(
+                raw_tokens=self._walk_json_tokens(payload=parsed_payload)
+            )
+
+        metadata_frame = pd.read_csv(user_metadata_path, dtype=str)
+        raw_tokens: list[str] = list(metadata_frame.columns)
+        for column_name in metadata_frame.columns:
+            raw_tokens.extend(metadata_frame[column_name].dropna().tolist())
+        return self._normalize_tokens(raw_tokens=raw_tokens)
+
+    @classmethod
+    def _walk_json_tokens(cls, payload: Any) -> list[str]:
+        collected_tokens: list[str] = []
+        if isinstance(payload, dict):
+            for dict_key, dict_value in payload.items():
+                collected_tokens.append(str(dict_key))
+                collected_tokens.extend(cls._walk_json_tokens(payload=dict_value))
+        elif isinstance(payload, list):
+            for list_item in payload:
+                collected_tokens.extend(cls._walk_json_tokens(payload=list_item))
+        elif isinstance(payload, str):
+            collected_tokens.append(payload)
+        return collected_tokens
+
+    @staticmethod
+    def _normalize_tokens(raw_tokens: list[str]) -> set[str]:
+        return {
+            str(raw_token).strip().lower()
+            for raw_token in raw_tokens
+            if str(raw_token).strip()
+        }
 
     def _summarize_csv(
         self,
