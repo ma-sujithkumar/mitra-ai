@@ -1,9 +1,0 @@
-docs/
-!docs/README.md
-claude_scripts/
-claude_outputs/
-store/
-__pycache__/
-*.pyc
-.env
-corpus/

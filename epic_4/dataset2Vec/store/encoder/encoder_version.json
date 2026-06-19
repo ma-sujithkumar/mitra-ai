@@ -1,7 +1,0 @@
-{
-  "encoder_version": "d2v-v1",
-  "embedding_dim": 64,
-  "final_epoch": 96,
-  "best_loss": 0.20818138275353704,
-  "created_at": "2026-06-16T19:43:21.381878+00:00"
-}
