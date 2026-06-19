@@ -528,6 +528,7 @@ Invoked by `/api/metadata` after validation passes, and streamed by
 The implementation uses Google ADK `LlmAgent` with ADK's `LiteLlm` connector.
 All LLM calls route through LiteLLM (never direct provider SDK calls).
 
+
 ### 12.1 Inputs
 
 - `mini_data.csv` from the session workspace (statistical summary only).
@@ -544,6 +545,7 @@ All LLM calls route through LiteLLM (never direct provider SDK calls).
 
 **Hard guardrail in system prompt:** "You must NOT read `data.csv`. You have
 access ONLY to `mini_data.csv`. Do not call any tool that reads the full dataset."
+**Hard guardrail in system prompt:**: If user has uploaded a metadata file which has a description for each columns, Use them. Otherwise, leave it. Do not let LLM generate the written description for each column.
 
 ### 12.2 System prompt (agents/prompts/metadata_gen.md)
 
@@ -559,7 +561,9 @@ The system prompt instructs the agent to:
 4. Extract input columns = all columns except the target column.
 5. Drop columns the user explicitly listed in their description (parse for
    "exclude X" or "ignore column Y" intent). Figure out PII columns and call it out in the metadata.json
-6. Produce `metadata.json` strictly conforming to the JSON Schema in Section 12.4.
+6. User Important columns: If user lists some important columns in the metadata , that should be included in the metadata.json
+7. Read description of user and parse for any useful information user is giving about the data.
+8. Produce `metadata.json` strictly conforming to the JSON Schema in Section 12.4.
 
 ### 12.3 Agent tools
 
@@ -585,7 +589,8 @@ access is granted.
   ],
   "properties": {
     "session_id": { "type": "string" },
-    "problem_type": { "type": "string", "enum": ["classification", "regression", "unsupervised"] },
+    "problem_type": { "type": "string", "enum": ["supervised", "unsupervised"] },
+    "problem_subtype": { "type": "string", "enum": ["classification", "regression"] },
     "target_col": { "type": ["string", "null"] },
     "target_col_type": { "type": ["string", "null"], "enum": ["categorical", "numeric", null] },
     "input_cols": {
@@ -603,12 +608,17 @@ access is granted.
       "type": "array",
       "items": { "type": "string" }
     },
+    "important_cols": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "statistics": {
       "type": "object",
       "description": "Per-column stats from pandas describe(). Keys are column names.",
       "additionalProperties": {
         "type": "object",
         "properties": {
+          "description":{"type": "string"},
           "count": { "type": "number" },
           "mean": { "type": ["number", "null"] },
           "std": { "type": ["number", "null"] },

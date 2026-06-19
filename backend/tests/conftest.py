@@ -15,6 +15,7 @@ def test_config_loader(tmp_path: Path) -> ConfigLoader:
         "[upload]\nMAX_FILE_SIZE_MB=200\nALLOWED_EXTENSIONS=.csv,.xls,.xlsx\n"
         "MINI_DATA_SAMPLE_ROWS=1000\nCHUNK_SIZE_ROWS=50000\nRECENT_UPLOAD_LIMIT=5\n"
         "MIN_ROWS=10\nNULL_THRESHOLD=0.8\nPII_PATTERNS=[\"(?i)email\"]\n"
+        "METADATA_MATCH_MIN_OVERLAP=0.5\n"
         "[pipeline]\nTRAIN_TEST_SPLIT=0.8\nMAX_ML_MODELS=10\nMAX_HPT_TRIALS=5\n"
         "[llm_models]\nOPENAI_BASE_MODEL=openai/gpt-5.1\n"
         "ANTHROPIC_BASE_MODEL=anthropic/claude-sonnet-4-5-20250929\n"

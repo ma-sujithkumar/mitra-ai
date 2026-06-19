@@ -19,6 +19,7 @@ from google.genai import types
 
 from backend.agents.tools import MetadataTools
 from backend.config_loader import ConfigLoader
+from backend.pii import match_pii_columns
 
 
 logger = logging.getLogger("mitra.metadata_agent")
@@ -57,9 +58,31 @@ COLUMN_TYPE_SYNONYMS = {
     "boolean": "categorical",
 }
 
-# Maps problem-type phrasings onto the schema enum.
+# Maps problem-type phrasings onto the top-level schema enum (supervised /
+# unsupervised). Legacy classification/regression values are mapped to supervised
+# and recovered as a problem_subtype by _normalize_metadata_enums.
 PROBLEM_TYPE_SYNONYMS = {
+    "supervised": "supervised",
+    "labelled": "supervised",
+    "labeled": "supervised",
+    "classification": "supervised",
+    "binary": "supervised",
+    "binary classification": "supervised",
+    "multiclass": "supervised",
+    "multi-class": "supervised",
+    "multiclass classification": "supervised",
+    "regression": "supervised",
+    "regressor": "supervised",
+    "unsupervised": "unsupervised",
+    "clustering": "unsupervised",
+    "cluster": "unsupervised",
+}
+
+# Maps problem-subtype phrasings onto the schema enum (classification /
+# regression).
+PROBLEM_SUBTYPE_SYNONYMS = {
     "classification": "classification",
+    "classifier": "classification",
     "binary": "classification",
     "binary classification": "classification",
     "multiclass": "classification",
@@ -67,9 +90,7 @@ PROBLEM_TYPE_SYNONYMS = {
     "multiclass classification": "classification",
     "regression": "regression",
     "regressor": "regression",
-    "unsupervised": "unsupervised",
-    "clustering": "unsupervised",
-    "cluster": "unsupervised",
+    "continuous": "regression",
 }
 
 
@@ -106,6 +127,9 @@ class MetadataGenerationInput:
     target_col: str | None = None
     problem_type: str | None = None
     user_metadata_context: str | None = None
+    pii_patterns: list[str] = field(default_factory=list)
+    user_metadata_descriptions: dict[str, str] = field(default_factory=dict)
+    user_metadata_important_cols: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -119,8 +143,15 @@ class MetadataGenerationError(RuntimeError):
 
 
 class MetadataAgentToolAdapter:
-    def __init__(self, metadata_tools: MetadataTools) -> None:
+    def __init__(
+        self,
+        metadata_tools: MetadataTools,
+        user_metadata_descriptions: dict[str, str] | None = None,
+        user_metadata_important_cols: list[str] | None = None,
+    ) -> None:
         self.metadata_tools = metadata_tools
+        self.user_metadata_descriptions = user_metadata_descriptions or {}
+        self.user_metadata_important_cols = user_metadata_important_cols or []
 
     def read_mini_data(self, session_id: str) -> str:
         logger.info("tool read_mini_data called: session_id=%s", session_id)
@@ -145,19 +176,47 @@ class MetadataAgentToolAdapter:
         normalized_metadata = self._normalize_metadata_enums(
             metadata=normalized_metadata
         )
+        # Deterministically resolve which columns to drop (user-excluded plus
+        # name-based PII), then enforce that decision across cols_to_drop,
+        # input_cols, statistics, and the persisted mini_data.csv.
+        drop_columns = self._resolve_drop_columns(
+            session_id=session_id,
+            normalized_metadata=normalized_metadata,
+        )
+        normalized_metadata["cols_to_drop"] = sorted(drop_columns)
+        normalized_metadata["input_cols"] = self._filter_input_cols(
+            input_cols=normalized_metadata.get("input_cols"),
+            drop_columns=drop_columns,
+        )
+        normalized_metadata["important_cols"] = self._resolve_important_cols(
+            session_id=session_id,
+            normalized_metadata=normalized_metadata,
+            drop_columns=drop_columns,
+        )
         # Statistics are objective facts from mini_data.csv, so compute them
-        # deterministically instead of trusting the model's transcription.
+        # deterministically instead of trusting the model's transcription. Dropped
+        # columns are excluded and descriptions are injected only from the uploaded
+        # metadata file.
         normalized_metadata["statistics"] = self.metadata_tools.build_statistics(
-            session_id=session_id
+            session_id=session_id,
+            exclude_columns=drop_columns,
+            descriptions=self.user_metadata_descriptions,
         )
         logger.info(
-            "tool write_metadata called: session_id=%s keys=%s",
+            "tool write_metadata called: session_id=%s keys=%s dropped=%s",
             session_id,
             sorted(normalized_metadata.keys()),
+            sorted(drop_columns),
         )
         result = self.metadata_tools.write_metadata(
             session_id=session_id,
             metadata=normalized_metadata,
+        )
+        # Remove the dropped columns from the persisted mini_data.csv so the saved
+        # artifact no longer exposes PII / excluded columns.
+        self.metadata_tools.prune_mini_data(
+            session_id=session_id,
+            drop_columns=drop_columns,
         )
         logger.info(
             "tool write_metadata wrote: session_id=%s path=%s",
@@ -168,6 +227,73 @@ class MetadataAgentToolAdapter:
             "session_id": result.session_id,
             "metadata_path": str(result.metadata_path),
         }
+
+    def _resolve_drop_columns(
+        self,
+        session_id: str,
+        normalized_metadata: dict[str, Any],
+    ) -> set[str]:
+        # Union of the LLM/description excludes and deterministic name-based PII,
+        # restricted to real dataset columns, and never dropping the target column.
+        dataset_columns = self.metadata_tools.mini_data_columns(session_id=session_id)
+        dataset_column_set = set(dataset_columns)
+        llm_drop = {
+            str(column_name)
+            for column_name in normalized_metadata.get("cols_to_drop", []) or []
+        }
+        pii_drop = set(
+            match_pii_columns(
+                column_names=dataset_columns,
+                pii_patterns=self.metadata_tools.pii_patterns,
+            )
+        )
+        drop_columns = (llm_drop | pii_drop) & dataset_column_set
+        target_col = normalized_metadata.get("target_col")
+        if isinstance(target_col, str):
+            drop_columns.discard(target_col)
+        return drop_columns
+
+    @staticmethod
+    def _filter_input_cols(
+        input_cols: Any,
+        drop_columns: set[str],
+    ) -> list[Any]:
+        if not isinstance(input_cols, list):
+            return []
+        return [
+            input_col
+            for input_col in input_cols
+            if not (
+                isinstance(input_col, dict)
+                and str(input_col.get("name")) in drop_columns
+            )
+        ]
+
+    def _resolve_important_cols(
+        self,
+        session_id: str,
+        normalized_metadata: dict[str, Any],
+        drop_columns: set[str],
+    ) -> list[str]:
+        # Merge LLM-proposed important columns with those the user flagged in the
+        # uploaded metadata file, keeping only real, non-dropped columns.
+        dataset_column_set = set(
+            self.metadata_tools.mini_data_columns(session_id=session_id)
+        )
+        candidate_important = [
+            str(column_name)
+            for column_name in (normalized_metadata.get("important_cols") or [])
+        ]
+        candidate_important.extend(self.user_metadata_important_cols)
+        resolved: list[str] = []
+        for column_name in candidate_important:
+            if (
+                column_name in dataset_column_set
+                and column_name not in drop_columns
+                and column_name not in resolved
+            ):
+                resolved.append(column_name)
+        return resolved
 
     @staticmethod
     def _coerce_metadata_dict(metadata: dict[str, Any] | str) -> dict[str, Any]:
@@ -189,13 +315,31 @@ class MetadataAgentToolAdapter:
     def _normalize_metadata_enums(cls, metadata: dict[str, Any]) -> dict[str, Any]:
         normalized_metadata = dict(metadata)
 
-        problem_type = normalized_metadata.get("problem_type")
+        # A legacy problem_type of classification/regression is recovered as the
+        # subtype before the top-level value is mapped to supervised.
+        raw_problem_type = normalized_metadata.get("problem_type")
+        recovered_subtype = cls._map_enum_value(
+            value=raw_problem_type,
+            synonyms=PROBLEM_SUBTYPE_SYNONYMS,
+        )
         normalized_problem_type = cls._map_enum_value(
-            value=problem_type,
+            value=raw_problem_type,
             synonyms=PROBLEM_TYPE_SYNONYMS,
         )
         if normalized_problem_type is not None:
             normalized_metadata["problem_type"] = normalized_problem_type
+
+        normalized_subtype = cls._map_enum_value(
+            value=normalized_metadata.get("problem_subtype"),
+            synonyms=PROBLEM_SUBTYPE_SYNONYMS,
+        )
+        if normalized_subtype is None:
+            normalized_subtype = recovered_subtype
+        if normalized_metadata.get("problem_type") == "supervised":
+            normalized_metadata["problem_subtype"] = normalized_subtype
+        elif normalized_metadata.get("problem_type") == "unsupervised":
+            # Unsupervised runs have no subtype.
+            normalized_metadata["problem_subtype"] = None
 
         target_col_type = normalized_metadata.get("target_col_type")
         normalized_target_col_type = cls._map_enum_value(
@@ -425,11 +569,15 @@ class MetadataGenAgent:
         llm_settings: LlmSettings,
         metadata_tools: MetadataTools,
         prompt_path: Path | None = None,
+        user_metadata_descriptions: dict[str, str] | None = None,
+        user_metadata_important_cols: list[str] | None = None,
     ) -> None:
         self.llm_settings = llm_settings
         self.metadata_tools = metadata_tools
         self.metadata_agent_tools = MetadataAgentToolAdapter(
-            metadata_tools=metadata_tools
+            metadata_tools=metadata_tools,
+            user_metadata_descriptions=user_metadata_descriptions,
+            user_metadata_important_cols=user_metadata_important_cols,
         )
         self.prompt_path = (
             prompt_path
@@ -482,10 +630,15 @@ class MetadataAgentRunner:
         configure_default_ssl_certificates(
             ca_bundle_path=generation_input.llm_settings.ca_bundle_path
         )
-        metadata_tools = MetadataTools(workspace_root=generation_input.workspace_root)
+        metadata_tools = MetadataTools(
+            workspace_root=generation_input.workspace_root,
+            pii_patterns=generation_input.pii_patterns,
+        )
         metadata_agent = MetadataGenAgent(
             llm_settings=generation_input.llm_settings,
             metadata_tools=metadata_tools,
+            user_metadata_descriptions=generation_input.user_metadata_descriptions,
+            user_metadata_important_cols=generation_input.user_metadata_important_cols,
         )
         session_service = InMemorySessionService()
         session_service.create_session_sync(
@@ -612,3 +765,5 @@ class MetadataAgentRunner:
                 "write_metadata with the final JSON object.",
             ]
         )
+
+ 

@@ -16,6 +16,7 @@ from backend.dependencies import get_session_manager
 from backend.jobs import JobRegistry
 from backend.jobs import format_sse_event
 from backend.session import SessionManager
+from backend.user_metadata import find_user_metadata_path
 from backend.validator import DataValidator
 
 
@@ -70,13 +71,16 @@ def start_validation(
         min_rows=config_loader.upload.min_rows,
         null_threshold=config_loader.upload.null_threshold,
         pii_patterns=config_loader.upload.pii_patterns,
+        metadata_match_min_overlap=config_loader.upload.metadata_match_min_overlap,
         chunk_size_rows=config_loader.upload.chunk_size_rows,
     )
+    user_metadata_path = find_user_metadata_path(session_path=session_path)
     check_results = list(
         validator.validate(
             data_file=data_file,
             session_id=validation_request.session_id,
             target_col=validation_request.target_col,
+            user_metadata_path=user_metadata_path,
         )
     )
     for check_result in check_results:

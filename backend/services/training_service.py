@@ -314,6 +314,11 @@ class TrainingService:
                 missing_paths=missing_paths,
             )
 
+        # Epic 1 metadata.json uses problem_type=supervised/unsupervised plus a
+        # problem_subtype, but Epic 3 expects the legacy classification/regression/
+        # unsupervised value. Translate at this boundary so Epic 3 stays untouched.
+        metadata_path = self._write_epic3_metadata(metadata_path=metadata_path)
+
         session_output_dir = (
             session_path / training_config.session_output_dir
         ).resolve()
@@ -329,6 +334,40 @@ class TrainingService:
             summary_path=session_output_dir / training_config.summary_filename,
             status_path=session_output_dir / training_config.run_status_filename,
         )
+
+    def _write_epic3_metadata(self, metadata_path: Path) -> Path:
+        # Reads the Epic 1 metadata.json and writes a sibling metadata_epic3.json
+        # whose problem_type uses Epic 3's legacy enum. Returns the original path
+        # unchanged if translation is unnecessary or not possible.
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        legacy_problem_type = self._legacy_problem_type(payload=payload)
+        if legacy_problem_type is None:
+            return metadata_path
+        translated_payload = dict(payload)
+        translated_payload["problem_type"] = legacy_problem_type
+        epic3_metadata_path = metadata_path.parent / "metadata_epic3.json"
+        epic3_metadata_path.write_text(
+            json.dumps(translated_payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        return epic3_metadata_path
+
+    @staticmethod
+    def _legacy_problem_type(payload: dict[str, Any]) -> str | None:
+        # Maps supervised/unsupervised (+ subtype) onto the Epic 3 enum. Returns
+        # None when the payload already uses the legacy enum (nothing to do).
+        problem_type = payload.get("problem_type")
+        if problem_type == "unsupervised":
+            return "unsupervised"
+        if problem_type == "supervised":
+            subtype = payload.get("problem_subtype")
+            if subtype in {"classification", "regression"}:
+                return subtype
+            # Fall back to the target column type when subtype is absent.
+            if payload.get("target_col_type") == "numeric":
+                return "regression"
+            return "classification"
+        return None
 
     def resolve_execution_mode(
         self,

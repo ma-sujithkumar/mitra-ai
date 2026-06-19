@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import FormField from '../components/FormField.jsx';
+import MetadataProgress from '../components/MetadataProgress.jsx';
 import Segmented from '../components/Segmented.jsx';
 import StatusPill from '../components/StatusPill.jsx';
 import {
@@ -22,6 +23,7 @@ const VALIDATION_KEYS = [
   'variance',
   'pii',
   'target',
+  'metadata_match',
 ];
 
 const PROBLEM_OPTIONS = [
@@ -92,7 +94,9 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
     ),
     [validationEvents],
   );
-  const canRunPipeline = metadataPhase === 'done';
+  // Ray training is only allowed once validation has passed and metadata
+  // generation has completed for the current inputs.
+  const canRunPipeline = validationPhase === 'done' && metadataPhase === 'done';
   const baseModel = publicConfig?.llm?.base_models?.[llmSettings.provider] || '';
   const effectiveModel = llmSettings.model || baseModel || 'Provider base model';
   const reviewStarted = validationPhase !== 'idle';
@@ -127,6 +131,13 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
   function handleDatasetChange(file) {
     setDatasetFile(file);
     setSelectedRecent(null);
+    resetRunState();
+  }
+
+  function handleMetadataChange(file) {
+    // Changing the optional metadata file invalidates any prior validation
+    // and metadata run, so reset the phases to re-gate Ray training.
+    setMetadataFile(file);
     resetRunState();
   }
 
@@ -300,7 +311,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
               accept=".json,.csv"
               className="input"
               disabled={!datasetFile}
-              onChange={(event) => setMetadataFile(event.target.files?.[0] || null)}
+              onChange={(event) => handleMetadataChange(event.target.files?.[0] || null)}
               type="file"
             />
           </FormField>
@@ -462,7 +473,10 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
           </div>
         ) : null}
         <div className="check-grid">
-          {VALIDATION_KEYS.map((checkKey) => {
+          {VALIDATION_KEYS.filter((checkKey) => (
+            // metadata_match only applies when a metadata file is supplied.
+            checkKey !== 'metadata_match' || metadataFile || validationByKey.metadata_match
+          )).map((checkKey) => {
             const event = validationByKey[checkKey];
             const status = event?.status || 'queued';
             return (
@@ -484,19 +498,15 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
           </div>
           <StatusPill status={metadataPhase === 'running' ? 'running' : metadataPhase === 'done' ? 'passed' : metadataPhase === 'error' ? 'failed' : 'queued'} spin={metadataPhase === 'running'} />
         </div>
-        <div className="event-list">
-          {metadataEvents.length ? metadataEvents.map((event, index) => (
-            <div className="event-row" key={`${event.type}-${index}`}>
-              <span className="mono">{event.type}</span>
-              <span>{event.step || event.artifact || event.message || 'Metadata event'}</span>
-            </div>
-          )) : (
-            <p className="muted">Metadata starts automatically after validation passes.</p>
-          )}
-        </div>
+        <MetadataProgress
+          phase={metadataPhase}
+          events={metadataEvents}
+          llm={llmSettings}
+          errorMessage={error}
+        />
         <button
           className="btn btn-primary"
-          disabled={!canRunPipeline}
+          disabled={!canRunPipeline || trainingPhase === 'running'}
           onClick={handleStartTraining}
           type="button"
         >
