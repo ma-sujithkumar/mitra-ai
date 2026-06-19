@@ -8,6 +8,8 @@ function ByomFields({ settings, setSettings, publicConfig }) {
   const selectedProvider = settings.provider || 'anthropic';
   const baseModels = publicConfig?.llm?.base_models || {};
   const baseModel = baseModels[selectedProvider] || '';
+  const baseUrls = publicConfig?.llm?.base_urls || {};
+  const baseUrl = baseUrls[selectedProvider] || '';
 
   function updateSetting(key, value) {
     setSettings((currentSettings) => ({
@@ -52,11 +54,11 @@ function ByomFields({ settings, setSettings, publicConfig }) {
           />
         </FormField>
 
-        <FormField label="API Gateway URL" hint="optional">
+        <FormField label="API Gateway URL" hint="blank uses provider default">
           <input
             className="input mono"
             onChange={(event) => updateSetting('gatewayUrl', event.target.value)}
-            placeholder="https://litellm.local:4000"
+            placeholder={baseUrl || 'https://litellm.local:4000'}
             type="url"
             value={settings.gatewayUrl || ''}
           />
