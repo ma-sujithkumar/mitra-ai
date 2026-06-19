@@ -9,7 +9,7 @@ Automatically find the best hyperparameters for each machine learning model usin
 The Hyperparameter Tuning Agent must:
 1. Accept the `model_config.json` produced by Epic-3's Model Selection Agent
 2. For each model entry, perform an intelligent Optuna-driven hyperparameter search using the `hp_space` ranges defined in `model_config.json` as the search boundaries
-3. Train each trial using `model_library/ml_kit.py::MLKit` - training code available in `epic_3\training\trainer.py`
+3. Train each trial using `model_library/ml_kit.py::MLKit` (no custom training code)
 4. Evaluate each trial using `model_library/metrics/evaluators.py::compute_metrics`
 5. Select the best hyperparameter combination per model based on the primary validation metric
 6. Persist tuned results as `hpt_results.json` under `.mitra/<session_id>/`
@@ -235,4 +235,5 @@ The Judge Agent's `UpstreamAdapter` reads `hpt_results.json` and maps each entry
 6. Output directory created with `mkdir -p` before writing any file.
 7. No unicode characters in print statements or logs — ASCII only.
 8. Any standalone test/debug scripts go into `claude_scripts/` (gitignored).
-
+9. All typing annotations required on all function signatures.
+10. Intermediate scripts and plan files go into `plans/` and `claude_scripts/` respectively.
