@@ -1,5 +1,7 @@
 import logging
+from contextlib import asynccontextmanager
 from time import time
+from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,10 +38,18 @@ def _configure_mitra_logging() -> None:
         mitra_logger.propagate = False
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Replaces the removed Starlette add_event_handler("shutdown", ...) API.
+    # Runs the training service shutdown when the server stops.
+    yield
+    app.state.training_service.shutdown()
+
+
 def create_app(config_loader: ConfigLoader | None = None) -> FastAPI:
     _configure_mitra_logging()
     resolved_config_loader = config_loader or ConfigLoader()
-    app = FastAPI(title="MITRA Epic 1 API")
+    app = FastAPI(title="MITRA Epic 1 API", lifespan=_lifespan)
     app.state.started_at_epoch = time()
     app.state.config_loader = resolved_config_loader
     app.state.session_manager = SessionManager(
@@ -52,7 +62,6 @@ def create_app(config_loader: ConfigLoader | None = None) -> FastAPI:
         session_manager=app.state.session_manager,
         event_bus=app.state.training_event_bus,
     )
-    app.add_event_handler("shutdown", app.state.training_service.shutdown)
     app.state.metadata_agent_runner = MetadataAgentRunner()
     app.state.llm_smoke_tester = LlmSmokeTester()
     app.add_middleware(

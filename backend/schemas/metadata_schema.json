@@ -14,7 +14,11 @@
     "session_id": { "type": "string" },
     "problem_type": {
       "type": "string",
-      "enum": ["classification", "regression", "unsupervised"]
+      "enum": ["supervised", "unsupervised"]
+    },
+    "problem_subtype": {
+      "type": ["string", "null"],
+      "enum": ["classification", "regression", null]
     },
     "target_col": { "type": ["string", "null"] },
     "target_col_type": {
@@ -39,11 +43,16 @@
       "type": "array",
       "items": { "type": "string" }
     },
+    "important_cols": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "statistics": {
       "type": "object",
       "additionalProperties": {
         "type": "object",
         "properties": {
+          "description": { "type": ["string", "null"] },
           "count": { "type": "number" },
           "mean": { "type": ["number", "null"] },
           "std": { "type": ["number", "null"] },

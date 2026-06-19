@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from backend.validator import DataValidator
@@ -12,6 +13,20 @@ def check_status(results: list[object], key: str) -> str:
     return check_result.status
 
 
+def build_validator(
+    min_rows: int = 10,
+    null_threshold: float = 0.8,
+    pii_patterns: list[str] | None = None,
+    metadata_match_min_overlap: float = 0.5,
+) -> DataValidator:
+    return DataValidator(
+        min_rows=min_rows,
+        null_threshold=null_threshold,
+        pii_patterns=pii_patterns if pii_patterns is not None else ["(?i)email"],
+        metadata_match_min_overlap=metadata_match_min_overlap,
+    )
+
+
 def test_validator_passes_clean_dataset(tmp_path: Path) -> None:
     data_file = tmp_path / "data.csv"
     write_csv(
@@ -23,11 +38,7 @@ def test_validator_passes_clean_dataset(tmp_path: Path) -> None:
         ),
     )
 
-    validator = DataValidator(
-        min_rows=10,
-        null_threshold=0.8,
-        pii_patterns=["(?i)email"],
-    )
+    validator = build_validator(min_rows=10)
     results = list(
         validator.validate(
             data_file=data_file,
@@ -36,7 +47,9 @@ def test_validator_passes_clean_dataset(tmp_path: Path) -> None:
         )
     )
 
-    assert [result.key for result in results] == DataValidator.check_order
+    # No metadata file supplied, so the optional metadata_match check is skipped.
+    expected_keys = [key for key in DataValidator.check_order if key != "metadata_match"]
+    assert [result.key for result in results] == expected_keys
     assert all(result.status == "pass" for result in results)
 
 
@@ -47,11 +60,7 @@ def test_validator_fails_null_heavy_column(tmp_path: Path) -> None:
         content="feature,target\n,x\n,y\n,z\n,w\n1,v\n",
     )
 
-    validator = DataValidator(
-        min_rows=1,
-        null_threshold=0.5,
-        pii_patterns=["(?i)email"],
-    )
+    validator = build_validator(min_rows=1, null_threshold=0.5)
     results = list(
         validator.validate(
             data_file=data_file,
@@ -70,11 +79,7 @@ def test_validator_fails_constant_numeric_column(tmp_path: Path) -> None:
         content="constant,feature,target\n1,2,a\n1,3,b\n1,4,c\n",
     )
 
-    validator = DataValidator(
-        min_rows=1,
-        null_threshold=0.8,
-        pii_patterns=[],
-    )
+    validator = build_validator(min_rows=1, pii_patterns=[])
     results = list(
         validator.validate(
             data_file=data_file,
@@ -93,11 +98,7 @@ def test_validator_warns_for_pii_columns(tmp_path: Path) -> None:
         content="email,feature,target\na@example.com,1,a\nb@example.com,2,b\n",
     )
 
-    validator = DataValidator(
-        min_rows=1,
-        null_threshold=0.8,
-        pii_patterns=["(?i)email"],
-    )
+    validator = build_validator(min_rows=1)
     results = list(
         validator.validate(
             data_file=data_file,
@@ -116,11 +117,7 @@ def test_validator_fails_missing_target(tmp_path: Path) -> None:
         content="feature,other\n1,a\n2,b\n",
     )
 
-    validator = DataValidator(
-        min_rows=1,
-        null_threshold=0.8,
-        pii_patterns=[],
-    )
+    validator = build_validator(min_rows=1, pii_patterns=[])
     results = list(
         validator.validate(
             data_file=data_file,
@@ -130,3 +127,94 @@ def test_validator_fails_missing_target(tmp_path: Path) -> None:
     )
 
     assert check_status(results=results, key="target") == "fail"
+
+
+def test_metadata_match_skipped_when_no_metadata_file(tmp_path: Path) -> None:
+    data_file = tmp_path / "data.csv"
+    write_csv(path=data_file, content="feature,target\n1,a\n2,b\n")
+
+    validator = build_validator(min_rows=1, pii_patterns=[])
+    results = list(
+        validator.validate(
+            data_file=data_file,
+            session_id="sid",
+            target_col="target",
+            user_metadata_path=None,
+        )
+    )
+
+    # The optional metadata_match check should not run without a metadata file.
+    assert "metadata_match" not in [result.key for result in results]
+
+
+def test_metadata_match_passes_for_related_json(tmp_path: Path) -> None:
+    data_file = tmp_path / "data.csv"
+    write_csv(
+        path=data_file,
+        content="age,income,target\n30,50000,a\n40,60000,b\n",
+    )
+    metadata_file = tmp_path / "user_metadata.json"
+    metadata_file.write_text(
+        json.dumps(
+            {"columns": [{"name": "age"}, {"name": "income"}, {"name": "target"}]}
+        ),
+        encoding="utf-8",
+    )
+
+    validator = build_validator(min_rows=1, pii_patterns=[])
+    results = list(
+        validator.validate(
+            data_file=data_file,
+            session_id="sid",
+            target_col="target",
+            user_metadata_path=metadata_file,
+        )
+    )
+
+    assert check_status(results=results, key="metadata_match") == "pass"
+
+
+def test_metadata_match_fails_for_unrelated_file(tmp_path: Path) -> None:
+    data_file = tmp_path / "data.csv"
+    write_csv(
+        path=data_file,
+        content="age,income,target\n30,50000,a\n40,60000,b\n",
+    )
+    metadata_file = tmp_path / "user_metadata.json"
+    metadata_file.write_text(
+        json.dumps(
+            {"columns": [{"name": "temperature"}, {"name": "humidity"}]}
+        ),
+        encoding="utf-8",
+    )
+
+    validator = build_validator(min_rows=1, pii_patterns=[])
+    results = list(
+        validator.validate(
+            data_file=data_file,
+            session_id="sid",
+            target_col="target",
+            user_metadata_path=metadata_file,
+        )
+    )
+
+    assert check_status(results=results, key="metadata_match") == "fail"
+
+
+def test_metadata_match_fails_for_malformed_json(tmp_path: Path) -> None:
+    data_file = tmp_path / "data.csv"
+    write_csv(path=data_file, content="age,target\n30,a\n40,b\n")
+    metadata_file = tmp_path / "user_metadata.json"
+    metadata_file.write_text("{not valid json", encoding="utf-8")
+
+    validator = build_validator(min_rows=1, pii_patterns=[])
+    results = list(
+        validator.validate(
+            data_file=data_file,
+            session_id="sid",
+            target_col="target",
+            user_metadata_path=metadata_file,
+        )
+    )
+
+    assert check_status(results=results, key="metadata_match") == "fail"

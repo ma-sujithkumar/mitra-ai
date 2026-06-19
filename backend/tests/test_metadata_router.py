@@ -71,7 +71,8 @@ class QuotaFailingMetadataRunner:
 def valid_metadata(session_id: str) -> dict[str, Any]:
     return {
         "session_id": session_id,
-        "problem_type": "classification",
+        "problem_type": "supervised",
+        "problem_subtype": "classification",
         "target_col": "target",
         "target_col_type": "categorical",
         "input_cols": [
