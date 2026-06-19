@@ -54,4 +54,48 @@ Solution : Use Optuna because of below features
 ### 2.5 Dependencies
 1. Metrics : Use accuracy for classification and R² for regression as defaults, but make it configurable.
 2. from the train.csv file from epic2 - split train.csv into train and validation (Use 80/20 split by default, configurable via config.ini.)
-3. Overfitting: train_score - val_score > some threshold. For now lets keep 10% and later configurable
+3. Overfitting: (train_score - val_score) > some threshold. For now lets keep 10% and Configurable via config.ini - OVERFITTING_GAP_THRESHOLD
+4. Select least-overfitted trial as fallback, if everything is overfitted
+
+### 2.6 Enhancements 
+1. To find the metrics we already have "evaluators.py" which compute_metrics
+2.  - Classification - returns accuracy, f1_macro, f1_weighted, precision_macro, recall_macro
+    - Regression -	mse, rmse, mae, r2
+3. For parallel execution - use RAY
+
+### 2.7 Output format 
+- in hpt_results.json
+{
+  "hpt_results": [
+    {
+      "name": "xgb_v1",
+      "best_hyperparameters": {...},
+      "val_metrics": {...},
+      "train_metrics": {...},
+      "overfitting": {"is_overfitted": false, "gap": 0.03}
+    }
+  ]
+}
+
+### Process flow
+1. Read config.ini
+2. Read metadata.json (problem_type, target_col)
+3. Read model_config.json (models + search spaces)
+4. Load train.csv
+5. Split into train/val (80/20 with stratification)
+6. Create DataBundle
+7. For each model in model_config.json:
+   a. Create training function
+   b. Initialize OptunaWrapper
+   c. Run optimization (MAX_HPT_TRIALS trials)
+   d. Select best trial (prefer non-overfitted)
+   e. Build result entry
+   f. Add to results list
+8. Write hpt_results.json (atomic write)
+9. Update metadata.json with completion info
+
+# Test Datasets
+1. Iris (classification, small)
+2. Wine (classification, medium)
+3. Breast Cancer (classification, medium)
+4. Boston Housing (regression, small)
