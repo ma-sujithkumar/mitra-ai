@@ -32,11 +32,27 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Judge Agent: rank ML model candidates and nominate the top model."
     )
-    parser.add_argument(
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
         "-i", "--input_json",
-        required=True,
         default=None,
-        help="Path to the adapter-schema input JSON (REQUIRED).",
+        help="Path to a pre-built adapter-schema input JSON.",
+    )
+    input_group.add_argument(
+        "--hpt-json",
+        default=None,
+        help="Path to hpt_results.json from HyperparameterTuningAgent (alternative to -i).",
+    )
+    parser.add_argument(
+        "--shap-dir",
+        default=None,
+        help="Root of SHAP output directory for this session (used with --hpt-json).",
+    )
+    parser.add_argument(
+        "--task-type",
+        default=None,
+        choices=["classification", "regression"],
+        help="Task type required when using --hpt-json.",
     )
     parser.add_argument(
         "-o", "--output_dir",
@@ -64,40 +80,64 @@ def main() -> None:
     _configure_logging(args.verbose)
     logger = logging.getLogger(__name__)
 
-    if not args.input_json:
-        logger.error("=> -i/--input_json is required.")
-        sys.exit(1)
     if not args.output_dir:
         logger.error("=> -o/--output_dir is required.")
         sys.exit(1)
 
-    if not os.path.exists(args.input_json):
-        logger.error("=> Input JSON not found: %s", args.input_json)
-        sys.exit(1)
-
     logger.info("=> Loading config...")
     config = load_judge_config()
+    top_n_shap = config.get("shap_top_n_features", 5)
 
-    logger.info("=> Reading input JSON: %s", args.input_json)
-    with open(args.input_json, "r") as input_file:
-        raw_input = json.load(input_file)
+    adapter = UpstreamAdapter()
 
-    # Support both a pre-built JudgeInput dict and the raw adapter list format.
-    if "candidates" in raw_input:
-        # Already in JudgeInput format (produced by the adapter or a test fixture).
-        judge_input = JudgeInput.model_validate(raw_input)
-        logger.info("=> Parsed JudgeInput directly (%d candidates).", len(judge_input.candidates))
-    else:
-        # Raw per-model list format: adapt via UpstreamAdapter.
-        adapter = UpstreamAdapter()
-        candidate_raw_list = raw_input.get("candidate_models", [])
-        judge_input = adapter.adapt_judge_input(
-            candidate_raw_list=candidate_raw_list,
-            dataset_id=raw_input.get("dataset_id"),
-            minidata=raw_input.get("minidata"),
-            metadata=raw_input.get("metadata"),
+    if args.hpt_json:
+        # Build JudgeInput directly from hpt_results.json + optional SHAP outputs
+        if not args.task_type:
+            logger.error("=> --task-type is required when using --hpt-json.")
+            sys.exit(1)
+        if not os.path.exists(args.hpt_json):
+            logger.error("=> hpt_results.json not found: %s", args.hpt_json)
+            sys.exit(1)
+
+        logger.info("=> Building JudgeInput from HPT results: %s", args.hpt_json)
+        judge_input = adapter.adapt_from_hpt_results(
+            hpt_json_path=args.hpt_json,
+            task_type=args.task_type,
+            shap_dir=args.shap_dir,
+            top_n_shap=top_n_shap,
         )
-        logger.info("=> Adapted %d candidates via UpstreamAdapter.", len(judge_input.candidates))
+        logger.info(
+            "=> Built JudgeInput from HPT (%d candidates, shap_dir=%s).",
+            len(judge_input.candidates),
+            args.shap_dir,
+        )
+    else:
+        # Legacy path: pre-built JSON input file
+        if not os.path.exists(args.input_json):
+            logger.error("=> Input JSON not found: %s", args.input_json)
+            sys.exit(1)
+
+        logger.info("=> Reading input JSON: %s", args.input_json)
+        with open(args.input_json, "r") as input_file:
+            raw_input = json.load(input_file)
+
+        # Support both a pre-built JudgeInput dict and the raw adapter list format.
+        if "candidates" in raw_input:
+            judge_input = JudgeInput.model_validate(raw_input)
+            logger.info(
+                "=> Parsed JudgeInput directly (%d candidates).", len(judge_input.candidates)
+            )
+        else:
+            candidate_raw_list = raw_input.get("candidate_models", [])
+            judge_input = adapter.adapt_judge_input(
+                candidate_raw_list=candidate_raw_list,
+                dataset_id=raw_input.get("dataset_id"),
+                minidata=raw_input.get("minidata"),
+                metadata=raw_input.get("metadata"),
+            )
+            logger.info(
+                "=> Adapted %d candidates via UpstreamAdapter.", len(judge_input.candidates)
+            )
 
     os.makedirs(args.output_dir, exist_ok=True)
 

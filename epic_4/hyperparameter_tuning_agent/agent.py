@@ -233,9 +233,15 @@ class HyperparameterTuningAgent:
         if optuna_result is None:
             self.logger.error(f"Tuning failed for {model_name}")
             return None
-        
+
         selected_trial = optuna_result['selected_trial']
-        
+
+        # Compute per-parameter sensitivity from all trial history
+        hyperparam_sensitivity = optuna_wrapper.compute_param_sensitivity(
+            trial_results=optuna_result['all_trials'],
+            primary_metric=self.primary_metric,
+        )
+
         # Build result entry
         result_entry = {
             'name': model_name,
@@ -251,6 +257,7 @@ class HyperparameterTuningAgent:
                 'train_vs_cv_gap': None  # Not using CV in this version
             },
             'complexity': self._estimate_complexity(model_entry, selected_trial['hyperparameters']),
+            'hyperparam_sensitivity': hyperparam_sensitivity,
             'n_trials': optuna_result['n_trials_run'],
             'n_successful_trials': optuna_result['n_successful_trials'],
             'best_trial_number': selected_trial['trial_number'],

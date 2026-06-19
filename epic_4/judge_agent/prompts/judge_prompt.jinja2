@@ -22,6 +22,9 @@ Dataset Statistics (pd.describe output):
 {% if metadata %}
 User Metadata:
 {{ metadata | tojson(indent=2) }}
+{% if metadata.get('hpt_models_tuned') %}
+HPT run summary: {{ metadata['hpt_models_tuned'] }} models tuned in {{ metadata['hpt_total_time_seconds'] | round(1) }}s using {{ metadata['hpt_primary_metric'] }} as primary metric.
+{% endif %}
 {% endif %}
 
 ---
@@ -35,10 +38,21 @@ Rank {{ model.rank }} | {{ model.model_name }} | verdict={{ model.verdict }} | s
   Overfitting: gap={{ candidates_detail[model.model_name].overfitting.gap }}, is_overfitted={{ candidates_detail[model.model_name].overfitting.is_overfitted }}
   Complexity: n_params={{ candidates_detail[model.model_name].complexity.n_params }}, depth={{ candidates_detail[model.model_name].complexity.depth }}, family_rank={{ candidates_detail[model.model_name].complexity.family_rank }}
   {% if candidates_detail[model.model_name].shap_summary %}
-  SHAP summary: {{ candidates_detail[model.model_name].shap_summary | tojson }}
+  {% set shap = candidates_detail[model.model_name].shap_summary %}
+  SHAP feature importance (top {{ shap.top_features | length }} features by mean |SHAP|):
+  {% for feat in shap.top_features %}
+    {{ feat }}: {{ shap.mean_abs_shap[feat] }}
+  {% endfor %}
+  Feature concentration (top features capture): {{ shap.feature_concentration }}{% if shap.feature_concentration < 0.5 %} => low concentration, model may rely on many features diffusely{% endif %}
   {% endif %}
   {% if candidates_detail[model.model_name].hyperparam_sensitivity %}
-  Hyperparameter sensitivity: {{ candidates_detail[model.model_name].hyperparam_sensitivity | tojson }}
+  {% set hpt = candidates_detail[model.model_name].hyperparam_sensitivity %}
+  Hyperparameter sensitivity:
+    Most sensitive param: {{ hpt.most_sensitive_param }}
+    Sensitivity score: {{ hpt.sensitivity_score }}{% if hpt.sensitivity_score > 0.05 %} => high, small param changes shift performance significantly{% endif %}
+  {% if hpt.get('best_params') %}
+    Best hyperparameters found: {{ hpt.best_params | tojson }}
+  {% endif %}
   {% endif %}
   {% endif %}
 {% endfor %}

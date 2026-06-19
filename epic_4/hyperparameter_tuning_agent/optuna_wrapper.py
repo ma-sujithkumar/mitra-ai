@@ -1,13 +1,14 @@
 """
 Optuna wrapper for hyperparameter tuning with overfitting prevention
 """
-import optuna
-from optuna.samplers import TPESampler, RandomSampler
-from optuna.pruners import MedianPruner
-from optuna.study import Study
 import logging
-from typing import Dict, Any, Optional, Callable, List
+from typing import Any, Callable, Dict, List, Optional
+
 import numpy as np
+import optuna
+from optuna.pruners import MedianPruner
+from optuna.samplers import RandomSampler, TPESampler
+from optuna.study import Study
 
 logger = logging.getLogger(__name__)
 
@@ -242,4 +243,84 @@ class OptunaWrapper:
             'n_successful_trials': sum(1 for t in self.trial_results if not t.get('is_overfitted', True))
         }
         
+        return result
+
+    def compute_param_sensitivity(
+        self,
+        trial_results: List[Dict[str, Any]],
+        primary_metric: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Compute per-parameter sensitivity from Optuna trial history.
+
+        For each hyperparameter, measures how much val_score varies when the param
+        changes across trials, using score_range (max - min) as the signal.
+        With small trial counts this is an approximation, but gives a useful proxy
+        for identifying which params most strongly influence model performance.
+
+        Returns None if fewer than 2 completed trials exist.
+        """
+        completed_trials = [
+            trial for trial in trial_results
+            if trial.get("val_score") is not None and trial.get("hyperparameters")
+        ]
+
+        if len(completed_trials) < 2:
+            logger.warning(
+                "=> compute_param_sensitivity: fewer than 2 valid trials for %s, skipping",
+                self.model_name,
+            )
+            return None
+
+        param_names = list(completed_trials[0]["hyperparameters"].keys())
+        param_sensitivity_map: Dict[str, Any] = {}
+
+        for param_name in param_names:
+            trial_param_values = [
+                trial["hyperparameters"].get(param_name)
+                for trial in completed_trials
+                if param_name in trial["hyperparameters"]
+            ]
+            trial_val_scores = [
+                trial["val_score"]
+                for trial in completed_trials
+                if param_name in trial["hyperparameters"]
+            ]
+
+            if not trial_param_values or not trial_val_scores:
+                continue
+
+            # score_range: how much val_score varies across trials where this param differs
+            score_range = float(np.max(trial_val_scores) - np.min(trial_val_scores))
+            entry: Dict[str, Any] = {"score_range": round(score_range, 6)}
+
+            numeric_values = [
+                value for value in trial_param_values
+                if isinstance(value, (int, float))
+            ]
+            if numeric_values:
+                entry["min_val"] = float(np.min(numeric_values))
+                entry["max_val"] = float(np.max(numeric_values))
+
+            param_sensitivity_map[param_name] = entry
+
+        if not param_sensitivity_map:
+            return None
+
+        most_sensitive_param = max(
+            param_sensitivity_map,
+            key=lambda param_name: param_sensitivity_map[param_name]["score_range"],
+        )
+        overall_sensitivity_score = param_sensitivity_map[most_sensitive_param]["score_range"]
+
+        result: Dict[str, Any] = dict(param_sensitivity_map)
+        result["sensitivity_score"] = round(overall_sensitivity_score, 6)
+        result["most_sensitive_param"] = most_sensitive_param
+
+        logger.debug(
+            "=> Sensitivity for %s: most_sensitive_param=%s sensitivity_score=%.4f",
+            self.model_name,
+            most_sensitive_param,
+            overall_sensitivity_score,
+        )
+
         return result

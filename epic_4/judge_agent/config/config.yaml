@@ -22,6 +22,9 @@ complexity_normalization:
 # Overfitting signal normalization cap (gaps beyond this are treated as 1.0).
 overfitting_gap_cap: 0.50
 
+# Number of top SHAP features to include when building shap_summary from a CSV.
+shap_top_n_features: 5
+
 # LLM settings.
 use_llm: true
 anthropic_model_env: ANTHROPIC_MODEL_NAME   # env var holding the model name
