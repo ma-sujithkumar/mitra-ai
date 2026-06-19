@@ -53,3 +53,30 @@ def test_config_loader_rejects_unknown_provider(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Unsupported LLM provider"):
         loader.base_model_for_provider("cohere")
+
+
+def test_base_url_defaults_to_none_when_section_missing(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.ini"
+    write_valid_config(config_path=config_path)
+    loader = ConfigLoader(config_path=config_path)
+
+    assert loader.base_url_for_provider("openai") is None
+    assert loader.base_url_for_provider("anthropic") is None
+
+
+def test_base_url_for_provider_reads_configured_values(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.ini"
+    write_valid_config(config_path=config_path)
+    with config_path.open("a", encoding="utf-8") as config_file:
+        config_file.write(
+            "[llm_base_urls]\n"
+            "OPENAI_BASE_URL=https://api.openai.com/v1\n"
+            "ANTHROPIC_BASE_URL=https://api.anthropic.com\n"
+            "GEMINI_BASE_URL=https://generativelanguage.googleapis.com\n"
+        )
+    loader = ConfigLoader(config_path=config_path)
+
+    assert loader.base_url_for_provider("anthropic") == "https://api.anthropic.com"
+    assert loader.base_url_for_provider("openai") == "https://api.openai.com/v1"
+    with pytest.raises(ValueError, match="Unsupported LLM provider"):
+        loader.base_url_for_provider("cohere")

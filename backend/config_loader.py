@@ -52,6 +52,20 @@ class LlmModelsConfig:
 
 
 @dataclass(frozen=True)
+class LlmBaseUrlsConfig:
+    openai_base_url: str | None
+    anthropic_base_url: str | None
+    gemini_base_url: str | None
+
+    def as_provider_map(self) -> dict[str, str | None]:
+        return {
+            "openai": self.openai_base_url,
+            "anthropic": self.anthropic_base_url,
+            "gemini": self.gemini_base_url,
+        }
+
+
+@dataclass(frozen=True)
 class MetadataAgentConfig:
     classification_unique_threshold: float
     categorical_unique_ratio: float
@@ -121,6 +135,13 @@ class ConfigLoader:
             ),
             gemini_base_model=self.parser.get("llm_models", "GEMINI_BASE_MODEL"),
         )
+        # Optional section: blank/missing base URLs leave litellm to use its
+        # provider defaults, so old config files keep working unchanged.
+        self.llm_base_urls = LlmBaseUrlsConfig(
+            openai_base_url=self._optional_base_url("OPENAI_BASE_URL"),
+            anthropic_base_url=self._optional_base_url("ANTHROPIC_BASE_URL"),
+            gemini_base_url=self._optional_base_url("GEMINI_BASE_URL"),
+        )
         self.metadata_agent = MetadataAgentConfig(
             classification_unique_threshold=self.parser.getfloat(
                 "metadata_agent", "CLASSIFICATION_UNIQUE_THRESHOLD"
@@ -141,6 +162,22 @@ class ConfigLoader:
         if normalized_provider not in provider_models:
             raise ValueError(f"Unsupported LLM provider: {provider}")
         return provider_models[normalized_provider]
+
+    def base_url_for_provider(self, provider: str) -> str | None:
+        provider_base_urls = self.llm_base_urls.as_provider_map()
+        normalized_provider = provider.strip().lower()
+        if normalized_provider not in provider_base_urls:
+            raise ValueError(f"Unsupported LLM provider: {provider}")
+        return provider_base_urls[normalized_provider]
+
+    def _optional_base_url(self, option_name: str) -> str | None:
+        raw_value = self.parser.get(
+            "llm_base_urls",
+            option_name,
+            fallback="",
+        )
+        stripped_value = raw_value.strip()
+        return stripped_value or None
 
     def _validate_required_sections(self) -> None:
         missing_sections = [

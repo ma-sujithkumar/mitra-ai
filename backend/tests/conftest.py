@@ -19,6 +19,9 @@ def test_config_loader(tmp_path: Path) -> ConfigLoader:
         "[llm_models]\nOPENAI_BASE_MODEL=openai/gpt-5.1\n"
         "ANTHROPIC_BASE_MODEL=anthropic/claude-sonnet-4-5-20250929\n"
         "GEMINI_BASE_MODEL=gemini/gemini-3-pro\n"
+        "[llm_base_urls]\nOPENAI_BASE_URL=https://api.openai.com/v1\n"
+        "ANTHROPIC_BASE_URL=https://api.anthropic.com\n"
+        "GEMINI_BASE_URL=https://generativelanguage.googleapis.com\n"
         "[metadata_agent]\nCLASSIFICATION_UNIQUE_THRESHOLD=0.05\n"
         "CATEGORICAL_UNIQUE_RATIO=0.05\nLLM_MAX_RETRIES=3\n"
         "METADATA_CONTEXT_CHAR_LIMIT=20000\n",

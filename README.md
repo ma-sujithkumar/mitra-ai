@@ -10,3 +10,11 @@
 6. ⁠Onkar Shamsunder Biyani, SMILe
 7. ⁠Subhasis Mahana, Samsung
 8. ⁠Vidhi Kant Gupta, NPCI
+
+
+To run frontend
+npm run dev
+
+To run backend
+
+uvicorn backend.main:app --host 127.0.0.1 --port 8000
