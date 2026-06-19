@@ -1,0 +1,7 @@
+docs/
+!docs/README.md
+claude_scripts/
+claude_outputs/
+__pycache__/
+*.pyc
+.env

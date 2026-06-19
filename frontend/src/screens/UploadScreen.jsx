@@ -11,6 +11,7 @@ import {
   uploadDataset,
 } from '../api/client.js';
 import { streamMetadataEvents, streamValidationEvents } from '../api/events.js';
+import { startTraining } from '../api/training.js';
 import { llmConfigKey } from '../data.js';
 import { Icons } from '../icons.jsx';
 
@@ -37,10 +38,12 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
   const [metadataFile, setMetadataFile] = useState(null);
   const [selectedRecent, setSelectedRecent] = useState(null);
   const [sessionSummary, setSessionSummary] = useState(null);
+  const [activeSessionId, setActiveSessionId] = useState('');
   const [validationEvents, setValidationEvents] = useState([]);
   const [metadataEvents, setMetadataEvents] = useState([]);
   const [validationPhase, setValidationPhase] = useState('idle');
   const [metadataPhase, setMetadataPhase] = useState('idle');
+  const [trainingPhase, setTrainingPhase] = useState('idle');
   const [error, setError] = useState(null);
   const [form, setForm] = useState({
     problemType: 'auto',
@@ -100,7 +103,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
     llmSmokeStatus.status === 'passed'
     && llmSmokeStatus.configKey === llmConfigKey(llmSettings)
   );
-  const busy = validationPhase === 'running' || metadataPhase === 'running';
+  const busy = validationPhase === 'running' || metadataPhase === 'running' || trainingPhase === 'running';
   const canReview = hasDataset && llmVerified && !busy;
 
   function updateForm(key, value) {
@@ -115,7 +118,9 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
     setMetadataEvents([]);
     setValidationPhase('idle');
     setMetadataPhase('idle');
+    setTrainingPhase('idle');
     setSessionSummary(null);
+    setActiveSessionId('');
     setError(null);
   }
 
@@ -126,10 +131,11 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
   }
 
   function handleRecentSelect(uploadRecord) {
+    resetRunState();
     setSelectedRecent(uploadRecord);
+    setActiveSessionId(uploadRecord.session_id);
     setDatasetFile(null);
     setMetadataFile(null);
-    resetRunState();
   }
 
   async function handleValidateAndReview() {
@@ -147,6 +153,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
           metadataFile,
         });
         sessionId = uploadPayload.session_id;
+        setActiveSessionId(sessionId);
         setSessionSummary(uploadPayload.summary);
       } else if (selectedRecent) {
         setSessionSummary({
@@ -155,6 +162,8 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
           file_size_bytes: selectedRecent.file_size_bytes,
         });
       }
+
+      setActiveSessionId(sessionId || '');
 
       if (!sessionId) {
         throw new Error('Select a dataset file or recent upload.');
@@ -224,6 +233,29 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
         onError: reject,
       });
     });
+  }
+
+  async function handleStartTraining() {
+    const sessionId = String(activeSessionId || '').trim();
+    if (!sessionId) {
+      setError('No active session is available for training.');
+      return;
+    }
+
+    setError(null);
+    setTrainingPhase('running');
+    try {
+      await startTraining({
+        sessionId,
+        targetColumn: form.problemType === 'unsupervised' ? null : form.targetCol,
+        executionMode: 'ray',
+      });
+      setTrainingPhase('accepted');
+      startRun(sessionId);
+    } catch (trainingError) {
+      setTrainingPhase('error');
+      setError(trainingError.message);
+    }
   }
 
   return (
@@ -465,11 +497,11 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
         <button
           className="btn btn-primary"
           disabled={!canRunPipeline}
-          onClick={startRun}
+          onClick={handleStartTraining}
           type="button"
         >
-          <Icons.play size={16} />
-          Run pipeline
+          {trainingPhase === 'running' ? <span className="spinner" /> : <Icons.play size={16} />}
+          {trainingPhase === 'running' ? 'Starting training...' : 'Start Ray training'}
         </button>
       </section>
       </>

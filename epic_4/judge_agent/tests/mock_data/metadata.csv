@@ -1,0 +1,9 @@
+key,value
+user_id,user_42
+dataset_name,iris_extended
+num_classes,3
+class_balance_setosa,0.33
+class_balance_versicolor,0.33
+class_balance_virginica,0.34
+submitted_at,2026-06-13T10:00:00Z
+pipeline_run_id,run_abc123

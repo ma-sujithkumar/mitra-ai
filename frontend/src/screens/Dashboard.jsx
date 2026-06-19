@@ -8,7 +8,7 @@ import { fetchRuns, fetchRunStats } from '../api/client.js';
 import { AGENTS } from '../data.js';
 import { Icons } from '../icons.jsx';
 
-function Dashboard({ go, startRun }) {
+function Dashboard({ go }) {
   const [stats, setStats] = useState(null);
   const [runs, setRuns] = useState([]);
   const [error, setError] = useState(null);
@@ -55,9 +55,9 @@ function Dashboard({ go, startRun }) {
             <Icons.upload size={16} />
             New Run
           </button>
-          <button className="btn btn-secondary" onClick={startRun} type="button">
+          <button className="btn btn-secondary" onClick={() => go('pipeline')} type="button">
             <Icons.play size={16} />
-            Preview Pipeline
+            Open Training
           </button>
         </div>
       </section>

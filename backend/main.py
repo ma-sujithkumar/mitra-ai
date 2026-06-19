@@ -14,8 +14,12 @@ from backend.routers import llm
 from backend.routers import metadata
 from backend.routers import runs
 from backend.routers import upload
+from backend.routers import training
+from backend.routers import training_events
 from backend.routers import validate
 from backend.session import SessionManager
+from backend.services.training_service import TrainingService
+from epic_3.events import TrainingEventBus
 
 
 def _configure_mitra_logging() -> None:
@@ -42,6 +46,13 @@ def create_app(config_loader: ConfigLoader | None = None) -> FastAPI:
         workspace_root=resolved_config_loader.paths.workspace_root
     )
     app.state.job_registry = JobRegistry()
+    app.state.training_event_bus = TrainingEventBus()
+    app.state.training_service = TrainingService(
+        config_loader=resolved_config_loader,
+        session_manager=app.state.session_manager,
+        event_bus=app.state.training_event_bus,
+    )
+    app.add_event_handler("shutdown", app.state.training_service.shutdown)
     app.state.metadata_agent_runner = MetadataAgentRunner()
     app.state.llm_smoke_tester = LlmSmokeTester()
     app.add_middleware(
@@ -58,6 +69,8 @@ def create_app(config_loader: ConfigLoader | None = None) -> FastAPI:
     app.include_router(config.router)
     app.include_router(runs.router)
     app.include_router(llm.router)
+    app.include_router(training_events.router)
+    app.include_router(training.router)
 
     return app
 
