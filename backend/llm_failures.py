@@ -24,6 +24,17 @@ TOOL_CALLING_UNSUPPORTED_HINT = (
 )
 
 
+# Shown when the provider rejects the request because the account has no usable
+# credit balance. Providers return this as a plain 400 (e.g. Anthropic's
+# "credit balance is too low") rather than a rate-limit/quota error, so it needs
+# its own detector to avoid the generic catch-all message.
+BILLING_INSUFFICIENT_HINT = (
+    "LLM account has insufficient credit/billing balance. Add credits or billing "
+    "to the provider account for this API key, or use a funded key, provider, or "
+    "gateway."
+)
+
+
 def iter_exception_chain(exception: BaseException) -> list[BaseException]:
     visited_exception_ids: set[int] = set()
     current_exception: BaseException | None = exception
@@ -48,6 +59,24 @@ def has_llm_quota_error(exception: BaseException) -> bool:
         if "insufficient_quota" in exception_message:
             return True
         if "exceeded your current quota" in exception_message:
+            return True
+    return False
+
+
+def has_llm_billing_error(exception: BaseException) -> bool:
+    # Detects provider responses that signal an empty/insufficient billing
+    # balance (distinct from rate limits and per-minute quota throttling).
+    billing_phrases = [
+        "credit balance is too low",
+        "credit balance",
+        "purchase credits",
+        "plans & billing",
+        "billing",
+        "payment required",
+    ]
+    for current_exception in iter_exception_chain(exception=exception):
+        exception_message = str(current_exception).lower()
+        if any(phrase in exception_message for phrase in billing_phrases):
             return True
     return False
 

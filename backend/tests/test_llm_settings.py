@@ -54,6 +54,46 @@ def test_per_run_llm_settings_override_env(
     assert settings.source == "per_run"
 
 
+def test_gateway_url_falls_back_to_provider_default_base_url(
+    tmp_path: Path,
+    test_config_loader: ConfigLoader,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "LLM_TYPE=anthropic\nLLM_API_KEY=env-key\n",
+        encoding="utf-8",
+    )
+    resolver = LlmSettingsResolver(
+        config_loader=test_config_loader,
+        env_path=env_path,
+    )
+
+    settings = resolver.resolve()
+
+    # The explicit gateway stays unset (so credential gates still fire), while
+    # the effective call endpoint falls back to the provider default base URL.
+    assert settings.gateway_url is None
+    assert settings.effective_gateway_url() == "https://api.anthropic.com"
+
+
+def test_explicit_gateway_url_overrides_provider_default(
+    tmp_path: Path,
+    test_config_loader: ConfigLoader,
+) -> None:
+    resolver = LlmSettingsResolver(
+        config_loader=test_config_loader,
+        env_path=tmp_path / ".env",
+    )
+
+    settings = resolver.resolve(
+        provider="anthropic",
+        gateway_url="https://run.example.test",
+    )
+
+    assert settings.gateway_url == "https://run.example.test"
+    assert settings.effective_gateway_url() == "https://run.example.test"
+
+
 def test_blank_model_resolves_to_provider_base_model(
     tmp_path: Path,
     test_config_loader: ConfigLoader,

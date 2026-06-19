@@ -63,6 +63,7 @@ def test_public_config_returns_defaults_without_secrets(
     assert payload["pipeline"]["train_test_split"] == 0.8
     assert payload["llm"]["providers"] == ["openai", "anthropic", "gemini"]
     assert payload["llm"]["base_models"]["openai"] == "openai/gpt-5.1"
+    assert payload["llm"]["base_urls"]["anthropic"] == "https://api.anthropic.com"
     assert "api_key" not in response.text.lower()
 
 

@@ -79,14 +79,20 @@ class LlmSettings:
     model: str
     api_key: str | None = field(default=None, repr=False)
     gateway_url: str | None = None
+    default_base_url: str | None = None
     ca_bundle_path: Path | None = field(default=None, repr=False)
     source: str = "config"
+
+    def effective_gateway_url(self) -> str | None:
+        # Explicit per-run/env gateway wins; otherwise fall back to the
+        # provider's configured default base URL as the call endpoint.
+        return self.gateway_url or self.default_base_url
 
     def public_dict(self) -> dict[str, str | None]:
         return {
             "provider": self.provider,
             "model": self.model,
-            "gateway_url": self.gateway_url,
+            "gateway_url": self.effective_gateway_url(),
             "source": self.source,
         }
 
@@ -326,9 +332,16 @@ class LlmSettingsResolver:
             api_key,
             env_settings.get("LLM_API_KEY"),
         )
+        # The explicit gateway (per-run or env) decides credential presence, so
+        # it must stay independent of the provider's default base URL fallback.
         resolved_gateway_url = self._first_non_blank(
             gateway_url,
             env_settings.get("LLM_GATEWAY_URL"),
+        )
+        # Default base URL paired with the provider's default model; applied as
+        # the call endpoint only when no explicit gateway is supplied.
+        resolved_default_base_url = self._default_base_url_for_provider(
+            provider=normalized_provider
         )
         resolved_ca_bundle_path = self._resolve_ca_bundle_path(
             self._first_non_blank(
@@ -348,6 +361,7 @@ class LlmSettingsResolver:
             model=resolved_model,
             api_key=resolved_api_key,
             gateway_url=resolved_gateway_url,
+            default_base_url=resolved_default_base_url,
             ca_bundle_path=resolved_ca_bundle_path,
             source=source,
         )
@@ -358,6 +372,15 @@ class LlmSettingsResolver:
             if value is not None and value.strip():
                 return value.strip()
         return None
+
+    def _default_base_url_for_provider(self, provider: str) -> str | None:
+        # Unknown providers (e.g. an OpenAI-compatible gateway named via
+        # LLM_TYPE) have no configured default, so return None instead of
+        # raising and let the caller/litellm decide.
+        try:
+            return self.config_loader.base_url_for_provider(provider=provider)
+        except ValueError:
+            return None
 
     def _resolve_ca_bundle_path(self, raw_path: str | None) -> Path | None:
         ca_bundle_path_string = self._first_non_blank(raw_path)
@@ -421,8 +444,9 @@ class MetadataGenAgent:
         lite_llm_kwargs: dict[str, str] = {}
         if self.llm_settings.api_key:
             lite_llm_kwargs["api_key"] = self.llm_settings.api_key
-        if self.llm_settings.gateway_url:
-            lite_llm_kwargs["api_base"] = self.llm_settings.gateway_url
+        effective_gateway_url = self.llm_settings.effective_gateway_url()
+        if effective_gateway_url:
+            lite_llm_kwargs["api_base"] = effective_gateway_url
 
         model = LiteLlm(
             model=self.llm_settings.model,

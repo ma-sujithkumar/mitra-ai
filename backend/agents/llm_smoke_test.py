@@ -7,9 +7,11 @@ import litellm
 
 from backend.agents.metadata_gen_agent import LlmSettings
 from backend.agents.metadata_gen_agent import configure_default_ssl_certificates
+from backend.llm_failures import BILLING_INSUFFICIENT_HINT
 from backend.llm_failures import PROVIDER_PREFIX_HINT
 from backend.llm_failures import TOOL_CALLING_UNSUPPORTED_HINT
 from backend.llm_failures import has_llm_authentication_error
+from backend.llm_failures import has_llm_billing_error
 from backend.llm_failures import has_llm_provider_missing_error
 from backend.llm_failures import has_llm_quota_error
 from backend.llm_failures import has_ssl_certificate_error
@@ -78,8 +80,9 @@ class LlmSmokeTester:
         completion_kwargs: dict[str, str] = {}
         if llm_settings.api_key:
             completion_kwargs["api_key"] = llm_settings.api_key
-        if llm_settings.gateway_url:
-            completion_kwargs["api_base"] = llm_settings.gateway_url
+        effective_gateway_url = llm_settings.effective_gateway_url()
+        if effective_gateway_url:
+            completion_kwargs["api_base"] = effective_gateway_url
         return completion_kwargs
 
     @staticmethod
@@ -93,6 +96,8 @@ class LlmSmokeTester:
                 "LLM authentication failed. Check the API key for the selected "
                 "provider, model, and gateway."
             )
+        if has_llm_billing_error(exception=exception):
+            return BILLING_INSUFFICIENT_HINT
         if has_llm_quota_error(exception=exception):
             return (
                 "LLM provider quota exceeded or rate limited. Check the provider "

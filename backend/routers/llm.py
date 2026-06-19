@@ -34,6 +34,7 @@ def run_llm_smoke_test(
         smoke_test_request=smoke_test_request,
         config_loader=config_loader,
     )
+    print(llm_settings)
     _ensure_credentials(llm_settings=llm_settings)
 
     try:
