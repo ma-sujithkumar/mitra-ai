@@ -205,6 +205,12 @@ class JudgeAgent:
         )
         logger.debug("=> Rendered prompt length=%d chars", len(prompt_text))
 
+        # Store the prompt text as the audit transcript inside decision_trace
+        updated_trace = decision.decision_trace.model_copy(
+            update={"transcript": prompt_text}
+        )
+        decision = decision.model_copy(update={"decision_trace": updated_trace})
+
         raw_response: Optional[str] = None
         raw_response = asyncio.run(_invoke_llm_agent(prompt_text, judge_llm_settings))
 

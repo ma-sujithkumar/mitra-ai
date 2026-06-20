@@ -35,7 +35,21 @@ Rank {{ model.rank }} | {{ model.model_name }} | verdict={{ model.verdict }} | s
   Reasons: {{ model.reasons | join("; ") }}
   {% if candidates_detail[model.model_name] is defined %}
   Performance metrics: {{ candidates_detail[model.model_name].metrics | tojson }}
-  Overfitting: gap={{ candidates_detail[model.model_name].overfitting.gap }}, is_overfitted={{ candidates_detail[model.model_name].overfitting.is_overfitted }}
+  Overfitting details:
+    is_overfitted: {{ candidates_detail[model.model_name].overfitting.is_overfitted }}
+    gap: {{ candidates_detail[model.model_name].overfitting.gap }}
+    {% if candidates_detail[model.model_name].overfitting.train_vs_cv_gap is not none %}
+    train_vs_cv_gap: {{ candidates_detail[model.model_name].overfitting.train_vs_cv_gap }}
+    {% endif %}
+    {% if candidates_detail[model.model_name].overfitting.train_metrics %}
+    Train metrics: {{ candidates_detail[model.model_name].overfitting.train_metrics | tojson }}
+    {% endif %}
+    {% if candidates_detail[model.model_name].overfitting.test_metrics %}
+    Test/Validation metrics: {{ candidates_detail[model.model_name].overfitting.test_metrics | tojson }}
+    {% endif %}
+    {% if candidates_detail[model.model_name].overfitting.cv_results %}
+    Cross validation results: {{ candidates_detail[model.model_name].overfitting.cv_results | tojson }}
+    {% endif %}
   Complexity: n_params={{ candidates_detail[model.model_name].complexity.n_params }}, depth={{ candidates_detail[model.model_name].complexity.depth }}, family_rank={{ candidates_detail[model.model_name].complexity.family_rank }}
   {% if candidates_detail[model.model_name].shap_summary %}
   {% set shap = candidates_detail[model.model_name].shap_summary %}
