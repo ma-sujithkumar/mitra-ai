@@ -10,6 +10,8 @@ export async function startTraining(payload) {
       train_path: payload.trainPath || null,
       test_path: payload.testPath || null,
       target_column: payload.targetColumn || null,
+      problem_type: payload.problemType || null,
+      allow_fallback_artifacts: payload.allowFallbackArtifacts ?? true,
       execution_mode: payload.executionMode || null,
       timeout_sec: payload.timeoutSec ?? null,
     }),

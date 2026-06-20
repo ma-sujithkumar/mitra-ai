@@ -112,7 +112,8 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus, setLlmSetting
   );
   // Ray training is only allowed once validation has passed and metadata
   // generation has completed for the current inputs.
-  const canRunPipeline = validationPhase === 'done' && metadataPhase === 'done';
+  const usingFallbackArtifacts = validationPhase === 'done' && metadataPhase === 'error';
+  const canRunPipeline = validationPhase === 'done' && (metadataPhase === 'done' || metadataPhase === 'error');
   const baseModel = publicConfig?.llm?.base_models?.[llmSettings.provider] || '';
   const effectiveModel = llmSettings.model || baseModel || 'Provider base model';
   const reviewStarted = validationPhase !== 'idle';
@@ -299,6 +300,8 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus, setLlmSetting
         sessionId,
         targetColumn: form.problemType === 'unsupervised' ? null : form.targetCol,
         executionMode: 'ray',
+        problemType: form.problemType === 'auto' ? null : form.problemType,
+        allowFallbackArtifacts: true,
       });
       setTrainingPhase('accepted');
       startRun(sessionId);
@@ -535,6 +538,11 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus, setLlmSetting
           llm={llmSettings}
           errorMessage={error}
         />
+        {usingFallbackArtifacts ? (
+          <div className="callout compact">
+            Metadata generation failed, but validation passed. Starting training will create fallback metadata, a simple model_config.json, and train/test CSVs from the uploaded dataset.
+          </div>
+        ) : null}
         <button
           className="btn btn-primary"
           disabled={!canRunPipeline || trainingPhase === 'running'}
@@ -542,7 +550,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus, setLlmSetting
           type="button"
         >
           {trainingPhase === 'running' ? <span className="spinner" /> : <Icons.play size={16} />}
-          {trainingPhase === 'running' ? 'Starting training...' : 'Start Ray training'}
+          {trainingPhase === 'running' ? 'Starting training...' : usingFallbackArtifacts ? 'Start Ray training with fallback' : 'Start Ray training'}
         </button>
       </section>
       </>

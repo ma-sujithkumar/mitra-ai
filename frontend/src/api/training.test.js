@@ -38,6 +38,8 @@ test('startTraining sends the backend training contract', async () => {
     train_path: null,
     test_path: null,
     target_column: 'species',
+    problem_type: null,
+    allow_fallback_artifacts: true,
     execution_mode: 'ray',
     timeout_sec: 120,
   });

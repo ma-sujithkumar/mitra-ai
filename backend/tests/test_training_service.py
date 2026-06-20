@@ -163,6 +163,85 @@ def test_missing_artifacts_are_reported_before_background_start(
     assert len(error.value.missing_paths) == 4
 
 
+
+def test_missing_epic1_artifacts_are_created_from_uploaded_csv(
+    test_config_loader: ConfigLoader,
+) -> None:
+    session_id = "session_fallback"
+    session_path = test_config_loader.paths.workspace_root / session_id
+    (session_path / "data").mkdir(parents=True, exist_ok=True)
+    (session_path / "reports").mkdir(parents=True, exist_ok=True)
+    (session_path / "data" / "data.csv").write_text(
+        "feature_a,feature_b,title,rating\n"
+        "1,10,one,4.5\n"
+        "2,20,two,3.5\n"
+        "3,,three,4.0\n"
+        "4,40,four,5.0\n"
+        "5,50,five,2.0\n",
+        encoding="utf-8",
+    )
+    service = TrainingService(
+        config_loader=test_config_loader,
+        session_manager=SessionManager(test_config_loader.paths.workspace_root),
+        event_bus=TrainingEventBus(),
+        orchestrator_factory=lambda model_root, bus: FakeOrchestrator(),
+        executor_factory=lambda model_root, target: FakeExecutor(),
+    )
+
+    state = service.start(
+        TrainingStartRequest(
+            session_id=session_id,
+            target_column="rating",
+            problem_type="regression",
+            execution_mode="local",
+        )
+    )
+
+    assert state.status in {"created", "running"}
+    assert (session_path / "reports" / "metadata.json").is_file()
+    assert (session_path / "model_config.json").is_file()
+    assert (session_path / "data" / "train.csv").is_file()
+    assert (session_path / "data" / "test.csv").is_file()
+    metadata = json.loads((session_path / "reports" / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["problem_type"] == "regression"
+    assert metadata["target_column"] == "rating"
+    assert "title" in metadata["dropped_non_numeric_input_cols"]
+    model_config = json.loads((session_path / "model_config.json").read_text(encoding="utf-8"))
+    assert [item["model_name"] for item in model_config] == [
+        "DecisionTreeRegressor",
+        "Ridge",
+        "DummyRegressor",
+    ]
+    assert wait_for_terminal(service, session_id) == "completed"
+
+
+def test_fallback_can_be_disabled_for_strict_artifact_checks(
+    test_config_loader: ConfigLoader,
+) -> None:
+    session_id = "session_strict_missing"
+    session_path = test_config_loader.paths.workspace_root / session_id
+    (session_path / "data").mkdir(parents=True, exist_ok=True)
+    (session_path / "data" / "data.csv").write_text(
+        "x,y\n1,1\n2,2\n",
+        encoding="utf-8",
+    )
+    service = TrainingService(
+        config_loader=test_config_loader,
+        session_manager=SessionManager(test_config_loader.paths.workspace_root),
+        event_bus=TrainingEventBus(),
+    )
+
+    with pytest.raises(TrainingArtifactError) as error:
+        service.start(
+            TrainingStartRequest(
+                session_id=session_id,
+                target_column="y",
+                allow_fallback_artifacts=False,
+            )
+        )
+
+    assert len(error.value.missing_paths) == 4
+
 def test_cancel_stops_active_ray_executor_and_preserves_cancelled_state(
     test_config_loader: ConfigLoader,
 ) -> None:

@@ -26,6 +26,8 @@ from backend.agents.training_orchestrator.contracts import TrainingSummary
 from backend.orchestration.eval_runner import EvalRunner
 from backend.orchestration.judge_loop import EvalArtifacts, JudgeLoop
 from backend.orchestration.plotting import PipelinePlotGenerator
+from backend.services.training_fallback import FallbackTrainingArtifactBuilder
+from backend.services.training_fallback import FallbackTrainingArtifactError
 
 # Per-session advanced overrides file (written by PUT /api/config/advanced).
 ADVANCED_OVERRIDES_FILENAME = "config_overrides.json"
@@ -356,6 +358,23 @@ class TrainingService:
             test_path,
         ]
         missing_paths = [str(path) for path in required_paths if not path.is_file()]
+        if missing_paths and request.allow_fallback_artifacts:
+            try:
+                self._create_fallback_artifacts(
+                    request=request,
+                    session_path=session_path,
+                    metadata_path=metadata_path,
+                    model_config_path=model_config_path,
+                    train_path=train_path,
+                    test_path=test_path,
+                )
+            except FallbackTrainingArtifactError as exc:
+                logger.info(
+                    "=> fallback training artifact creation skipped: session=%s reason=%s",
+                    request.session_id,
+                    exc,
+                )
+            missing_paths = [str(path) for path in required_paths if not path.is_file()]
         if missing_paths:
             raise TrainingArtifactError(
                 "Required training artifacts are missing",
@@ -382,6 +401,51 @@ class TrainingService:
             summary_path=session_output_dir / training_config.summary_filename,
             status_path=session_output_dir / training_config.run_status_filename,
         )
+
+
+    def _create_fallback_artifacts(
+        self,
+        *,
+        request: TrainingStartRequest,
+        session_path: Path,
+        metadata_path: Path,
+        model_config_path: Path,
+        train_path: Path,
+        test_path: Path,
+    ) -> None:
+        """Create minimal artifacts so Epic-3 can run when upstream LLM stages fail."""
+
+        problem_type = request.problem_type
+        if problem_type == "auto":
+            problem_type = None
+        builder = FallbackTrainingArtifactBuilder(
+            train_fraction=self.config_loader.pipeline.train_test_split,
+        )
+        result = builder.ensure(
+            session_path=session_path,
+            metadata_path=metadata_path,
+            model_config_path=model_config_path,
+            train_path=train_path,
+            test_path=test_path,
+            target_column=request.target_column,
+            problem_type=problem_type,
+        )
+        if result.created_paths:
+            ActivityLog(session_path=session_path).record(
+                stage="training",
+                level="WARNING",
+                message=(
+                    "Created fallback Epic-3 training artifacts because one or more "
+                    "upstream metadata/model-selection/split artifacts were missing "
+                    f"(problem_type={result.problem_type}, target={result.target_column}, "
+                    f"train_rows={result.train_rows}, test_rows={result.test_rows})."
+                ),
+            )
+            logger.info(
+                "=> created fallback training artifacts: session=%s paths=%s",
+                request.session_id,
+                [str(path) for path in result.created_paths],
+            )
 
     def _write_epic3_metadata(self, metadata_path: Path) -> Path:
         # Reads the Epic 1 metadata.json and writes a sibling metadata_epic3.json

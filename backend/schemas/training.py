@@ -34,6 +34,8 @@ class TrainingStartRequest(BaseModel):
     train_path: str | None = None
     test_path: str | None = None
     target_column: str | None = None
+    problem_type: Literal["classification", "regression", "unsupervised", "auto"] | None = None
+    allow_fallback_artifacts: bool = True
     execution_mode: ExecutionMode | None = None
     timeout_sec: float | None = Field(default=None, gt=0.0)
 

@@ -117,6 +117,37 @@ def test_training_start_missing_artifacts_returns_422(
     assert len(detail["missing_paths"]) == 4
 
 
+
+def test_training_start_builds_fallback_artifacts_from_uploaded_csv(
+    test_config_loader: ConfigLoader,
+) -> None:
+    session_id = "api_fallback"
+    session_path = test_config_loader.paths.workspace_root / session_id
+    (session_path / "data").mkdir(parents=True, exist_ok=True)
+    (session_path / "reports").mkdir(parents=True, exist_ok=True)
+    (session_path / "data" / "data.csv").write_text(
+        "feature,target\n"
+        "1,0\n2,1\n3,0\n4,1\n5,0\n6,1\n7,0\n8,1\n9,0\n10,1\n",
+        encoding="utf-8",
+    )
+    client = build_client(test_config_loader)
+
+    response = client.post(
+        "/api/training/start",
+        json={
+            "session_id": session_id,
+            "target_column": "target",
+            "problem_type": "classification",
+            "execution_mode": "local",
+        },
+    )
+
+    assert response.status_code == 202
+    assert (session_path / "reports" / "metadata.json").is_file()
+    assert (session_path / "model_config.json").is_file()
+    assert (session_path / "data" / "train.csv").is_file()
+    assert (session_path / "data" / "test.csv").is_file()
+
 def test_training_status_and_cancel_missing_run_return_404(
     test_config_loader: ConfigLoader,
 ) -> None:
