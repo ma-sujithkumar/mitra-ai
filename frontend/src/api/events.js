@@ -67,3 +67,15 @@ export function streamTrainingEvents(sessionId, handlers = {}) {
   const params = new URLSearchParams({ session_id: sessionId });
   return streamEvents(`/api/training/events?${params.toString()}`, handlers, 'training');
 }
+
+/**
+ * Stream evaluation-stage events (judge turns, SHAP, overfitting) for a session.
+ * Reuses the same /api/training/events SSE endpoint - all pipeline stages share
+ * one event bus per session. This export is intended for the leaderboard / evaluation
+ * screens so they can show judge progress without the training page being open.
+ */
+export function streamEvaluationEvents(sessionId, handlers = {}) {
+  const params = new URLSearchParams({ session_id: sessionId });
+  return streamEvents(`/api/training/events?${params.toString()}`, handlers, 'training');
+}
+

@@ -912,6 +912,8 @@ class TrainingService:
             judge_loop = JudgeLoop(
                 task_type=task_type,
                 max_turns=max_judge_turns,
+                event_bus=self.event_bus,
+                session_id=request.session_id,
             )
 
             # Re-train callback called by the Judge Agent feedback loop on model candidate exclusions

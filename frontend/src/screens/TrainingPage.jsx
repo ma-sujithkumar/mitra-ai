@@ -336,6 +336,15 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
   const [verdictData, setVerdictData] = useState(null);
   const [isRestarting, setIsRestarting] = useState(false);
   const [restartError, setRestartError] = useState(null);
+  const [stageStatuses, setStageStatuses] = useState({
+    d2v: { status: 'pending', progress: 0, message: '' },
+    model_selection: { status: 'pending', progress: 0, message: '' },
+    training: { status: 'pending', progress: 0, message: '' },
+    shap: { status: 'pending', progress: 0, message: '' },
+    overfitting: { status: 'pending', progress: 0, message: '' },
+    evaluation: { status: 'pending', progress: 0, message: '' },
+    hpt: { status: 'pending', progress: 0, message: '' },
+  });
   const sourceRef = useRef(null);
 
   const models = useMemo(() => selectTrainingModels(state), [state]);
@@ -366,6 +375,16 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     setRunState('running');
     setActiveSessionId(normalized);
     window.localStorage.setItem(SESSION_STORAGE_KEY, normalized);
+    setStageStatuses({
+      d2v: { status: 'pending', progress: 0, message: '' },
+      model_selection: { status: 'pending', progress: 0, message: '' },
+      training: { status: 'pending', progress: 0, message: '' },
+      shap: { status: 'pending', progress: 0, message: '' },
+      overfitting: { status: 'pending', progress: 0, message: '' },
+      evaluation: { status: 'pending', progress: 0, message: '' },
+      judge: { status: 'pending', progress: 0, message: '' },
+      hpt: { status: 'pending', progress: 0, message: '' },
+    });
 
     sourceRef.current = streamTrainingEvents(normalized, {
       onOpen: () => {
@@ -374,6 +393,22 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
       },
       onEvent: (event) => {
         dispatch({ type: 'event', payload: event });
+        if (event && event.stage) {
+          setStageStatuses((prev) => {
+            const next = { ...prev };
+            let statusVal = 'pending';
+            if (event.status === 'running') statusVal = 'running';
+            else if (event.status === 'completed' || event.status === 'all_completed') statusVal = 'complete';
+            else if (event.status === 'failed') statusVal = 'failed';
+            
+            next[event.stage] = {
+              status: statusVal,
+              progress: event.pct ?? 0,
+              message: event.msg ?? '',
+            };
+            return next;
+          });
+        }
         setConnectionStatus('open');
         setConnectionMessage('Receiving live Ray training events.');
       },
@@ -550,6 +585,42 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     }
   }
 
+  const d2vStatus = stageStatuses.d2v.status;
+  const d2vProgress = stageStatuses.d2v.progress;
+
+  const modelSelectionStatus = stageStatuses.model_selection.status;
+  const modelSelectionProgress = stageStatuses.model_selection.progress;
+
+  const isTrainingFinished = counts.total > 0 && counts.completed + counts.failed === counts.total;
+  const isTrainingStarted = counts.running > 0 || counts.completed > 0;
+  const trainingStatus = isTrainingFinished ? 'complete' : isTrainingStarted ? 'running' : stageStatuses.training.status;
+  const trainingProgress = progress;
+
+  const shapStatus = stageStatuses.shap.status;
+  const shapProgress = stageStatuses.shap.progress;
+
+  const overfittingStatus = stageStatuses.overfitting.status;
+  const overfittingProgress = stageStatuses.overfitting.progress;
+
+  const judgeStageStatus = stageStatuses.judge.status;
+  // Derive a unified judgeStatus: once verdict is final always 'complete',
+  // otherwise track the SSE judge stage events in real time.
+  const judgeStatus = verdictData?.status === 'complete' ? 'complete' : judgeStageStatus;
+  const judgeProgress = stageStatuses.judge.progress;
+  const judgeMessage = stageStatuses.judge.message;
+
+  const isModelSelectionComplete = modelSelectionStatus === 'complete' || models.length > 0;
+
+  const stagesList = [
+    { id: 'd2v', label: 'Dataset2Vec Matcher', status: d2vStatus, progress: d2vProgress, icon: <Icons.layers size={18} />, desc: 'Query database for recommended models' },
+    { id: 'model_selection', label: 'Model Selection Agent', status: modelSelectionStatus, progress: modelSelectionProgress, icon: <Icons.spark size={18} />, desc: 'Identify and rank candidate model types' },
+    { id: 'training', label: 'Model Parallel Training', status: trainingStatus, progress: trainingProgress, icon: <Icons.cpu size={18} />, desc: 'Train short-listed models in parallel on Ray' },
+    { id: 'shap', label: 'SHAP Explainability', status: shapStatus, progress: shapProgress, icon: <Icons.chart size={18} />, desc: 'Generate SHAP feature importance values' },
+    { id: 'overfitting', label: 'Overfitting Analysis', status: overfittingStatus, progress: overfittingProgress, icon: <Icons.alert size={18} />, desc: 'Detect train/val score generalization gaps' },
+    { id: 'evaluation', label: 'Eval Orchestration', status: stageStatuses.evaluation.status, progress: stageStatuses.evaluation.progress, icon: <Icons.cpu size={18} />, desc: 'Coordinate SHAP, overfitting, judge pipeline' },
+    { id: 'judge', label: 'Judge Multi-turn Loop', status: judgeStatus, progress: judgeProgress, icon: <Icons.trophy size={18} />, desc: 'Evaluate constraints and converge on winner' },
+  ];
+
   return (
     <div className="screen-stack">
       <section className="card training-session-bar">
@@ -612,8 +683,128 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
         progress={progress}
       />
 
-      {models.length ? (
-        <div className="training-layout">
+      {/* Pipeline execution stages dashboard */}
+      {connectedSessionId ? (
+        <section className="card panel-section" style={{ marginTop: 20 }}>
+          <div className="section-head">
+            <div>
+              <p className="section-kicker">Execution flow</p>
+              <h2>Pipeline execution stages</h2>
+            </div>
+          </div>
+          <div className="pipeline-stages-grid">
+            {stagesList.map((stage) => {
+              const isRunning = stage.status === 'running';
+              const isComplete = stage.status === 'complete';
+              const isFailed = stage.status === 'failed';
+              
+              return (
+                <div 
+                  className={`pipeline-stage-card ${stage.status}`} 
+                  key={stage.id}
+                  title={stage.desc}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div className="stage-card-icon">
+                      {stage.icon}
+                    </div>
+                    <div>
+                      {isRunning && <span className="pulse-indicator" />}
+                      {isComplete && <Icons.checkCircle size={16} style={{ color: 'var(--ok)' }} />}
+                      {isFailed && <Icons.alert size={16} style={{ color: 'var(--err)' }} />}
+                      {stage.status === 'pending' && <Icons.dot size={10} style={{ color: 'rgba(255,255,255,0.2)' }} />}
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 4 }}>
+                    <strong style={{ fontSize: '0.95rem', display: 'block', color: 'var(--ink)' }}>{stage.label}</strong>
+                    <span className="muted" style={{ fontSize: '0.75rem', display: 'block', marginTop: 2, height: 32, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {stageStatuses[stage.id]?.message || stage.desc}
+                    </span>
+                  </div>
+                  <div 
+                    className="stage-micro-progress" 
+                    style={{ width: `${stage.progress}%` }} 
+                  />
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Judge live progress panel - shown when judge is actively evaluating */}
+          {(judgeStatus === 'running' || judgeStatus === 'complete') && (
+            <div style={{
+              marginTop: 16,
+              padding: '14px 18px',
+              background: 'rgba(251, 191, 36, 0.05)',
+              border: '1px solid rgba(251, 191, 36, 0.2)',
+              borderRadius: 8,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                {judgeAgent ? <AgentAvatar agent={judgeAgent} size={24} state={judgeStatus === 'complete' ? 'done' : 'running'} /> : null}
+                <div>
+                  <p className="section-kicker" style={{ margin: 0, fontSize: '0.65rem', color: 'rgba(251, 191, 36, 0.9)' }}>JUDGE AGENT</p>
+                  <strong style={{ fontSize: '0.9rem' }}>
+                    {judgeStatus === 'complete' ? 'Evaluation complete' : 'Evaluating candidates...'}
+                  </strong>
+                </div>
+                {judgeStatus === 'running' && <div className="spinner small" style={{ marginLeft: 'auto' }} />}
+                {judgeStatus === 'complete' && <Icons.checkCircle size={18} style={{ marginLeft: 'auto', color: 'var(--ok)' }} />}
+              </div>
+              {judgeMessage && (
+                <p className="mono muted" style={{ margin: 0, fontSize: '0.78rem', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                  {judgeMessage}
+                </p>
+              )}
+              {judgeProgress > 0 && judgeStatus === 'running' && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: 4 }}>
+                    <span className="muted">Progress</span>
+                    <strong className="mono">{judgeProgress}%</strong>
+                  </div>
+                  <div style={{ height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{ width: `${judgeProgress}%`, height: '100%', background: 'linear-gradient(90deg, #f59e0b 0%, #fbbf24 100%)', borderRadius: 2, transition: 'width 0.5s ease' }} />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {!connectedSessionId ? (
+        <section className="card empty-card training-empty" style={{ marginTop: 20 }}>
+          <Icons.cpu size={34} />
+          <h2>No session connected</h2>
+          <p className="muted">
+            Complete New Run and open Page 2, or connect with a known session ID.
+          </p>
+          <button className="btn btn-secondary" onClick={() => go('upload')} type="button">
+            <Icons.upload size={16} />
+            Go to New Run
+          </button>
+        </section>
+      ) : !isModelSelectionComplete ? (
+        <section className="card empty-card training-empty" style={{ marginTop: 20 }}>
+          <Icons.spark size={34} style={{ color: 'var(--color-primary)' }} />
+          <h2>Model Selection running</h2>
+          <p className="muted">
+            The Model Selection agent is currently matching data schemas and selecting optimal architectures...
+          </p>
+          <div style={{ width: '100%', maxWidth: 400, marginTop: 15 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: '0.85rem' }}>
+              <span className="muted">Model selection progress</span>
+              <strong className="mono">{modelSelectionProgress}%</strong>
+            </div>
+            <div className="bar" style={{ height: 6, background: 'rgba(255, 255, 255, 0.05)', borderRadius: 3, overflow: 'hidden' }}>
+              <div style={{ width: `${modelSelectionProgress}%`, height: '100%', background: 'linear-gradient(90deg, #3b82f6 0%, #ec4899 100%)', borderRadius: 3 }} />
+            </div>
+          </div>
+          <p className="mono muted" style={{ fontSize: '0.8rem', marginTop: 10, textAlign: 'center', maxWidth: 500 }}>
+            {stageStatuses.model_selection.message || 'Selecting candidate models...'}
+          </p>
+        </section>
+      ) : models.length ? (
+        <div className="training-layout" style={{ marginTop: 20 }}>
           <section className="card panel-section">
             <div className="section-head">
               <div>
@@ -649,20 +840,12 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
           </aside>
         </div>
       ) : (
-        <section className="card empty-card training-empty">
+        <section className="card empty-card training-empty" style={{ marginTop: 20 }}>
           <Icons.cpu size={34} />
-          <h2>{connectedSessionId ? 'Waiting for training jobs' : 'No session connected'}</h2>
+          <h2>Waiting for training jobs</h2>
           <p className="muted">
-            {connectedSessionId
-              ? 'Queued model events will appear here as soon as the orchestrator starts.'
-              : 'Complete New Run and open Page 2, or connect with a known session ID.'}
+            Queued model events will appear here as soon as the orchestrator starts.
           </p>
-          {!connectedSessionId ? (
-            <button className="btn btn-secondary" onClick={() => go('upload')} type="button">
-              <Icons.upload size={16} />
-              Go to New Run
-            </button>
-          ) : null}
         </section>
       )}
 

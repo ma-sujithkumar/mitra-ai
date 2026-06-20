@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 from backend.agents.evaluation.judge.adapter import UpstreamAdapter
 from backend.agents.evaluation.judge.judge_agent import JudgeAgent
 from backend.agents.evaluation.judge.schemas import JudgeDecision, JudgeInput
+from backend.orchestration.events import TrainingEvent, TrainingEventBus
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,8 @@ class JudgeLoop:
         use_llm: Optional[bool] = None,
         judge_config: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
+        event_bus: Optional["TrainingEventBus"] = None,
+        session_id: Optional[str] = None,
     ) -> None:
         self.task_type = task_type
         self.max_turns = max_turns
@@ -205,6 +208,8 @@ class JudgeLoop:
         self.verbose = verbose
         self.input_builder = JudgeInputBuilder(task_type=task_type)
         self.judge_agent = JudgeAgent(config=judge_config)
+        self.event_bus = event_bus
+        self.session_id = session_id
 
     def run(
         self,
@@ -215,6 +220,13 @@ class JudgeLoop:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> JudgeDecision:
         """Run the judge once and return the decision. No feedback loop."""
+        self._emit_judge_event(
+            turn_number=1,
+            total_turns=1,
+            status="running",
+            msg="[JUDGE] Building evaluation input from SHAP, overfitting, and training metrics...",
+            pct=10,
+        )
         judge_input = self.input_builder.build(
             eval_artifacts=eval_artifacts,
             training_summary=training_summary,
@@ -222,12 +234,28 @@ class JudgeLoop:
             dataset_id=dataset_id,
             metadata=metadata,
         )
+        candidate_count = len(judge_input.candidates) if judge_input else 0
+        self._emit_judge_event(
+            turn_number=1,
+            total_turns=1,
+            status="running",
+            msg=f"[JUDGE] Evaluating {candidate_count} model candidate(s) with rule engine + LLM...",
+            pct=40,
+        )
         decision = self.judge_agent.judge(judge_input, use_llm=self.use_llm)
         self._persist_decision(decision, session_dir, turn=1)
         logger.info(
             "=> judge turn 1: selected=%s ranked=%d",
             decision.selected_model,
             len(decision.ranked_models),
+        )
+        self._emit_judge_event(
+            turn_number=1,
+            total_turns=1,
+            status="completed",
+            msg=f"[JUDGE] Decision: selected model = {decision.selected_model or 'none'} ({len(decision.ranked_models)} models ranked).",
+            pct=100,
+            details={"selected_model": decision.selected_model, "ranked_count": len(decision.ranked_models)},
         )
         return decision
 
@@ -263,6 +291,13 @@ class JudgeLoop:
         last_decision: Optional[JudgeDecision] = None
 
         for turn_number in range(1, self.max_turns + 1):
+            self._emit_judge_event(
+                turn_number=turn_number,
+                total_turns=self.max_turns,
+                status="running",
+                msg=f"[JUDGE] Turn {turn_number}/{self.max_turns}: Building evaluation input (excluded: {len(excluded_model_names)} models)...",
+                pct=max(10, int((turn_number - 1) / self.max_turns * 70)),
+            )
             judge_input = self.input_builder.build(
                 eval_artifacts=current_eval_artifacts,
                 training_summary=current_training_summary,
@@ -273,8 +308,23 @@ class JudgeLoop:
 
             if not judge_input.candidates:
                 logger.warning("=> judge turn %d: no candidates left, stopping loop.", turn_number)
+                self._emit_judge_event(
+                    turn_number=turn_number,
+                    total_turns=self.max_turns,
+                    status="failed",
+                    msg=f"[JUDGE] Turn {turn_number}: No candidate models remaining after exclusions. Stopping.",
+                    pct=100,
+                )
                 break
 
+            candidate_count = len(judge_input.candidates)
+            self._emit_judge_event(
+                turn_number=turn_number,
+                total_turns=self.max_turns,
+                status="running",
+                msg=f"[JUDGE] Turn {turn_number}/{self.max_turns}: Evaluating {candidate_count} candidate(s) with LLM...",
+                pct=max(20, int((turn_number - 0.5) / self.max_turns * 70)),
+            )
             decision = self.judge_agent.judge(judge_input, use_llm=self.use_llm)
             self._persist_decision(decision, session_dir, turn=turn_number)
             last_decision = decision
@@ -290,13 +340,28 @@ class JudgeLoop:
             # If a winner was found, stop the loop.
             if decision.selected_model is not None:
                 logger.info("=> judge loop done: selected=%s after %d turn(s)", decision.selected_model, turn_number)
+                self._emit_judge_event(
+                    turn_number=turn_number,
+                    total_turns=self.max_turns,
+                    status="all_completed",
+                    msg=f"[JUDGE] Converged on turn {turn_number}/{self.max_turns}: Winner = {decision.selected_model} ({len(decision.ranked_models)} models ranked).",
+                    pct=100,
+                    details={"selected_model": decision.selected_model, "ranked_count": len(decision.ranked_models), "turn": turn_number},
+                )
                 return decision
 
             if turn_number >= self.max_turns:
                 logger.warning("=> judge loop reached max_turns=%d with no winner.", self.max_turns)
+                self._emit_judge_event(
+                    turn_number=turn_number,
+                    total_turns=self.max_turns,
+                    status="completed",
+                    msg=f"[JUDGE] Reached max turns ({self.max_turns}) with no clear winner. Returning best available.",
+                    pct=100,
+                )
                 break
 
-            # All rejected — collect rejected names and re-select
+            # All rejected -- collect rejected names and re-select
             newly_rejected = [
                 ranked_model.model_name
                 for ranked_model in decision.ranked_models
@@ -309,6 +374,13 @@ class JudgeLoop:
                 "=> judge feedback: all rejected on turn %d. Excluded so far: %s",
                 turn_number,
                 excluded_model_names,
+            )
+            self._emit_judge_event(
+                turn_number=turn_number,
+                total_turns=self.max_turns,
+                status="running",
+                msg=f"[JUDGE] Turn {turn_number}: All models rejected. Re-selecting candidates (excluding: {', '.join(excluded_model_names[:5])})...",
+                pct=max(30, int(turn_number / self.max_turns * 60)),
             )
 
             # Re-invoke model selection excluding all rejected names, then re-train.
@@ -350,6 +422,37 @@ class JudgeLoop:
             excluded_model_names=excluded_model_names,
         )
         logger.info("=> re-selected models (excluded %d). Config: %s", len(excluded_model_names), model_config_path)
+
+    def _emit_judge_event(
+        self,
+        turn_number: int,
+        total_turns: int,
+        status: str,
+        msg: str,
+        pct: int = 0,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Emit a judge SSE event if event_bus and session_id are available."""
+        if self.event_bus is None or not self.session_id:
+            return
+        try:
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_id,
+                    stage="judge",
+                    level="info",
+                    status=status,  # type: ignore[arg-type]
+                    msg=msg,
+                    pct=pct,
+                    details={
+                        "turn": turn_number,
+                        "total_turns": total_turns,
+                        **(details or {}),
+                    },
+                )
+            )
+        except Exception as emit_exc:
+            logger.debug("=> judge SSE emit failed (non-fatal): %s", emit_exc)
 
     def _persist_decision(self, decision: JudgeDecision, session_dir: Path, turn: int) -> None:
         """Write judge_decision.json (overwritten each turn; turn N also archived)."""
