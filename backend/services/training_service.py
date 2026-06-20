@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,11 +12,13 @@ from typing import Any, Callable, Protocol
 
 from backend.config_loader import ConfigLoader
 from backend.schemas.training import ExecutionMode
+from backend.schemas.training import TrainingModelState
 from backend.schemas.training import TrainingStartRequest
 from backend.schemas.training import TrainingStatusResponse
 from backend.session import SessionManager
 from epic_3.events import TrainingEvent
 from epic_3.events import TrainingEventBus
+from epic_3.events import TrainingEventSink
 from epic_3.ray_wrapper import RayExecutor
 from epic_3.training_orchestrator import TrainingOrchestrator
 from epic_3.training_orchestrator.contracts import TrainingSummary
@@ -99,7 +102,34 @@ class OrchestratorLike(Protocol):
         ...
 
 
-OrchestratorFactory = Callable[[Path, TrainingEventBus], OrchestratorLike]
+class TrainingRunEventSink:
+    """Mirror training events into persistent API state before forwarding SSE."""
+
+    def __init__(
+        self,
+        *,
+        delegate: TrainingEventBus,
+        on_event: Callable[[TrainingEvent], None],
+    ) -> None:
+        self.delegate = delegate
+        self.on_event = on_event
+
+    def emit(self, event: TrainingEvent) -> object:
+        try:
+            self.on_event(event)
+        except Exception:
+            # Persistent status is best-effort; SSE and training must continue.
+            pass
+        return self.delegate.emit(event)
+
+    def close_session(self, session_id: str) -> None:
+        self.delegate.close_session(session_id)
+
+    def reset_session(self, session_id: str, *, clear_history: bool = True) -> None:
+        self.delegate.reset_session(session_id, clear_history=clear_history)
+
+
+OrchestratorFactory = Callable[[Path, TrainingEventSink], OrchestratorLike]
 ExecutorFactory = Callable[[Path, str | None], ParallelExecutor]
 
 
@@ -137,6 +167,7 @@ class TrainingService:
         "failed",
         "cancelled",
     }
+    terminal_model_statuses = {"completed", "failed", "timed_out", "cancelled"}
 
     def __init__(
         self,
@@ -237,12 +268,14 @@ class TrainingService:
             cancel_event.set()
             executor = self.executors.get(session_id)
             cancelled_jobs = executor.cancel_all(force=True) if executor else 0
+            cancelled_at = self._utc_now()
             cancelled_state = state.model_copy(
                 update={
                     "status": "cancelled",
                     "cancellation_requested": True,
                     "cancelled_jobs": cancelled_jobs,
-                    "finished_at": self._utc_now(),
+                    "finished_at": cancelled_at,
+                    **self._cancelled_state_updates(state, cancelled_at),
                 }
             )
             self.runs[session_id] = cancelled_state
@@ -264,12 +297,17 @@ class TrainingService:
                 executor.close()
             except Exception:
                 pass
-        self.worker_pool.shutdown(wait=False, cancel_futures=True)
+        self.worker_pool.shutdown(wait=True, cancel_futures=True)
 
     def resolve_paths(self, request: TrainingStartRequest) -> ResolvedTrainingPaths:
-        session_path = self.session_manager.get_session_path(
-            session_id=request.session_id
-        ).resolve()
+        try:
+            session_path = self.session_manager.get_session_path(
+                session_id=request.session_id
+            ).resolve()
+        except ValueError as exc:
+            raise TrainingSessionNotFoundError(
+                f"Invalid session id: {request.session_id}"
+            ) from exc
         if not session_path.is_dir():
             raise TrainingSessionNotFoundError(
                 f"Session not found: {request.session_id}"
@@ -393,9 +431,13 @@ class TrainingService:
             status="running",
             started_at=self._utc_now(),
         )
+        status_event_sink = TrainingRunEventSink(
+            delegate=self.event_bus,
+            on_event=self._record_training_event,
+        )
         orchestrator = self.orchestrator_factory(
             self.config_loader.training_api.model_library_root,
-            self.event_bus,
+            status_event_sink,
         )
         executor: ParallelExecutor | None = None
 
@@ -438,6 +480,7 @@ class TrainingService:
 
             if cancel_event.is_set():
                 return
+            summary_updates = self._summary_state_updates(summary)
             self._update_state(
                 request.session_id,
                 status=summary.status,
@@ -445,16 +488,22 @@ class TrainingService:
                 completed_models=summary.completed,
                 failed_models=summary.failed,
                 error=None,
+                **summary_updates,
             )
         except Exception as exc:
             if cancel_event.is_set():
                 return
             message = f"{type(exc).__name__}: {exc}"
+            failure_updates = self._failure_state_updates(
+                request.session_id,
+                message,
+            )
             self._update_state(
                 request.session_id,
                 status="failed",
                 finished_at=self._utc_now(),
                 error=message,
+                **failure_updates,
             )
             self._emit_failed_session(request.session_id, message)
         finally:
@@ -467,6 +516,219 @@ class TrainingService:
                 self.executors.pop(request.session_id, None)
             if cancel_event.is_set():
                 self.event_bus.close_session(request.session_id)
+
+    def _record_training_event(self, event: TrainingEvent) -> None:
+        """Persist per-model lifecycle state without coupling training to SSE."""
+
+        with self.lock:
+            current = self.runs.get(event.session_id)
+            status_path = self.status_paths.get(event.session_id)
+            if current is None or status_path is None:
+                return
+            if current.status == "cancelled" and event.status != "cancelled":
+                return
+
+            if event.model_id is None:
+                details = event.details
+                updates: dict[str, Any] = {}
+                if event.status == "all_completed":
+                    updates = {
+                        "total_models": self._optional_int(details.get("total_models")),
+                        "completed_models": self._optional_int(details.get("completed")),
+                        "failed_models": self._optional_int(details.get("failed")),
+                    }
+                    updates = {
+                        key: value for key, value in updates.items() if value is not None
+                    }
+                if not updates:
+                    return
+                updated = current.model_copy(update=updates)
+                self.runs[event.session_id] = updated
+                self._persist_state(updated, status_path)
+                return
+
+            previous_by_id = {
+                item.model_id: item for item in current.model_states
+            }
+            previous = previous_by_id.get(event.model_id)
+            details = event.details
+            previous_validation_score = (
+                previous.validation_score if previous is not None else None
+            )
+            previous_model_path = previous.model_path if previous is not None else None
+            previous_training_time = (
+                previous.training_time_sec if previous is not None else None
+            )
+            previous_error = previous.error if previous is not None else None
+
+            model_state = TrainingModelState(
+                model_id=event.model_id,
+                model_name=event.model_name or (
+                    previous.model_name if previous is not None else event.model_id
+                ),
+                status=event.status,
+                pct=event.pct,
+                updated_at=event.ts,
+                validation_score=self._optional_float(
+                    details.get("validation_score"),
+                    fallback=previous_validation_score,
+                ),
+                model_path=self._optional_string(
+                    details.get("model_path"),
+                    fallback=previous_model_path,
+                ),
+                training_time_sec=self._optional_float(
+                    details.get("training_time_sec"),
+                    fallback=previous_training_time,
+                ),
+                error=self._optional_string(
+                    details.get("error"),
+                    fallback=previous_error,
+                ),
+            )
+            previous_by_id[event.model_id] = model_state
+            model_states = sorted(
+                previous_by_id.values(),
+                key=lambda item: item.model_id,
+            )
+            status_counts = Counter(item.status for item in model_states)
+            updated = current.model_copy(
+                update={
+                    "total_models": len(model_states),
+                    "completed_models": status_counts.get("completed", 0),
+                    "failed_models": (
+                        status_counts.get("failed", 0)
+                        + status_counts.get("timed_out", 0)
+                    ),
+                    "job_status_counts": dict(sorted(status_counts.items())),
+                    "model_states": model_states,
+                }
+            )
+            self.runs[event.session_id] = updated
+            self._persist_state(updated, status_path)
+
+    def _summary_state_updates(self, summary: TrainingSummary) -> dict[str, Any]:
+        summary_models = getattr(summary, "models", None)
+        if not summary_models:
+            total_models = getattr(summary, "total_models", None)
+            return {"total_models": total_models} if total_models is not None else {}
+
+        now = self._utc_now()
+        model_states = [
+            TrainingModelState(
+                model_id=item.model_id,
+                model_name=item.model_name,
+                status=(
+                    "timed_out"
+                    if item.status == "failed"
+                    and item.error
+                    and "timed out" in item.error.lower()
+                    else item.status
+                ),
+                pct=100,
+                updated_at=now,
+                validation_score=item.validation_score,
+                model_path=item.model_path,
+                training_time_sec=item.training_time_sec,
+                error=item.error,
+            )
+            for item in summary_models
+        ]
+        status_counts = Counter(item.status for item in model_states)
+        return {
+            "total_models": len(model_states),
+            "job_status_counts": dict(sorted(status_counts.items())),
+            "model_states": model_states,
+        }
+
+    def _failure_state_updates(
+        self,
+        session_id: str,
+        message: str,
+    ) -> dict[str, Any]:
+        with self.lock:
+            current = self.runs.get(session_id)
+            if current is None or not current.model_states:
+                return {}
+            now = self._utc_now()
+            failed_states = [
+                item
+                if item.status in self.terminal_model_statuses
+                else item.model_copy(
+                    update={
+                        "status": "failed",
+                        "pct": 100,
+                        "updated_at": now,
+                        "error": message,
+                    }
+                )
+                for item in current.model_states
+            ]
+            status_counts = Counter(item.status for item in failed_states)
+            return {
+                "total_models": len(failed_states),
+                "completed_models": status_counts.get("completed", 0),
+                "failed_models": (
+                    status_counts.get("failed", 0)
+                    + status_counts.get("timed_out", 0)
+                ),
+                "job_status_counts": dict(sorted(status_counts.items())),
+                "model_states": failed_states,
+            }
+
+    def _cancelled_state_updates(
+        self,
+        state: TrainingStatusResponse,
+        timestamp: datetime,
+    ) -> dict[str, Any]:
+        cancelled_states = [
+            item
+            if item.status in self.terminal_model_statuses
+            else item.model_copy(
+                update={
+                    "status": "cancelled",
+                    "pct": 100,
+                    "updated_at": timestamp,
+                    "error": "Training cancellation was requested",
+                }
+            )
+            for item in state.model_states
+        ]
+        status_counts = Counter(item.status for item in cancelled_states)
+        return {
+            "total_models": len(cancelled_states) or state.total_models,
+            "completed_models": status_counts.get("completed", 0),
+            "failed_models": (
+                status_counts.get("failed", 0)
+                + status_counts.get("timed_out", 0)
+            ),
+            "job_status_counts": dict(sorted(status_counts.items())),
+            "model_states": cancelled_states,
+        }
+
+    @staticmethod
+    def _optional_float(value: Any, fallback: float | None = None) -> float | None:
+        if value is None:
+            return fallback
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    @staticmethod
+    def _optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _optional_string(value: Any, fallback: str | None = None) -> str | None:
+        if value is None:
+            return fallback
+        return str(value)
 
     def _update_state(self, session_id: str, **updates: Any) -> None:
         with self.lock:

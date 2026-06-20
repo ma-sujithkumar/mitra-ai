@@ -127,3 +127,17 @@ def test_training_status_and_cancel_missing_run_return_404(
 
     assert status_response.status_code == 404
     assert cancel_response.status_code == 404
+
+
+def test_training_start_invalid_session_id_returns_404(
+    test_config_loader: ConfigLoader,
+) -> None:
+    client = build_client(test_config_loader)
+
+    response = client.post(
+        "/api/training/start",
+        json={"session_id": "../invalid-session"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "SESSION_NOT_FOUND"

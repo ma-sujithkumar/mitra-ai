@@ -14,6 +14,15 @@ TrainingRunStatus = Literal[
     "failed",
     "cancelled",
 ]
+TrainingModelStatus = Literal[
+    "queued",
+    "submitted",
+    "running",
+    "completed",
+    "failed",
+    "timed_out",
+    "cancelled",
+]
 
 
 class TrainingStartRequest(BaseModel):
@@ -39,6 +48,22 @@ class TrainingStartResponse(BaseModel):
     events_url: str
 
 
+class TrainingModelState(BaseModel):
+    """Persisted per-model state mirrored from orchestrator lifecycle events."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: str = Field(pattern=r"^model_\d{3}$")
+    model_name: str
+    status: TrainingModelStatus
+    pct: int = Field(default=0, ge=0, le=100)
+    updated_at: datetime
+    validation_score: float | None = None
+    model_path: str | None = None
+    training_time_sec: float | None = Field(default=None, ge=0.0)
+    error: str | None = None
+
+
 class TrainingStatusResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -52,8 +77,11 @@ class TrainingStatusResponse(BaseModel):
     cancelled_jobs: int = 0
     manifest_path: str | None = None
     summary_path: str | None = None
+    total_models: int | None = None
     completed_models: int | None = None
     failed_models: int | None = None
+    job_status_counts: dict[str, int] = Field(default_factory=dict)
+    model_states: list[TrainingModelState] = Field(default_factory=list)
     error: str | None = None
 
 
