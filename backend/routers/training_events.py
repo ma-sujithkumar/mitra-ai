@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 
-from epic_3.events import TrainingEventBus
+from backend.orchestration.events import TrainingEventBus
 
 router = APIRouter(prefix="/api", tags=["training-events"])
 

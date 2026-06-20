@@ -1,9 +1,9 @@
 meeting_transcripts/original
 
-# CLAUDE.md conventions: intermediate scripts and session docs are not tracked
+# CLAUDE.md conventions: intermediate scripts are not tracked
 claude_scripts/
-docs/*
-!docs/README.md
+# track module specs/cards/chats in docs/<module>/ but ignore session-generated files
+docs/session_*
 
 # Python/runtime artifacts
 __pycache__/

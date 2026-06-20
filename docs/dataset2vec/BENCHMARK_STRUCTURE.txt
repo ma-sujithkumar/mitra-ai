@@ -1,0 +1,178 @@
+================================================================================
+DATASET2VEC BENCHMARKING SUITE - DIRECTORY STRUCTURE
+================================================================================
+
+benchmark/                                    # Main benchmarking package
+├── __init__.py                               # Package init
+├── config.py                                 # Configuration & constants
+├── dataset_preparation.py                    # Download & prepare UCI datasets
+│   └── DatasetPreparator class
+│       ├── download_car_evaluation()
+│       ├── download_monks()
+│       ├── download_spambase()
+│       ├── download_letter_recognition()
+│       └── prepare_and_save()
+│
+├── query_runner.py                           # Execute Phase 3 queries
+│   └── QueryRunner class
+│       ├── run_query()                       # Single dataset
+│       ├── run_all_external_datasets()       # Batch execution
+│       ├── run_corpus_sanity_check()         # Corpus validation
+│       └── load_results()                    # Parse JSON results
+│
+├── results_analyzer.py                       # Analyze & compare results
+│   ├── VerificationStats dataclass           # Statistics container
+│   │   ├── transfer_quality property
+│   │   └── grade property
+│   └── ResultsAnalyzer class
+│       ├── extract_verification_stats()
+│       ├── analyze_all_results()             # DataFrame with all stats
+│       └── get_summary_statistics()
+│
+├── benchmark_report.py                       # Generate formatted reports
+│   └── BenchmarkReporter class
+│       ├── generate_summary_report()         # Console summary
+│       ├── generate_dataset_report()         # Per-dataset details
+│       ├── save_summary_report()
+│       ├── save_dataset_report()
+│       └── save_all_reports()
+│
+└── run_benchmark.py                          # Main orchestrator
+    └── main()
+        ├── prepare datasets
+        ├── run sanity check
+        ├── execute queries
+        ├── analyze results
+        └── generate & save reports
+
+docs/
+├── BENCHMARK.md                              # Full documentation
+├── BENCHMARK_QUICKSTART.md                   # Quick start guide
+└── README.md                                 # Phase 3 usage guide
+
+claude_outputs/benchmark/                     # Benchmark outputs (gitignored)
+├── BENCHMARK_SUMMARY.txt                     # Main report
+├── REPORT_ext-car-evaluation.txt
+├── REPORT_ext-monks.txt
+├── REPORT_ext-spambase.txt
+├── REPORT_ext-letter-recognition.txt
+└── [dataset-name]/
+    └── dataset_prior.json                    # Raw query results
+
+test_datasets/                                # Backup of test data (gitignored)
+├── test-iris.npz
+├── test-wine.npz
+├── test-breast-cancer.npz
+└── test-digits.npz
+
+benchmark/test_datasets/                      # External datasets (gitignored)
+├── ext-car-evaluation.npz
+├── ext-monks.npz
+├── ext-spambase.npz
+└── ext-letter-recognition.npz
+
+================================================================================
+TYPICAL WORKFLOW
+================================================================================
+
+1. PREPARE DATASETS
+   python benchmark/run_benchmark.py -c config/config.ini
+   └── Downloads 4 UCI datasets, converts to NPZ format
+
+2. RUN QUERIES
+   └── Executes query.py on each external dataset with --verify
+   └── Trains suggested models on test set
+   └── Compares expected vs achieved metrics
+
+3. ANALYZE
+   └── Extracts statistics: transfer quality, deltas, neighbors
+   └── Grades each dataset: EXCELLENT/GOOD/FAIR/POOR
+   └── Computes summary statistics across all datasets
+
+4. REPORT
+   └── Generates human-readable reports
+   └── Saves to: BENCHMARK_SUMMARY.txt + per-dataset reports
+   └── Prints console summary
+
+================================================================================
+KEY METRICS
+================================================================================
+
+Transfer Quality (%)
+  Definition: % of top-N models achieving within-tolerance performance
+  Range: 0-100%
+  Interpretation:
+    80%+ = EXCELLENT (use suggestions confidently)
+    50-70% = GOOD (tune the models)
+    30-50% = FAIR (significant tuning)
+    <30% = POOR (dataset too dissimilar)
+
+Mean |Delta|
+  Definition: Average |achieved_metric - expected_metric|
+  Range: 0.0 (perfect) to 1.0 (worst)
+  Interpretation:
+    <0.05 = EXCELLENT (±5% error)
+    0.05-0.10 = GOOD (±10% error)
+    0.10-0.20 = FAIR (±20% error)
+    >0.20 = POOR (>20% error)
+
+Neighbor Similarity
+  Definition: Embedding-space similarity score (inner product after L2 norm)
+  Range: 0.0 (different) to 1.0 (identical)
+  Typical: 0.99+ for datasets in corpus, varies for external
+
+================================================================================
+EXTERNAL DATASETS USED
+================================================================================
+
+1. car-evaluation
+   Source: UCI ML Repository
+   Task: Multi-class classification (4 classes: unacc, acc, good, vgood)
+   Features: 6 (categorical: buying, maint, doors, persons, lug_boot, safety)
+   Rows: 1,728
+   Domain: Automotive
+   Transfer: Usually POOR (structure differs from corpus)
+
+2. monks
+   Source: UCI ML Repository
+   Task: Binary classification (synthetic benchmark)
+   Features: 6 (synthetic attributes)
+   Rows: 124
+   Domain: Synthetic benchmark
+   Transfer: Usually GOOD (but synthetic nature limits transfer)
+
+3. spambase
+   Source: UCI ML Repository
+   Task: Binary spam/ham classification
+   Features: 57 (word frequencies, character frequencies)
+   Rows: 4,601
+   Domain: Email/text
+   Transfer: Usually EXCELLENT (exact or near-exact in corpus)
+
+4. letter-recognition
+   Source: UCI ML Repository
+   Task: Multi-class letter recognition (A-Z, 26 classes)
+   Features: 16 (morphological features)
+   Rows: 20,000
+   Domain: Computer vision
+   Transfer: Usually EXCELLENT (exact in corpus)
+
+================================================================================
+QUICK REFERENCE - RUN COMMANDS
+================================================================================
+
+# Full pipeline (prepare + queries + analysis + reports)
+python benchmark/run_benchmark.py -c config/config.ini -v
+
+# Skip preparation (datasets already prepared)
+python benchmark/run_benchmark.py -c config/config.ini --skip-prepare -v
+
+# Skip sanity check (don't test corpus dataset)
+python benchmark/run_benchmark.py -c config/config.ini --skip-sanity -v
+
+# Skip both
+python benchmark/run_benchmark.py -c config/config.ini --skip-prepare --skip-sanity -v
+
+================================================================================
+END OF STRUCTURE
+================================================================================

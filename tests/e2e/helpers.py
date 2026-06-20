@@ -13,7 +13,7 @@ from backend.config_loader import ConfigLoader
 from backend.routers import training
 from backend.services.training_service import TrainingService
 from backend.session import SessionManager
-from epic_3.events import TrainingEventBus
+from backend.orchestration.events import TrainingEventBus
 
 
 def build_training_client(

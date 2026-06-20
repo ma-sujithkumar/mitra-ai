@@ -36,6 +36,8 @@ class PipelineConfig:
     train_test_split: float
     max_ml_models: int
     max_hpt_trials: int
+    run_post_training_eval: bool
+    max_judge_turns: int
 
 
 @dataclass(frozen=True)
@@ -147,6 +149,13 @@ class ConfigLoader:
             train_test_split=self.parser.getfloat("pipeline", "TRAIN_TEST_SPLIT"),
             max_ml_models=self.parser.getint("pipeline", "MAX_ML_MODELS"),
             max_hpt_trials=self.parser.getint("pipeline", "MAX_HPT_TRIALS"),
+            # Fallbacks keep older config.ini files (without these keys) working.
+            run_post_training_eval=self.parser.getboolean(
+                "pipeline", "RUN_POST_TRAINING_EVAL", fallback=True
+            ),
+            max_judge_turns=self.parser.getint(
+                "pipeline", "MAX_JUDGE_TURNS", fallback=3
+            ),
         )
         self.llm_models = LlmModelsConfig(
             openai_base_model=self.parser.get("llm_models", "OPENAI_BASE_MODEL"),

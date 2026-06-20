@@ -57,7 +57,10 @@ def run_stats(
             1 for run_record in run_records
             if run_record["metadata_status"] == "complete"
         ),
-        "leaderboard_runs": 0,
+        "leaderboard_runs": sum(
+            1 for run_record in run_records
+            if run_record["leaderboard_status"] == "complete"
+        ),
     }
 
 
@@ -71,7 +74,7 @@ def _build_run_record(
         **upload_record,
         "validation_status": _validation_status(reports_dir=reports_dir),
         "metadata_status": _metadata_status(reports_dir=reports_dir),
-        "leaderboard_status": "pending",
+        "leaderboard_status": _leaderboard_status(reports_dir=reports_dir),
     }
 
 
@@ -88,6 +91,14 @@ def _validation_status(reports_dir: Path) -> str:
 
 def _metadata_status(reports_dir: Path) -> str:
     if (reports_dir / "metadata.json").is_file():
+        return "complete"
+    return "pending"
+
+
+def _leaderboard_status(reports_dir: Path) -> str:
+    # The judge_decision.json is the final pipeline artifact; its presence means
+    # the leaderboard is ready to render for this run.
+    if (reports_dir / "judge_decision.json").is_file():
         return "complete"
     return "pending"
 

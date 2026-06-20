@@ -14,7 +14,7 @@ from backend.services.training_service import TrainingArtifactError
 from backend.services.training_service import TrainingRunConflictError
 from backend.services.training_service import TrainingService
 from backend.session import SessionManager
-from epic_3.events import TrainingEventBus
+from backend.orchestration.events import TrainingEventBus
 
 
 class FakeExecutor:

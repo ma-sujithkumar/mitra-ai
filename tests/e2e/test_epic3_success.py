@@ -7,9 +7,9 @@ from backend.schemas.training import TrainingStartRequest
 from backend.services.training_service import TrainingRunConflictError
 from backend.services.training_service import TrainingService
 from backend.session import SessionManager
-from epic_3.events import TrainingEventBus
-from epic_3.training.contracts import TrainingResult
-from epic_3.training_orchestrator import TrainingOrchestrator
+from backend.orchestration.events import TrainingEventBus
+from backend.agents.training.contracts import TrainingResult
+from backend.agents.training_orchestrator import TrainingOrchestrator
 
 from .helpers import build_training_client
 from .helpers import prepare_session

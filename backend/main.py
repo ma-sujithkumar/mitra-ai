@@ -11,6 +11,7 @@ from backend.agents.metadata_gen_agent import MetadataAgentRunner
 from backend.config_loader import ConfigLoader
 from backend.jobs import JobRegistry
 from backend.routers import config
+from backend.routers import evaluation
 from backend.routers import health
 from backend.routers import llm
 from backend.routers import metadata
@@ -21,7 +22,7 @@ from backend.routers import training_events
 from backend.routers import validate
 from backend.session import SessionManager
 from backend.services.training_service import TrainingService
-from epic_3.events import TrainingEventBus
+from backend.orchestration.events import TrainingEventBus
 
 
 def _configure_mitra_logging() -> None:
@@ -80,6 +81,7 @@ def create_app(config_loader: ConfigLoader | None = None) -> FastAPI:
     app.include_router(llm.router)
     app.include_router(training_events.router)
     app.include_router(training.router)
+    app.include_router(evaluation.router)
 
     return app
 

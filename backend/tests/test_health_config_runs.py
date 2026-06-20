@@ -67,6 +67,54 @@ def test_public_config_returns_defaults_without_secrets(
     assert "api_key" not in response.text.lower()
 
 
+def test_advanced_config_lists_tunable_params(
+    test_config_loader: ConfigLoader,
+) -> None:
+    client = TestClient(create_app(config_loader=test_config_loader))
+
+    response = client.get("/api/config/advanced")
+
+    assert response.status_code == 200
+    payload = response.json()
+    keys = {param["key"] for param in payload["params"]}
+    assert "pipeline.max_judge_turns" in keys
+    assert "training_api.default_execution_mode" in keys
+    # Secrets and absolute paths must never be surfaced here.
+    assert "api_key" not in response.text.lower()
+
+
+def test_advanced_config_persists_and_validates_overrides(
+    test_config_loader: ConfigLoader,
+) -> None:
+    client = TestClient(create_app(config_loader=test_config_loader))
+    session_id = upload_valid_csv(client=client)
+
+    # Valid override is saved and reflected on the next GET.
+    save_response = client.put(
+        f"/api/config/advanced?session_id={session_id}",
+        json={"overrides": {"pipeline.max_judge_turns": 5}},
+    )
+    assert save_response.status_code == 200
+    assert save_response.json()["saved"]["pipeline.max_judge_turns"] == 5
+
+    overrides_file = (
+        test_config_loader.paths.workspace_root / session_id / "config_overrides.json"
+    )
+    assert overrides_file.is_file()
+
+    get_response = client.get(f"/api/config/advanced?session_id={session_id}")
+    effective = {param["key"]: param["value"] for param in get_response.json()["params"]}
+    assert effective["pipeline.max_judge_turns"] == 5
+
+    # Out-of-range / unknown overrides are rejected with 422.
+    bad_response = client.put(
+        f"/api/config/advanced?session_id={session_id}",
+        json={"overrides": {"pipeline.max_judge_turns": 999, "nope.key": 1}},
+    )
+    assert bad_response.status_code == 422
+    assert "rejected" in bad_response.json()["detail"]
+
+
 def test_runs_reads_workspace_sessions(
     test_config_loader: ConfigLoader,
 ) -> None:

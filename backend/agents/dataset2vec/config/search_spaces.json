@@ -1,0 +1,92 @@
+{
+  "LogisticRegression": [
+    {"name": "C", "type": "float", "low": 0.001, "high": 100.0, "log": true},
+    {"name": "max_iter", "type": "int", "low": 200, "high": 2000}
+  ],
+  "RandomForestClassifier": [
+    {"name": "n_estimators", "type": "int", "low": 100, "high": 800},
+    {"name": "max_depth", "type": "int", "low": 3, "high": 30},
+    {"name": "min_samples_split", "type": "int", "low": 2, "high": 20}
+  ],
+  "XGBClassifier": [
+    {"name": "n_estimators", "type": "int", "low": 100, "high": 800},
+    {"name": "max_depth", "type": "int", "low": 3, "high": 10},
+    {"name": "learning_rate", "type": "float", "low": 0.01, "high": 0.3, "log": true}
+  ],
+  "PyTorchFCNNClassifier": [
+    {"name": "learning_rate", "type": "float", "low": 0.0001, "high": 0.01, "log": true},
+    {"name": "epochs", "type": "int", "low": 5, "high": 40},
+    {"name": "dropout", "type": "float", "low": 0.0, "high": 0.5}
+  ],
+  "RidgeClassifier": [
+    {"name": "alpha", "type": "float", "low": 0.001, "high": 100.0, "log": true}
+  ],
+  "SGDClassifier": [
+    {"name": "alpha", "type": "float", "low": 0.00001, "high": 0.1, "log": true},
+    {"name": "max_iter", "type": "int", "low": 200, "high": 2000}
+  ],
+  "SVC": [
+    {"name": "C", "type": "float", "low": 0.01, "high": 100.0, "log": true},
+    {"name": "gamma", "type": "float", "low": 0.0001, "high": 1.0, "log": true}
+  ],
+  "LinearSVC": [
+    {"name": "C", "type": "float", "low": 0.001, "high": 100.0, "log": true},
+    {"name": "max_iter", "type": "int", "low": 500, "high": 3000}
+  ],
+  "NuSVC": [
+    {"name": "nu", "type": "float", "low": 0.05, "high": 0.9},
+    {"name": "gamma", "type": "float", "low": 0.0001, "high": 1.0, "log": true}
+  ],
+  "DecisionTreeClassifier": [
+    {"name": "max_depth", "type": "int", "low": 2, "high": 30},
+    {"name": "min_samples_split", "type": "int", "low": 2, "high": 20}
+  ],
+  "ExtraTreesClassifier": [
+    {"name": "n_estimators", "type": "int", "low": 100, "high": 800},
+    {"name": "max_depth", "type": "int", "low": 3, "high": 30},
+    {"name": "min_samples_split", "type": "int", "low": 2, "high": 20}
+  ],
+  "GradientBoostingClassifier": [
+    {"name": "n_estimators", "type": "int", "low": 50, "high": 400},
+    {"name": "max_depth", "type": "int", "low": 2, "high": 10},
+    {"name": "learning_rate", "type": "float", "low": 0.01, "high": 0.3, "log": true}
+  ],
+  "AdaBoostClassifier": [
+    {"name": "n_estimators", "type": "int", "low": 50, "high": 400},
+    {"name": "learning_rate", "type": "float", "low": 0.01, "high": 2.0, "log": true}
+  ],
+  "HistGradientBoostingClassifier": [
+    {"name": "max_iter", "type": "int", "low": 50, "high": 400},
+    {"name": "max_depth", "type": "int", "low": 2, "high": 30},
+    {"name": "learning_rate", "type": "float", "low": 0.01, "high": 0.3, "log": true}
+  ],
+  "KNeighborsClassifier": [
+    {"name": "n_neighbors", "type": "int", "low": 1, "high": 30}
+  ],
+  "MLPClassifier": [
+    {"name": "alpha", "type": "float", "low": 0.00001, "high": 0.1, "log": true},
+    {"name": "max_iter", "type": "int", "low": 200, "high": 1000}
+  ],
+  "QuadraticDiscriminantAnalysis": [
+    {"name": "reg_param", "type": "float", "low": 0.0, "high": 1.0}
+  ],
+  "BaggingClassifier": [
+    {"name": "n_estimators", "type": "int", "low": 10, "high": 200}
+  ],
+  "LinearRegression": [],
+  "RandomForestRegressor": [
+    {"name": "n_estimators", "type": "int", "low": 100, "high": 800},
+    {"name": "max_depth", "type": "int", "low": 3, "high": 30},
+    {"name": "min_samples_split", "type": "int", "low": 2, "high": 20}
+  ],
+  "XGBRegressor": [
+    {"name": "n_estimators", "type": "int", "low": 100, "high": 800},
+    {"name": "max_depth", "type": "int", "low": 3, "high": 10},
+    {"name": "learning_rate", "type": "float", "low": 0.01, "high": 0.3, "log": true}
+  ],
+  "PyTorchFCNNRegressor": [
+    {"name": "learning_rate", "type": "float", "low": 0.0001, "high": 0.01, "log": true},
+    {"name": "epochs", "type": "int", "low": 5, "high": 40},
+    {"name": "dropout", "type": "float", "low": 0.0, "high": 0.5}
+  ]
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from collections import Counter
@@ -16,12 +17,21 @@ from backend.schemas.training import TrainingModelState
 from backend.schemas.training import TrainingStartRequest
 from backend.schemas.training import TrainingStatusResponse
 from backend.session import SessionManager
-from epic_3.events import TrainingEvent
-from epic_3.events import TrainingEventBus
-from epic_3.events import TrainingEventSink
-from epic_3.ray_wrapper import RayExecutor
-from epic_3.training_orchestrator import TrainingOrchestrator
-from epic_3.training_orchestrator.contracts import TrainingSummary
+from backend.orchestration.events import TrainingEvent
+from backend.orchestration.events import TrainingEventBus
+from backend.orchestration.events import TrainingEventSink
+from backend.agents.ray_wrapper import RayExecutor
+from backend.agents.training_orchestrator import TrainingOrchestrator
+from backend.agents.training_orchestrator.contracts import TrainingSummary
+from backend.orchestration.eval_runner import EvalRunner
+from backend.orchestration.judge_loop import EvalArtifacts, JudgeLoop
+from backend.orchestration.plotting import PipelinePlotGenerator
+
+# Per-session advanced overrides file (written by PUT /api/config/advanced).
+ADVANCED_OVERRIDES_FILENAME = "config_overrides.json"
+
+
+logger = logging.getLogger(__name__)
 
 
 class TrainingServiceError(Exception):
@@ -440,6 +450,9 @@ class TrainingService:
             status_event_sink,
         )
         executor: ParallelExecutor | None = None
+        # Set to the TrainingSummary only on a clean, non-cancelled success so
+        # the post-training eval (run in finally) knows training really finished.
+        completed_summary: TrainingSummary | None = None
 
         try:
             if cancel_event.is_set():
@@ -490,6 +503,9 @@ class TrainingService:
                 error=None,
                 **summary_updates,
             )
+            # Defer eval until after the executor is cleaned up (in finally) so
+            # the executor is closed promptly once training is marked complete.
+            completed_summary = summary
         except Exception as exc:
             if cancel_event.is_set():
                 return
@@ -516,6 +532,142 @@ class TrainingService:
                 self.executors.pop(request.session_id, None)
             if cancel_event.is_set():
                 self.event_bus.close_session(request.session_id)
+
+        # Post-training evaluation runs only after the executor is cleaned up so
+        # training is fully settled first. Runs SHAP + overfitting + HPT + judge
+        # to populate the leaderboard/verdict. Non-fatal: training stays
+        # "completed" even if evaluation fails (artifacts simply stay absent).
+        if (
+            completed_summary is not None
+            and completed_summary.completed > 0
+            and self.config_loader.pipeline.run_post_training_eval
+            and not cancel_event.is_set()
+        ):
+            self._run_post_training_evaluation(request, paths, completed_summary)
+
+    def _run_post_training_evaluation(
+        self,
+        request: TrainingStartRequest,
+        paths: ResolvedTrainingPaths,
+        summary: TrainingSummary,
+    ) -> None:
+        """Run eval (SHAP/overfitting/HPT) + judge after a successful training.
+
+        Mirrors the headless run_pipeline stages 4-5 for the UI path. Any
+        failure here is logged and swallowed so the training run stays green;
+        the leaderboard simply reports a training-only result until artifacts
+        appear.
+        """
+        try:
+            task_type = self._read_task_type(paths.metadata_path)
+            # Eval/judge/plot artifacts must land under the session ROOT (the
+            # same base the evaluation router reads from), not the training
+            # subdir, so the leaderboard/verdict/plot endpoints can find them.
+            session_dir = paths.session_path
+
+            # Mirror the training summary into reports/ so the leaderboard can
+            # merge per-model metrics with the judge ranking.
+            reports_dir = session_dir / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            (reports_dir / "training_summary.json").write_text(
+                summary.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
+
+            # Prefer the engineered dataset; fall back to the training split.
+            engineered_csv = session_dir / "data" / "engineered_dataset.csv"
+            if not engineered_csv.exists():
+                engineered_csv = paths.train_path
+
+            eval_runner = EvalRunner(
+                session_id=request.session_id,
+                session_dir=session_dir,
+                task_type=task_type,
+                target_column=request.target_column,
+            )
+            eval_output = eval_runner.run(
+                training_summary=summary,
+                engineered_dataset_path=engineered_csv,
+            )
+
+            metadata = self._read_json_or_none(paths.metadata_path)
+            # Honour per-session advanced overrides (page-1 advanced settings)
+            # over the config.ini default for the judge feedback loop length.
+            max_judge_turns = self._resolve_max_judge_turns(request.session_id)
+            judge_loop = JudgeLoop(
+                task_type=task_type,
+                max_turns=max_judge_turns,
+            )
+            decision = judge_loop.run(
+                eval_artifacts=EvalArtifacts(
+                    shap_dirs=eval_output["shap_dirs"],
+                    overfitting_dirs=eval_output["overfitting_dirs"],
+                    hpt_results_path=eval_output["hpt_results_path"],
+                ),
+                training_summary=summary,
+                session_dir=session_dir,
+                dataset_id=request.session_id,
+                metadata=metadata,
+            )
+            logger.info(
+                "=> post-training eval complete: session=%s selected=%s",
+                request.session_id,
+                decision.selected_model,
+            )
+            # Generate on-demand visualizations for the UI plot popups; never
+            # let a plotting failure affect the (already green) training run.
+            self._generate_plots(session_dir, request.session_id)
+        except Exception as eval_exc:  # noqa: BLE001 - eval must never fail training
+            logger.warning(
+                "=> post-training evaluation skipped for session=%s: %s: %s",
+                request.session_id,
+                type(eval_exc).__name__,
+                eval_exc,
+            )
+
+    def _resolve_max_judge_turns(self, session_id: str) -> int:
+        """Return the judge-turn count, preferring a per-session override."""
+        default_turns = self.config_loader.pipeline.max_judge_turns
+        session_root = self.session_manager.get_session_path(session_id=session_id)
+        overrides_path = session_root / ADVANCED_OVERRIDES_FILENAME
+        if not overrides_path.is_file():
+            return default_turns
+        overrides = json.loads(overrides_path.read_text(encoding="utf-8"))
+        override_value = overrides.get("pipeline.max_judge_turns")
+        return int(override_value) if override_value is not None else default_turns
+
+    def _generate_plots(self, session_dir: Path, session_id: str) -> None:
+        """Dump on-demand visualizations; swallow failures (non-fatal)."""
+        try:
+            plot_summary = PipelinePlotGenerator(session_dir=session_dir).generate_all()
+            total_plots = sum(len(files) for files in plot_summary.values())
+            logger.info(
+                "=> plots generated: session=%s count=%d stages=%d",
+                session_id,
+                total_plots,
+                len(plot_summary),
+            )
+        except Exception as plot_exc:  # noqa: BLE001 - plots must never fail training
+            logger.warning(
+                "=> plot generation skipped for session=%s: %s: %s",
+                session_id,
+                type(plot_exc).__name__,
+                plot_exc,
+            )
+
+    @staticmethod
+    def _read_task_type(metadata_path: Path) -> str:
+        """Read the task type from metadata, accepting task_type or problem_type."""
+        if not metadata_path.is_file():
+            return "classification"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        return metadata.get("task_type") or metadata.get("problem_type") or "classification"
+
+    @staticmethod
+    def _read_json_or_none(path: Path) -> dict[str, Any] | None:
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def _record_training_event(self, event: TrainingEvent) -> None:
         """Persist per-model lifecycle state without coupling training to SSE."""

@@ -93,3 +93,40 @@ export async function fetchRuns(limit = 5) {
 export async function fetchRunStats() {
   return requestJson('/api/runs/stats');
 }
+
+export async function fetchLeaderboard(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/leaderboard`);
+}
+
+export async function fetchVerdict(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/verdict`);
+}
+
+export async function fetchShap(sessionId, modelName = null) {
+  const query = modelName ? `?model_name=${encodeURIComponent(modelName)}` : '';
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/shap${query}`);
+}
+
+export async function fetchTokens(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/tokens`);
+}
+
+export async function fetchPlots(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/plots`);
+}
+
+export function plotUrl(sessionId, plotPath) {
+  return `/api/runs/${encodeURIComponent(sessionId)}/plots/${plotPath}`;
+}
+
+export async function fetchAdvancedConfig(sessionId = null) {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+  return requestJson(`/api/config/advanced${query}`);
+}
+
+export async function saveAdvancedConfig(sessionId, overrides) {
+  return requestJson(`/api/config/advanced?session_id=${encodeURIComponent(sessionId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ overrides }),
+  });
+}

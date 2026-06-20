@@ -4,7 +4,7 @@ from pathlib import Path
 from threading import Event
 from typing import Any, Callable
 
-from epic_3.training.contracts import TrainingResult
+from backend.agents.training.contracts import TrainingResult
 
 from .helpers import build_training_client, prepare_session, wait_for_terminal
 

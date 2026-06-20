@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 
+import AdvancedSettings from '../components/AdvancedSettings.jsx';
 import ByomFields from '../components/ByomFields.jsx';
 import StatusPill from '../components/StatusPill.jsx';
 import { fetchHealth, fetchPublicConfig, runLlmSmokeTest } from '../api/client.js';
 import { llmConfigKey } from '../data.js';
 import { Icons } from '../icons.jsx';
 
-function Settings({ llmSettings, llmSmokeStatus, setLlmSettings, setLlmSmokeStatus }) {
+function Settings({ activeSessionId, llmSettings, llmSmokeStatus, setLlmSettings, setLlmSmokeStatus }) {
   const [health, setHealth] = useState(null);
   const [publicConfig, setPublicConfig] = useState(null);
   const [error, setError] = useState(null);
@@ -194,6 +195,8 @@ function Settings({ llmSettings, llmSmokeStatus, setLlmSettings, setLlmSmokeStat
           {!providers.length ? <p className="muted">Loading provider defaults.</p> : null}
         </div>
       </section>
+
+      <AdvancedSettings activeSessionId={activeSessionId} />
     </div>
   );
 }

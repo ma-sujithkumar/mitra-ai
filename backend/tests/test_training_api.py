@@ -43,7 +43,7 @@ def prepare_session(config_loader: ConfigLoader, session_id: str) -> None:
 
 def build_client(config_loader: ConfigLoader) -> TestClient:
     from backend.session import SessionManager
-    from epic_3.events import TrainingEventBus
+    from backend.orchestration.events import TrainingEventBus
 
     app = FastAPI()
     event_bus = TrainingEventBus()

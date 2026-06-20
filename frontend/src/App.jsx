@@ -83,9 +83,10 @@ function App() {
         setRunState={setRunState}
       />
     ),
-    leaderboard: <LeaderboardScreen startRun={startRun} />,
+    leaderboard: <LeaderboardScreen activeSessionId={activeSessionId} startRun={startRun} />,
     settings: (
       <Settings
+        activeSessionId={activeSessionId}
         llmSettings={llmSettings}
         llmSmokeStatus={llmSmokeStatus}
         setLlmSettings={setLlmSettings}

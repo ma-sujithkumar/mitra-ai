@@ -1,0 +1,213 @@
+"""
+JudgeAgent: orchestrates the full judge pipeline.
+
+Flow:
+  1. Rule engine gates and ranks candidates (deterministic, authoritative).
+  2. If use_llm is enabled, renders a jinja2 prompt and invokes the LLM via
+     ADK LlmAgent + LiteLlm (shared build_llm_model factory) to get rationale.
+  3. Merges LLM output (additive only) into the JudgeDecision.
+  4. Returns the final JudgeDecision.
+"""
+
+import asyncio
+import json
+import logging
+import os
+from typing import Any, Dict, List, Optional
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from google.adk.agents import LlmAgent
+from google.adk.runners import InMemoryRunner
+from google.adk.sessions import InMemorySessionService
+
+from llm.adk_client import LlmSettings, build_llm_model
+from .config_loader import load_judge_config
+from .rule_engine import RuleEngine
+from .schemas import CandidateModel, JudgeDecision, JudgeInput, RankedModel
+
+logger = logging.getLogger(__name__)
+
+
+def _build_candidates_detail(candidates: List[CandidateModel]) -> Dict[str, Any]:
+    """Build a model_name => candidate dict for the jinja2 template."""
+    return {candidate.model_name: candidate for candidate in candidates}
+
+
+def _render_prompt(
+    judge_input: JudgeInput,
+    decision: JudgeDecision,
+    prompts_dir: str,
+    template_name: str,
+) -> str:
+    """Render the jinja2 judge prompt with the rule-based decision and context inputs."""
+    env = Environment(
+        loader=FileSystemLoader(prompts_dir),
+        autoescape=select_autoescape(disabled_extensions=("jinja2",)),
+    )
+    env.policies["json.dumps_kwargs"] = {"indent": 2}
+    template = env.get_template(template_name)
+
+    candidates_detail = _build_candidates_detail(judge_input.candidates)
+    return template.render(
+        dataset_id=judge_input.dataset_id,
+        minidata=judge_input.minidata,
+        metadata=judge_input.metadata,
+        ranked_models=decision.ranked_models,
+        candidates_detail=candidates_detail,
+    )
+
+
+async def _invoke_llm_agent(
+    prompt_text: str,
+    llm_settings: LlmSettings,
+) -> Optional[str]:
+    """Run the ADK LlmAgent via the shared LiteLlm factory and return the raw text response."""
+    llm_model = build_llm_model(llm_settings)
+    agent = LlmAgent(
+        name="judge_llm",
+        model=llm_model,
+        instruction="You are a precise ML model ranking commentator. Respond only with the JSON schema requested.",
+    )
+    session_service = InMemorySessionService()
+    runner = InMemoryRunner(agent=agent, app_name="judge_agent", session_service=session_service)
+
+    session = await session_service.create_session(app_name="judge_agent", user_id="judge")
+    response_text_parts: List[str] = []
+
+    async for event in runner.run_async(
+        user_id=session.user_id,
+        session_id=session.id,
+        new_message={"role": "user", "parts": [{"text": prompt_text}]},
+    ):
+        if event.is_final_response() and event.content:
+            for part in event.content.parts or []:
+                if hasattr(part, "text") and part.text:
+                    response_text_parts.append(part.text)
+
+    return "".join(response_text_parts) if response_text_parts else None
+
+
+def _parse_llm_response(
+    raw_response: str,
+    decision: JudgeDecision,
+) -> JudgeDecision:
+    """Parse the LLM's JSON response and merge flags/commentary into the decision.
+
+    The rule-based verdicts, scores, and ranking are never changed here.
+    """
+    raw_stripped = raw_response.strip()
+    # Strip markdown code fences if the model wrapped the JSON.
+    if raw_stripped.startswith("```"):
+        lines = raw_stripped.splitlines()
+        raw_stripped = "\n".join(
+            line for line in lines if not line.startswith("```")
+        ).strip()
+
+    parsed: Dict[str, Any] = json.loads(raw_stripped)
+    commentary = parsed.get("llm_commentary", "")
+    model_flags: Dict[str, List[str]] = parsed.get("model_flags", {})
+
+    updated_ranked: List[RankedModel] = []
+    for ranked_model in decision.ranked_models:
+        flags = model_flags.get(ranked_model.model_name, [])
+        updated_ranked.append(
+            ranked_model.model_copy(update={"llm_flags": flags})
+        )
+
+    updated_trace = decision.decision_trace.model_copy(
+        update={"llm_commentary": commentary}
+    )
+    return decision.model_copy(
+        update={"ranked_models": updated_ranked, "decision_trace": updated_trace}
+    )
+
+
+class JudgeAgent:
+    """End-to-end judge: rule engine => optional LLM rationale => JudgeDecision."""
+
+    def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
+        self._config = config or load_judge_config()
+        self._rule_engine = RuleEngine(self._config)
+
+        # Resolve prompts directory from config.ini [paths].
+        agent_root = os.path.dirname(__file__)
+        prompts_subdir = self._config.get("prompts_dir", "prompts")
+        self._prompts_dir = os.path.join(agent_root, prompts_subdir)
+        self._prompt_template = self._config.get("prompt_template", "judge_prompt.jinja2")
+
+    def judge(
+        self,
+        judge_input: JudgeInput,
+        use_llm: Optional[bool] = None,
+    ) -> JudgeDecision:
+        """Run the full judge pipeline and return a JudgeDecision.
+
+        Args:
+            judge_input: Structured input with all candidate models.
+            use_llm: Override config use_llm setting. Pass False for rule-only mode.
+
+        Returns:
+            JudgeDecision with rule-authoritative verdicts and optional LLM enrichment.
+        """
+        should_use_llm = use_llm if use_llm is not None else bool(self._config.get("use_llm", True))
+
+        logger.debug(
+            "=> JudgeAgent.judge: %d candidates, use_llm=%s",
+            len(judge_input.candidates),
+            should_use_llm,
+        )
+
+        # Step 1: deterministic gating and ranking.
+        survivors, gate_outcomes = self._rule_engine.apply_hard_gates(judge_input.candidates)
+        decision = self._rule_engine.rank(
+            survivors=survivors,
+            gate_outcomes=gate_outcomes,
+            all_candidates=judge_input.candidates,
+        )
+        decision = decision.model_copy(update={"dataset_id": judge_input.dataset_id})
+
+        # Step 2: LLM rationale (additive only; any failure falls back to rule-only output).
+        if should_use_llm:
+            decision = self._enrich_with_llm(judge_input, decision)
+
+        logger.debug(
+            "=> JudgeAgent decision: selected=%s total_ranked=%d",
+            decision.selected_model,
+            len(decision.ranked_models),
+        )
+        return decision
+
+    def _enrich_with_llm(
+        self,
+        judge_input: JudgeInput,
+        decision: JudgeDecision,
+    ) -> JudgeDecision:
+        """Invoke the LLM and merge its output into the decision. Falls back on any error."""
+        model_env_key = self._config.get("anthropic_model_env", "ANTHROPIC_MODEL_NAME")
+        model_name = os.environ.get(model_env_key, "claude-sonnet-4-6")
+        # Build LlmSettings from standard MITRA env vars so the judge uses the
+        # same provider/key as every other agent (no more CLI dependency).
+        judge_llm_settings = LlmSettings(
+            provider=os.environ.get("LLM_TYPE", "anthropic"),
+            model=model_name,
+            api_key=os.environ.get("LLM_API_KEY"),
+        )
+
+        prompt_text = _render_prompt(
+            judge_input=judge_input,
+            decision=decision,
+            prompts_dir=self._prompts_dir,
+            template_name=self._prompt_template,
+        )
+        logger.debug("=> Rendered prompt length=%d chars", len(prompt_text))
+
+        raw_response: Optional[str] = None
+        raw_response = asyncio.run(_invoke_llm_agent(prompt_text, judge_llm_settings))
+
+        if not raw_response:
+            logger.warning("=> LLM returned empty response; using rule-only decision.")
+            return decision
+
+        enriched = _parse_llm_response(raw_response, decision)
+        logger.debug("=> LLM enrichment applied successfully.")
+        return enriched

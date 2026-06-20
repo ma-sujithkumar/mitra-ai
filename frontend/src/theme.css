@@ -1868,3 +1868,43 @@ h2 {
     grid-template-columns: 1fr;
   }
 }
+
+/* Advanced settings panel (config.yaml-equivalent params, surfaced per run) */
+.advanced-group {
+  margin-top: 16px;
+}
+
+.advanced-group h3 {
+  margin: 0 0 8px;
+}
+
+.advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.advanced-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 8px;
+}
+
+.advanced-row span {
+  font-size: 13px;
+}
+
+.advanced-row input[type="number"],
+.advanced-row select {
+  width: 120px;
+}
+
+@media (max-width: 900px) {
+  .advanced-grid {
+    grid-template-columns: 1fr;
+  }
+}

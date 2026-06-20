@@ -1,0 +1,373 @@
+#!/usr/bin/env node
+/*
+ * MITRA application launcher.
+ *
+ * Subcommands:
+ *   mitra up         => start backend (uvicorn) and frontend (vite dev) together
+ *   mitra backend    => start backend only
+ *   mitra frontend   => start frontend only
+ *   mitra cli -- ...  => run "python -m backend.orchestration.run_pipeline" with forwarded args
+ *   mitra --help      => show usage
+ *
+ * Uses only Node stdlib. Resolves the repo root from the script location (not cwd),
+ * and resolves the Python interpreter portably via config.ini / venv / PATH.
+ * ASCII only; status lines are prefixed with "=>".
+ */
+
+"use strict";
+
+const childProcess = require("child_process");
+const fs = require("fs");
+const path = require("path");
+
+// The script lives in <repo>/bin/mitra. The repo root is therefore one level up
+// from the directory that contains this script. We deliberately use __dirname so
+// the launcher behaves identically regardless of the current working directory.
+const SCRIPT_DIR = __dirname;
+const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
+const CONFIG_INI_PATH = path.join(REPO_ROOT, "config.ini");
+const FRONTEND_DIR = path.join(REPO_ROOT, "frontend");
+
+// Backend host/port are overridable via env vars with sensible defaults.
+const BACKEND_HOST = process.env.MITRA_HOST || "127.0.0.1";
+const BACKEND_PORT = process.env.MITRA_PORT || "8000";
+
+// The ASGI entrypoint exposed by backend/main.py. create_app() is a factory, so
+// uvicorn must be told to call it with --factory.
+const UVICORN_APP_TARGET = "backend.main:create_app";
+
+
+function logStatus(message) {
+  // Single helper so every status line is consistently "=>" prefixed and ASCII.
+  process.stdout.write("=> " + message + "\n");
+}
+
+
+function readPythonFromConfigIni() {
+  // Parse the [python] PYTHON= value from config.ini at the repo root.
+  // Returns the configured path/command, or an empty string when unset/missing.
+  if (!fs.existsSync(CONFIG_INI_PATH)) {
+    return "";
+  }
+  const rawContents = fs.readFileSync(CONFIG_INI_PATH, "utf8");
+  const lines = rawContents.split(/\r?\n/);
+  let insidePythonSection = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (line.startsWith("[") && line.endsWith("]")) {
+      // Section headers toggle whether subsequent keys belong to [python].
+      insidePythonSection = line.toLowerCase() === "[python]";
+      continue;
+    }
+    if (!insidePythonSection) {
+      continue;
+    }
+    const equalsIndex = line.indexOf("=");
+    if (equalsIndex === -1) {
+      continue;
+    }
+    const key = line.slice(0, equalsIndex).trim().toLowerCase();
+    if (key === "python") {
+      return line.slice(equalsIndex + 1).trim();
+    }
+  }
+  return "";
+}
+
+
+function expandHomeDirectory(rawPath) {
+  // Node does not perform shell tilde-expansion, so "~/venv/bin/python" would
+  // otherwise be treated as a relative path under the repo root. Expand a
+  // leading "~" (or "~/...") to the user's home directory ourselves.
+  if (rawPath === "~") {
+    return process.env.HOME || rawPath;
+  }
+  if (rawPath.startsWith("~/") && process.env.HOME) {
+    return path.join(process.env.HOME, rawPath.slice(2));
+  }
+  return rawPath;
+}
+
+
+function resolvePythonInterpreter() {
+  // Portable resolution order:
+  //   1) [python] PYTHON= from config.ini (if non-empty)
+  //   2) a venv relative to the repo root (.venv or venv, Unix or Windows layout)
+  //   3) python3 / python on PATH
+  // Never hardcode an absolute machine-specific path.
+  const configuredPythonRaw = readPythonFromConfigIni();
+  if (configuredPythonRaw) {
+    const configuredPython = expandHomeDirectory(configuredPythonRaw);
+    // Allow either an absolute path or a path relative to the repo root.
+    const resolved = path.isAbsolute(configuredPython)
+      ? configuredPython
+      : path.resolve(REPO_ROOT, configuredPython);
+    if (fs.existsSync(resolved)) {
+      return resolved;
+    }
+    // If it is not a filesystem path, treat it as a bare command on PATH.
+    return configuredPython;
+  }
+
+  const venvCandidates = [
+    path.join(REPO_ROOT, ".venv", "bin", "python"),
+    path.join(REPO_ROOT, "venv", "bin", "python"),
+    path.join(REPO_ROOT, ".venv", "Scripts", "python.exe"),
+    path.join(REPO_ROOT, "venv", "Scripts", "python.exe"),
+  ];
+  for (const candidate of venvCandidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  // Fall back to interpreters discoverable on PATH. python3 is preferred.
+  return process.platform === "win32" ? "python" : "python3";
+}
+
+
+function spawnChild(commandLabel, command, args, options) {
+  // Spawn a long-running child and stream its stdout/stderr with a label prefix
+  // so interleaved backend/frontend logs stay readable.
+  const child = childProcess.spawn(command, args, {
+    cwd: options.cwd,
+    env: options.env || process.env,
+    stdio: ["inherit", "pipe", "pipe"],
+  });
+
+  const prefixStream = function (sourceStream, sinkStream) {
+    let pending = "";
+    sourceStream.on("data", function (chunk) {
+      pending += chunk.toString();
+      const segments = pending.split("\n");
+      // Keep the last partial line buffered until its newline arrives.
+      pending = segments.pop();
+      for (const segment of segments) {
+        sinkStream.write("[" + commandLabel + "] " + segment + "\n");
+      }
+    });
+    sourceStream.on("end", function () {
+      if (pending.length > 0) {
+        sinkStream.write("[" + commandLabel + "] " + pending + "\n");
+      }
+    });
+  };
+
+  prefixStream(child.stdout, process.stdout);
+  prefixStream(child.stderr, process.stderr);
+
+  child.on("error", function (error) {
+    process.stderr.write(
+      "=> failed to start " + commandLabel + ": " + error.message + "\n"
+    );
+  });
+
+  return child;
+}
+
+
+function buildBackendInvocation(pythonInterpreter) {
+  // uvicorn is launched through the resolved Python so it uses the same env.
+  // --factory is required because backend.main exposes create_app(), a factory.
+  return {
+    label: "backend",
+    command: pythonInterpreter,
+    args: [
+      "-m",
+      "uvicorn",
+      UVICORN_APP_TARGET,
+      "--factory",
+      "--host",
+      BACKEND_HOST,
+      "--port",
+      String(BACKEND_PORT),
+    ],
+    cwd: REPO_ROOT,
+  };
+}
+
+
+function buildFrontendInvocation() {
+  // Run the Vite dev server via npm. Vite host/port use the package.json defaults.
+  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+  return {
+    label: "frontend",
+    command: npmCommand,
+    args: ["run", "dev"],
+    cwd: FRONTEND_DIR,
+  };
+}
+
+
+function registerShutdownHandlers(children) {
+  // On Ctrl-C (SIGINT) or SIGTERM, terminate every child process cleanly before
+  // the launcher exits, so no orphaned uvicorn/vite processes are left running.
+  let shuttingDown = false;
+  const shutdown = function (signalName) {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    logStatus("received " + signalName + ", stopping child processes");
+    for (const child of children) {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM");
+      }
+    }
+    // Give children a brief grace period, then force-exit the launcher.
+    setTimeout(function () {
+      process.exit(0);
+    }, 2000);
+  };
+
+  process.on("SIGINT", function () {
+    shutdown("SIGINT");
+  });
+  process.on("SIGTERM", function () {
+    shutdown("SIGTERM");
+  });
+}
+
+
+function runProcesses(invocations, pythonInterpreter) {
+  // Start each requested process, wire up shutdown handling, and exit the
+  // launcher if any single child exits (so a crashed backend stops everything).
+  const children = [];
+  registerShutdownHandlers(children);
+
+  for (const invocation of invocations) {
+    const child = spawnChild(invocation.label, invocation.command, invocation.args, {
+      cwd: invocation.cwd,
+    });
+    children.push(child);
+    child.on("exit", function (code, signal) {
+      const reason = signal ? "signal " + signal : "code " + code;
+      logStatus(invocation.label + " exited (" + reason + "), shutting down");
+      for (const sibling of children) {
+        if (sibling !== child && sibling.exitCode === null && sibling.signalCode === null) {
+          sibling.kill("SIGTERM");
+        }
+      }
+      process.exit(code === null ? 1 : code);
+    });
+  }
+}
+
+
+function commandUp(pythonInterpreter) {
+  logStatus("starting backend on http://" + BACKEND_HOST + ":" + BACKEND_PORT);
+  logStatus("starting frontend (vite dev) in " + FRONTEND_DIR);
+  runProcesses(
+    [buildBackendInvocation(pythonInterpreter), buildFrontendInvocation()],
+    pythonInterpreter
+  );
+}
+
+
+function commandBackend(pythonInterpreter) {
+  logStatus("starting backend on http://" + BACKEND_HOST + ":" + BACKEND_PORT);
+  runProcesses([buildBackendInvocation(pythonInterpreter)], pythonInterpreter);
+}
+
+
+function commandFrontend(pythonInterpreter) {
+  logStatus("starting frontend (vite dev) in " + FRONTEND_DIR);
+  runProcesses([buildFrontendInvocation()], pythonInterpreter);
+}
+
+
+function commandCli(pythonInterpreter, forwardedArgs) {
+  // Forward everything after the "--" separator to the pipeline module.
+  logStatus("running pipeline: python -m backend.orchestration.run_pipeline");
+  const child = childProcess.spawn(
+    pythonInterpreter,
+    ["-m", "backend.orchestration.run_pipeline"].concat(forwardedArgs),
+    {
+      cwd: REPO_ROOT,
+      env: process.env,
+      stdio: "inherit",
+    }
+  );
+  child.on("error", function (error) {
+    process.stderr.write("=> failed to run pipeline: " + error.message + "\n");
+    process.exit(1);
+  });
+  child.on("exit", function (code) {
+    process.exit(code === null ? 1 : code);
+  });
+}
+
+
+function printHelp() {
+  const helpText = [
+    "MITRA launcher",
+    "",
+    "Usage:",
+    "  mitra up              Start backend (uvicorn) and frontend (vite dev) together",
+    "  mitra backend         Start the backend API only",
+    "  mitra frontend        Start the frontend dev server only",
+    "  mitra cli -- <args>   Run python -m backend.orchestration.run_pipeline <args>",
+    "  mitra --help          Show this help",
+    "",
+    "Environment overrides:",
+    "  MITRA_HOST            Backend host (default 127.0.0.1)",
+    "  MITRA_PORT            Backend port (default 8000)",
+    "",
+    "Notes:",
+    "  The Python interpreter is resolved from [python] PYTHON in config.ini,",
+    "  then a local .venv/venv, then python3/python on PATH.",
+  ];
+  process.stdout.write(helpText.join("\n") + "\n");
+}
+
+
+function extractForwardedArgs(argv) {
+  // For "mitra cli -- <args>" return everything after the first "--".
+  const separatorIndex = argv.indexOf("--");
+  if (separatorIndex === -1) {
+    return [];
+  }
+  return argv.slice(separatorIndex + 1);
+}
+
+
+function main() {
+  const argv = process.argv.slice(2);
+  const subcommand = argv[0];
+
+  // Help is handled before resolving Python so "--help" never requires a runtime.
+  if (!subcommand || subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
+    printHelp();
+    return;
+  }
+
+  const pythonInterpreter = resolvePythonInterpreter();
+
+  // Dispatch table avoids an if-else ladder over subcommands.
+  const dispatch = {
+    up: function () {
+      commandUp(pythonInterpreter);
+    },
+    backend: function () {
+      commandBackend(pythonInterpreter);
+    },
+    frontend: function () {
+      commandFrontend(pythonInterpreter);
+    },
+    cli: function () {
+      commandCli(pythonInterpreter, extractForwardedArgs(argv));
+    },
+  };
+
+  const handler = dispatch[subcommand];
+  if (!handler) {
+    process.stderr.write("=> unknown subcommand: " + subcommand + "\n");
+    printHelp();
+    process.exit(1);
+  }
+  logStatus("using python interpreter: " + pythonInterpreter);
+  handler();
+}
+
+
+main();
