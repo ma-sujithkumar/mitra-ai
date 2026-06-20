@@ -267,7 +267,23 @@ export const PROVIDERS = [
 export const NAV_ITEMS = [
   { key: 'dashboard', label: 'Dashboard', icon: 'grid' },
   { key: 'upload', label: 'New Run', icon: 'upload' },
+  { key: 'features', label: 'Feature Eng.', icon: 'layers' },
   { key: 'pipeline', label: 'Training', icon: 'flow' },
   { key: 'leaderboard', label: 'Leaderboard', icon: 'trophy' },
+  { key: 'visualize', label: 'Visualizations', icon: 'chart' },
   { key: 'settings', label: 'Settings', icon: 'gear' },
+];
+
+export const FEATURE_STEPS = [
+  { name: 'profile_data',          label: 'Profile dataset',            agent_type: 'rule' },
+  { name: 'infer_types',           label: 'Infer semantic types',       agent_type: 'rule' },
+  { name: 'handle_missing',        label: 'Handle missing values',      agent_type: 'rule' },
+  { name: 'handle_outliers',       label: 'Handle outliers',            agent_type: 'rule' },
+  { name: 'encode_features',       label: 'Encode features',            agent_type: 'rule' },
+  { name: 'create_features',       label: 'Create derived features',    agent_type: 'rule' },
+  { name: 'scale_features',        label: 'Scale features',             agent_type: 'rule' },
+  { name: 'compute_feature_stats', label: 'Compute feature statistics', agent_type: 'rule' },
+  { name: 'select_features',       label: 'Select features (LLM)',      agent_type: 'llm'  },
+  { name: 'validate_features',     label: 'Validate feature set',       agent_type: 'rule' },
+  { name: 'write_report',          label: 'Write feature report',       agent_type: 'rule' },
 ];

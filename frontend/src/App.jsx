@@ -2,10 +2,12 @@ import { useState, useEffect } from 'react';
 
 import AuthPage from './auth/AuthPage.jsx';
 import Dashboard from './screens/Dashboard.jsx';
+import FeatureEngineeringPage from './screens/FeatureEngineeringPage.jsx';
 import LeaderboardScreen from './screens/LeaderboardScreen.jsx';
 import TrainingPage from './screens/TrainingPage.jsx';
 import Settings from './screens/Settings.jsx';
 import UploadScreen from './screens/UploadScreen.jsx';
+import VisualizationPage from './screens/VisualizationPage.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import TopBar from './components/TopBar.jsx';
 
@@ -20,6 +22,11 @@ const ROUTE_META = {
     sub: 'Upload a dataset and let the agents take over',
     icon: 'upload',
   },
+  features: {
+    title: 'Feature Engineering',
+    sub: 'Step-by-step feature pipeline status and agent reasoning',
+    icon: 'layers',
+  },
   pipeline: {
     title: 'Live Training',
     sub: 'Live Ray model training, metrics, and event logs',
@@ -29,6 +36,11 @@ const ROUTE_META = {
     title: 'Leaderboard',
     sub: 'Ranked model candidates and judge context',
     icon: 'trophy',
+  },
+  visualize: {
+    title: 'Visualizations',
+    sub: 'All generated plots grouped by pipeline stage',
+    icon: 'chart',
   },
   settings: {
     title: 'Settings',
@@ -102,8 +114,21 @@ function App() {
     setRoute('pipeline');
   }
 
+  // Manual gate after metadata: set the shared session and land on the Feature
+  // Engineering tab (which then runs PipelinePrep and shows live status). This
+  // is the stage the web flow previously skipped before jumping to training.
+  function enterFeatureEngineering(sessionId) {
+    const normalized = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (normalized) {
+      setActiveSessionId(normalized);
+      window.localStorage.setItem('mitra.activeTrainingSession', normalized);
+    }
+    setRoute('features');
+  }
+
   const screens = {
     dashboard: <Dashboard go={go} startRun={startRun} />,
+    features: <FeatureEngineeringPage activeSessionId={activeSessionId} go={go} startRun={startRun} />,
     pipeline: (
       <TrainingPage
         activeSessionId={activeSessionId}
@@ -114,6 +139,7 @@ function App() {
       />
     ),
     leaderboard: <LeaderboardScreen activeSessionId={activeSessionId} startRun={startRun} />,
+    visualize: <VisualizationPage activeSessionId={activeSessionId} />,
     settings: (
       <Settings
         activeSessionId={activeSessionId}
@@ -144,6 +170,7 @@ function App() {
               active route is not upload. */}
           <div className={route === 'upload' ? undefined : 'screen-hidden'}>
             <UploadScreen
+              enterFeatureEngineering={enterFeatureEngineering}
               go={go}
               llmSettings={llmSettings}
               llmSmokeStatus={llmSmokeStatus}

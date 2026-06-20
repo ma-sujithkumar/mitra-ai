@@ -2092,3 +2092,304 @@ h2 {
     grid-template-columns: 1fr;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Agent reasoning blocks -- VERY IMPORTANT: full text, never hidden   */
+/* ------------------------------------------------------------------ */
+
+.reasoning-block {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  max-height: 320px;
+  color: var(--ink-muted);
+  margin: 0;
+}
+
+.agent-reasoning-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+/* Stretch the title block, but not the fixed-size AgentAvatar div. */
+.agent-reasoning-header > div:not(.agent-avatar) {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-reasoning-header > .agent-avatar {
+  flex: none;
+}
+
+.reasoning-panel {
+  border-left: 3px solid var(--accent-line);
+}
+
+/* ------------------------------------------------------------------ */
+/* Rule outcomes table (judge rule_outcomes + token usage)             */
+/* ------------------------------------------------------------------ */
+
+.rule-outcomes-table {
+  display: grid;
+  gap: 1px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.rule-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 1.5fr);
+  gap: 12px;
+  align-items: start;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+
+.rule-row:nth-child(odd) {
+  background: var(--panel);
+}
+
+.rule-name {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.rule-value {
+  color: var(--ink-muted);
+  word-break: break-all;
+}
+
+/* ------------------------------------------------------------------ */
+/* Leaderboard enhancements: scrollable wide table                     */
+/* ------------------------------------------------------------------ */
+
+.leaderboard-scroll {
+  overflow-x: auto;
+}
+
+.leaderboard-scroll .leaderboard-head,
+.leaderboard-scroll .leaderboard-row {
+  /* rank + name + up to 5 metrics + overfit + judge-score + download */
+  grid-template-columns: 48px minmax(160px, 1.6fr) repeat(5, minmax(72px, 1fr)) minmax(90px, 0.9fr) 52px 44px;
+  min-width: 780px;
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
+  background: var(--panel-3);
+  color: var(--ink-muted);
+  text-decoration: none;
+  border: none;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.btn-icon:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ */
+/* Plot gallery and lightbox                                           */
+/* ------------------------------------------------------------------ */
+
+.plot-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.plot-card {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.plot-card:hover {
+  border-color: var(--accent-line);
+  box-shadow: 0 4px 16px rgba(91, 92, 226, 0.10);
+}
+
+.plot-thumb {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  background: var(--panel);
+  display: block;
+}
+
+.plot-name {
+  padding: 6px 10px 8px;
+  font-size: 11px;
+  text-align: center;
+  text-transform: capitalize;
+}
+
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9000;
+  padding: 20px;
+}
+
+.lightbox-content {
+  position: relative;
+  background: var(--panel);
+  border-radius: var(--radius);
+  max-width: min(92vw, 1100px);
+  max-height: 90vh;
+  overflow: auto;
+  padding: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+}
+
+.lightbox-image {
+  max-width: 100%;
+  max-height: calc(90vh - 80px);
+  object-fit: contain;
+  display: block;
+}
+
+.lightbox-label {
+  text-align: center;
+  padding: 8px 0 0;
+  font-size: 12px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Feature Engineering page layout                                     */
+/* ------------------------------------------------------------------ */
+
+.fe-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.fe-step-list {
+  display: grid;
+  gap: 2px;
+}
+
+.fe-step {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 6px;
+  border-radius: var(--radius);
+  transition: background 0.1s;
+}
+
+.fe-step:hover {
+  background: var(--panel-2);
+}
+
+.fe-step.ok {
+  color: var(--ink);
+}
+
+.fe-step.error {
+  color: var(--error);
+}
+
+.fe-step.pending {
+  color: var(--ink-faint);
+}
+
+.fe-step-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.fe-step-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.fe-step-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.fe-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.fe-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Training analytics grid (SHAP + plots left, Judge right)            */
+/* ------------------------------------------------------------------ */
+
+.training-analytics-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  gap: 18px;
+  align-items: start;
+}
+
+/* ------------------------------------------------------------------ */
+/* CSS custom properties for ok/err used inline in components          */
+/* ------------------------------------------------------------------ */
+:root {
+  --ok: #13845f;
+  --err: #cf3e3a;
+}
+
+[data-theme="dark"] {
+  --ok: #35d497;
+  --err: #f07070;
+}

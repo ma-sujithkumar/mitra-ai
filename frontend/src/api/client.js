@@ -140,3 +140,46 @@ export async function saveAdvancedConfig(sessionId, overrides) {
     body: JSON.stringify({ overrides }),
   });
 }
+
+export async function fetchFeatureEngineering(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/feature-engineering`);
+}
+
+export async function startFeatureEngineering(payload) {
+  return requestJson('/api/feature-engineering', {
+    method: 'POST',
+    body: JSON.stringify({
+      session_id: payload.sessionId,
+      target_col: payload.targetCol || null,
+      problem_type: payload.problemType || null,
+      provider: payload.provider || null,
+      model: payload.model || null,
+      api_key: payload.apiKey || null,
+      gateway_url: payload.gatewayUrl || null,
+    }),
+  });
+}
+
+export async function fetchFeatureEngineeringJobStatus(sessionId) {
+  return requestJson(`/api/feature-engineering/status?session_id=${encodeURIComponent(sessionId)}`);
+}
+
+export async function fetchD2VPrior(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/d2v-prior`);
+}
+
+export async function fetchModelConfig(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/model-config`);
+}
+
+export async function fetchValidationReport(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/validation`);
+}
+
+export function modelDownloadUrl(sessionId, modelName) {
+  return `/api/runs/${encodeURIComponent(sessionId)}/models/${encodeURIComponent(modelName)}/download`;
+}
+
+export function modelsDownloadAllUrl(sessionId) {
+  return `/api/runs/${encodeURIComponent(sessionId)}/models/download-all`;
+}
