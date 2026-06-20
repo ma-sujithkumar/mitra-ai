@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
+import AgentAvatar from '../components/AgentAvatar.jsx';
+import HBars from '../components/HBars.jsx';
 import ModelTrainingCard from '../components/training/ModelTrainingCard.jsx';
 import TrainingLogs from '../components/training/TrainingLogs.jsx';
 import TrainingProgress from '../components/training/TrainingProgress.jsx';
 import TrainingSummary from '../components/training/TrainingSummary.jsx';
+import { fetchModelConfig, fetchPlots, fetchShap, fetchVerdict, plotUrl } from '../api/client.js';
 import { streamTrainingEvents } from '../api/events.js';
 import { cancelTraining, fetchTrainingStatus } from '../api/training.js';
+import { AGENTS } from '../data.js';
 import { Icons } from '../icons.jsx';
 import {
   applyTrainingEvent,
@@ -15,6 +19,184 @@ import {
   selectTrainingModels,
   trainingCounts,
 } from '../trainingState.js';
+
+const judgeAgent = AGENTS.find((agent) => agent.id === 'judge');
+const hptAgent = AGENTS.find((agent) => agent.id === 'hpt');
+const featureAgent = AGENTS.find((agent) => agent.id === 'feature');
+
+function TrainingAnalyticsSection({ sessionId }) {
+  const [shapData, setShapData] = useState(null);
+  const [verdictData, setVerdictData] = useState(null);
+  const [modelConfigData, setModelConfigData] = useState(null);
+  const [plots, setPlots] = useState([]);
+
+  useEffect(() => {
+    if (!sessionId) return undefined;
+    let cancelled = false;
+
+    Promise.all([
+      fetchShap(sessionId),
+      fetchVerdict(sessionId),
+      fetchModelConfig(sessionId),
+      fetchPlots(sessionId),
+    ]).then(([shap, verdict, config, plotsResp]) => {
+      if (cancelled) return;
+      const shapFeatures = (shap?.features || []).map((item) => ({
+        feature: item.feature,
+        value: item.importance,
+      }));
+      setShapData(shapFeatures.length ? shapFeatures : null);
+      setVerdictData(verdict?.status !== 'pending' ? verdict : null);
+      setModelConfigData(config?.status === 'complete' ? config : null);
+      setPlots(plotsResp?.plots || []);
+    }).catch(() => {});
+
+    return () => { cancelled = true; };
+  }, [sessionId]);
+
+  const decisionTrace = verdictData?.decision_trace || null;
+  const llmCommentary = decisionTrace?.llm_commentary || null;
+  const ruleOutcomes = decisionTrace?.rule_outcomes || {};
+  const selectedModel = verdictData?.selected_model || null;
+  const winnerReasons = useMemo(() => {
+    if (!verdictData) return [];
+    const ranked = verdictData.ranked_models || [];
+    const winnerRecord = ranked.find((model) => model.model_name === selectedModel) || ranked[0];
+    return winnerRecord?.reasons || [];
+  }, [verdictData, selectedModel]);
+
+  // Plots filtered to training/hpt/overfitting stages for display here.
+  const analyticsPlots = plots.filter((plot) =>
+    plot.stage && /training|hpt|overfitting/.test(plot.stage)
+  );
+
+  // Model families from model_config for the chip list.
+  const modelFamilies = useMemo(() => {
+    if (!modelConfigData) return [];
+    const models = modelConfigData.models || modelConfigData.candidates || [];
+    return models.map((modelEntry) => modelEntry.family || modelEntry.model_name || modelEntry.name).filter(Boolean);
+  }, [modelConfigData]);
+
+  return (
+    <section className="screen-stack">
+      {/* Model config chip list */}
+      {modelFamilies.length > 0 ? (
+        <section className="card panel-section">
+          <div className="section-head">
+            <div>
+              <p className="section-kicker">Configuration</p>
+              <h2>Selected Model Families</h2>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+            {modelFamilies.map((family) => (
+              <span className="pill pill-queued" key={family}>{family}</span>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      <div className="training-analytics-grid">
+        {/* Left column: SHAP + HPT plots */}
+        <div className="screen-stack">
+          {shapData ? (
+            <section className="card panel-section">
+              <div className="agent-reasoning-header">
+                {featureAgent ? <AgentAvatar agent={featureAgent} size={28} state="done" /> : null}
+                <div>
+                  <p className="section-kicker">Explainability</p>
+                  <h2>SHAP Feature Importance</h2>
+                </div>
+              </div>
+              <HBars data={shapData} />
+            </section>
+          ) : null}
+
+          {analyticsPlots.length > 0 ? (
+            <section className="card panel-section">
+              <div className="agent-reasoning-header">
+                {hptAgent ? <AgentAvatar agent={hptAgent} size={28} state="done" /> : null}
+                <div>
+                  <p className="section-kicker">Training Plots</p>
+                  <h2>HPT / Overfitting / Training</h2>
+                </div>
+              </div>
+              <div className="plot-gallery">
+                {analyticsPlots.slice(0, 6).map((plot) => (
+                  <div className="plot-card" key={plot.path}>
+                    <img
+                      alt={plot.name}
+                      className="plot-thumb"
+                      loading="lazy"
+                      src={plotUrl(sessionId, plot.path)}
+                    />
+                    <p className="plot-name muted">{plot.name.replace(/_/g, ' ')}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </div>
+
+        {/* Right column: Judge Reasoning -- VERY IMPORTANT: full text, not truncated */}
+        <div className="screen-stack">
+          <section className="card panel-section reasoning-panel">
+            <div className="agent-reasoning-header">
+              {judgeAgent ? <AgentAvatar agent={judgeAgent} size={30} state={verdictData ? 'done' : 'idle'} /> : null}
+              <div>
+                <p className="section-kicker">Judge</p>
+                <h2>Agent Reasoning</h2>
+              </div>
+            </div>
+
+            {llmCommentary ? (
+              <div style={{ marginTop: 12 }}>
+                <p className="section-kicker" style={{ marginBottom: 6 }}>LLM Commentary</p>
+                <pre className="reasoning-block">{llmCommentary}</pre>
+              </div>
+            ) : (
+              <p className="muted" style={{ marginTop: 10 }}>
+                {verdictData
+                  ? 'Rule-based decision -- no LLM commentary recorded.'
+                  : 'Judge reasoning will appear after the evaluation phase completes.'}
+              </p>
+            )}
+
+            {Object.keys(ruleOutcomes).length > 0 ? (
+              <div style={{ marginTop: 14 }}>
+                <p className="section-kicker" style={{ marginBottom: 6 }}>Rule Outcomes</p>
+                <div className="rule-outcomes-table">
+                  {Object.entries(ruleOutcomes).map(([ruleName, outcome]) => (
+                    <div className="rule-row" key={ruleName}>
+                      <span className="rule-name mono">{ruleName}</span>
+                      <span className="rule-value">{JSON.stringify(outcome)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {winnerReasons.length > 0 ? (
+              <div style={{ marginTop: 14 }}>
+                <p className="section-kicker" style={{ marginBottom: 6 }}>
+                  Reasons for {selectedModel}
+                </p>
+                <div className="reason-list">
+                  {winnerReasons.map((reason, reasonIndex) => (
+                    <div className="reason-row" key={reasonIndex}>
+                      <Icons.checkCircle size={15} />
+                      <span>{reason}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </section>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 const SESSION_STORAGE_KEY = 'mitra.activeTrainingSession';
 
@@ -277,6 +459,11 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
           ) : null}
         </section>
       )}
+
+      {/* Analytics section: SHAP + Judge Reasoning + plots -- shown after training completes */}
+      {state.complete && connectedSessionId ? (
+        <TrainingAnalyticsSection sessionId={connectedSessionId} />
+      ) : null}
     </div>
   );
 }

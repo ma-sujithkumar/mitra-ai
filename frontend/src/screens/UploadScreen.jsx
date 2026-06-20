@@ -9,12 +9,12 @@ import Toast from '../components/Toast.jsx';
 import {
   fetchPublicConfig,
   fetchRecentUploads,
+  startFeatureEngineering,
   startMetadata,
   startValidation,
   uploadDataset,
 } from '../api/client.js';
 import { streamMetadataEvents, streamValidationEvents } from '../api/events.js';
-import { startTraining } from '../api/training.js';
 import { llmConfigKey } from '../data.js';
 import { Icons } from '../icons.jsx';
 
@@ -48,7 +48,7 @@ const PROBLEM_OPTIONS = [
   { value: 'unsupervised', label: 'Cluster' },
 ];
 
-function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus, setLlmSettings, setLlmSmokeStatus }) {
+function UploadScreen({ go, startRun, enterFeatureEngineering, llmSettings, llmSmokeStatus, setLlmSettings, setLlmSmokeStatus }) {
   const [publicConfig, setPublicConfig] = useState(null);
   const reviewSectionRef = useRef(null);
   const [recentUploads, setRecentUploads] = useState([]);
@@ -61,7 +61,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus, setLlmSetting
   const [metadataEvents, setMetadataEvents] = useState([]);
   const [validationPhase, setValidationPhase] = useState('idle');
   const [metadataPhase, setMetadataPhase] = useState('idle');
-  const [trainingPhase, setTrainingPhase] = useState('idle');
+  const [featurePhase, setFeaturePhase] = useState('idle');
   const [error, setError] = useState(null);
   const [form, setForm] = useState({
     problemType: 'auto',
@@ -110,10 +110,11 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus, setLlmSetting
     ),
     [validationEvents],
   );
-  // Ray training is only allowed once validation has passed and metadata
-  // generation has completed for the current inputs.
-  const usingFallbackArtifacts = validationPhase === 'done' && metadataPhase === 'error';
-  const canRunPipeline = validationPhase === 'done' && (metadataPhase === 'done' || metadataPhase === 'error');
+  // Feature engineering requires real metadata.json, so the run can only
+  // continue once validation passed AND metadata generation succeeded. If
+  // metadata failed the pipeline hard-fails here (no fallback artifacts).
+  const metadataFailed = validationPhase === 'done' && metadataPhase === 'error';
+  const canContinueToFeatureEngineering = validationPhase === 'done' && metadataPhase === 'done';
   const baseModel = publicConfig?.llm?.base_models?.[llmSettings.provider] || '';
   const effectiveModel = llmSettings.model || baseModel || 'Provider base model';
   const reviewStarted = validationPhase !== 'idle';
@@ -124,7 +125,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus, setLlmSetting
     llmSmokeStatus.status === 'passed'
     && llmSmokeStatus.configKey === llmConfigKey(llmSettings)
   );
-  const busy = validationPhase === 'running' || metadataPhase === 'running' || trainingPhase === 'running';
+  const busy = validationPhase === 'running' || metadataPhase === 'running' || featurePhase === 'running';
   const canReview = hasDataset && llmVerified && !busy;
 
   // Auto-scroll to the checks/metadata section as soon as a review starts, so
@@ -147,7 +148,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus, setLlmSetting
     setMetadataEvents([]);
     setValidationPhase('idle');
     setMetadataPhase('idle');
-    setTrainingPhase('idle');
+    setFeaturePhase('idle');
     setSessionSummary(null);
     setActiveSessionId('');
     setError(null);
@@ -286,28 +287,34 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus, setLlmSetting
     });
   }
 
-  async function handleStartTraining() {
+  // Manual gate: kick off feature engineering (PipelinePrep) and move to the
+  // Feature Engineering tab. Training is started later from that tab, only
+  // after FE + model selection succeed. This replaces the old flow that jumped
+  // straight to training with deterministic fallback artifacts.
+  async function handleContinueToFeatureEngineering() {
     const sessionId = String(activeSessionId || '').trim();
     if (!sessionId) {
-      setError('No active session is available for training.');
+      setError('No active session is available for feature engineering.');
       return;
     }
 
     setError(null);
-    setTrainingPhase('running');
+    setFeaturePhase('running');
     try {
-      await startTraining({
+      await startFeatureEngineering({
         sessionId,
-        targetColumn: form.problemType === 'unsupervised' ? null : form.targetCol,
-        executionMode: 'ray',
+        targetCol: form.problemType === 'unsupervised' ? null : form.targetCol,
         problemType: form.problemType === 'auto' ? null : form.problemType,
-        allowFallbackArtifacts: true,
+        provider: llmSettings.provider,
+        model: llmSettings.model,
+        apiKey: llmSettings.apiKey || '',
+        gatewayUrl: llmSettings.gatewayUrl,
       });
-      setTrainingPhase('accepted');
-      startRun(sessionId);
-    } catch (trainingError) {
-      setTrainingPhase('error');
-      setError(trainingError.message);
+      setFeaturePhase('accepted');
+      enterFeatureEngineering(sessionId);
+    } catch (featureError) {
+      setFeaturePhase('error');
+      setError(featureError.message);
     }
   }
 
@@ -538,19 +545,19 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus, setLlmSetting
           llm={llmSettings}
           errorMessage={error}
         />
-        {usingFallbackArtifacts ? (
-          <div className="callout compact">
-            Metadata generation failed, but validation passed. Starting training will create fallback metadata, a simple model_config.json, and train/test CSVs from the uploaded dataset.
+        {metadataFailed ? (
+          <div className="callout error compact">
+            Metadata generation failed. Feature engineering needs valid metadata, so the run cannot continue. Fix the inputs (or LLM settings) and re-run metadata.
           </div>
         ) : null}
         <button
           className="btn btn-primary"
-          disabled={!canRunPipeline || trainingPhase === 'running'}
-          onClick={handleStartTraining}
+          disabled={!canContinueToFeatureEngineering || featurePhase === 'running'}
+          onClick={handleContinueToFeatureEngineering}
           type="button"
         >
-          {trainingPhase === 'running' ? <span className="spinner" /> : <Icons.play size={16} />}
-          {trainingPhase === 'running' ? 'Starting training...' : usingFallbackArtifacts ? 'Start Ray training with fallback' : 'Start Ray training'}
+          {featurePhase === 'running' ? <span className="spinner" /> : <Icons.play size={16} />}
+          {featurePhase === 'running' ? 'Starting feature engineering...' : 'Continue to Feature Engineering'}
         </button>
       </section>
       </>
