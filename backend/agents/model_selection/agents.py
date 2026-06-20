@@ -38,6 +38,12 @@ from .schemas import (
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on how many models a single run may select. Matches the
+# config.ini [pipeline] MAX_ML_MODELS ceiling so the pipeline can request the
+# full shortlist (the deterministic agent returns fewer if the catalog is
+# smaller for the task).
+MAX_SELECTABLE_MODELS = 10
+
 
 class LLMClient(Protocol):
     """Small adapter expected from the project's LiteLLM factory."""
@@ -348,8 +354,8 @@ class ModelSelectionOrchestratorAgent:
         report_path: str | Path | None = None,
         excluded_model_names: list[str] | None = None,
     ) -> list[ModelCandidate]:
-        if not 1 <= max_models <= 8:
-            raise ValueError("max_models must be between 1 and 8")
+        if not 1 <= max_models <= MAX_SELECTABLE_MODELS:
+            raise ValueError(f"max_models must be between 1 and {MAX_SELECTABLE_MODELS}")
 
         excluded_set = set(excluded_model_names or [])
 

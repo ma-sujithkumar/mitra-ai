@@ -213,7 +213,14 @@ class PipelinePrep:
         target_column: str,
         task_type: str,
     ) -> None:
-        """Query Dataset2Vec for similar past datasets; non-fatal on failure."""
+        """Query Dataset2Vec for similar past datasets; non-fatal on failure.
+
+        Dataset2Vec only supports classification datasets, so it is skipped for
+        regression/unsupervised tasks (the encoder/meta-KB are classification-only).
+        """
+        if task_type != "classification":
+            logger.info("=> D2V skipped: task_type=%s (classification only)", task_type)
+            return
         d2v_db_dir = self.config_loader.paths.d2v_db_dir
         if not d2v_db_dir:
             logger.debug("=> D2V_DB_DIR not configured; skipping Dataset2Vec query")
