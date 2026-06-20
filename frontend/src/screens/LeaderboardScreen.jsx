@@ -8,9 +8,12 @@ import {
   fetchShap,
   fetchTokens,
   fetchVerdict,
+  fetchHpt,
+  runHpt,
   modelDownloadUrl,
   modelsDownloadAllUrl,
 } from '../api/client.js';
+import { streamTrainingEvents } from '../api/events.js';
 import { AGENTS, LEADERBOARD, SHAP } from '../data.js';
 import { Icons } from '../icons.jsx';
 
@@ -293,6 +296,20 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
               {verdictData ? 'Rule-based decision -- no LLM commentary.' : 'Awaiting judge verdict.'}
             </p>
           )}
+
+          {decisionTrace?.transcript ? (
+            <div style={{ marginTop: 14 }}>
+              <p className="section-kicker" style={{ marginBottom: 6 }}>LLM Audit Trail</p>
+              <details style={{ cursor: 'pointer', background: 'var(--panel-2)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '10px 14px' }}>
+                <summary style={{ outline: 'none', fontWeight: 500, fontSize: '13px', color: 'var(--ink)' }}>
+                  View Raw LLM Prompt & Response Transcript
+                </summary>
+                <pre className="reasoning-block" style={{ marginTop: 10, background: 'rgba(0, 0, 0, 0.25)', border: 'none', maxHeight: '350px', overflowY: 'auto' }}>
+                  {decisionTrace.transcript}
+                </pre>
+              </details>
+            </div>
+          ) : null}
 
           {/* Rule outcomes table */}
           {decisionTrace?.rule_outcomes && Object.keys(decisionTrace.rule_outcomes).length > 0 ? (

@@ -1,7 +1,7 @@
 import StatusPill from '../StatusPill.jsx';
 import { Icons } from '../../icons.jsx';
 
-function TrainingSummary({ summary, canContinue, onContinue }) {
+function TrainingSummary({ summary, canContinue, onContinue, judgePending }) {
   if (!summary) {
     return (
       <section className="card panel-section">
@@ -34,12 +34,21 @@ function TrainingSummary({ summary, canContinue, onContinue }) {
       </div>
       <button
         className="btn btn-primary full-width"
-        disabled={!canContinue || !successful}
+        disabled={!canContinue || !successful || judgePending}
         onClick={onContinue}
         type="button"
       >
-        <Icons.trophy size={16} />
-        Continue to leaderboard
+        {judgePending ? (
+          <>
+            <span className="spinner" style={{ marginRight: 8 }} />
+            Judge Agent is evaluating...
+          </>
+        ) : (
+          <>
+            <Icons.trophy size={16} />
+            Continue to leaderboard
+          </>
+        )}
       </button>
     </section>
   );
