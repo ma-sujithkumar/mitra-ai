@@ -60,7 +60,14 @@ def _make_model_call(
             req = LlmRequest(
                 model=llm_settings.model,
                 contents=contents,
-                config=genai_types.GenerateContentConfig(max_output_tokens=max_tokens),
+                config=genai_types.GenerateContentConfig(
+                    # ADK LiteLlm currently nulls generation_params when the
+                    # first optional generation field is absent, then crashes
+                    # while mapping max_output_tokens. Set temperature
+                    # explicitly so the request remains valid and deterministic.
+                    temperature=0.0,
+                    max_output_tokens=max_tokens,
+                ),
             )
             chunks: list[str] = []
             async for resp in llm.generate_content_async(req, stream=False):
