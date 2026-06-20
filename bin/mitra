@@ -235,11 +235,19 @@ function runProcesses(invocations, pythonInterpreter) {
   const children = [];
   registerShutdownHandlers(children);
 
-  for (const invocation of invocations) {
+  let index = 0;
+  function spawnNext() {
+    if (index >= invocations.length) {
+      return;
+    }
+    const invocation = invocations[index];
+    index++;
+
     const child = spawnChild(invocation.label, invocation.command, invocation.args, {
       cwd: invocation.cwd,
     });
     children.push(child);
+
     child.on("exit", function (code, signal) {
       const reason = signal ? "signal " + signal : "code " + code;
       logStatus(invocation.label + " exited (" + reason + "), shutting down");
@@ -250,7 +258,13 @@ function runProcesses(invocations, pythonInterpreter) {
       }
       process.exit(code === null ? 1 : code);
     });
+
+    if (index < invocations.length) {
+      setTimeout(spawnNext, 1500);
+    }
   }
+
+  spawnNext();
 }
 
 
