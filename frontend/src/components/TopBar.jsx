@@ -1,7 +1,8 @@
 import { Icons } from '../icons.jsx';
 
-function TopBar({ title, sub, right, icon }) {
+function TopBar({ title, sub, right, icon, darkMode, onToggleDark }) {
   const Icon = icon ? Icons[icon] : null;
+  const ThemeIcon = darkMode ? Icons.sun : Icons.moon;
 
   return (
     <header className="topbar">
@@ -14,7 +15,19 @@ function TopBar({ title, sub, right, icon }) {
         <h1>{title}</h1>
         {sub ? <p>{sub}</p> : null}
       </div>
-      <div className="topbar-actions">{right}</div>
+      <div className="topbar-actions">
+        {onToggleDark ? (
+          <button
+            aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+            className="btn btn-secondary btn-sm"
+            onClick={onToggleDark}
+            type="button"
+          >
+            <ThemeIcon size={15} />
+          </button>
+        ) : null}
+        {right}
+      </div>
     </header>
   );
 }

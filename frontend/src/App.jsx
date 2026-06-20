@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 import AuthPage from './auth/AuthPage.jsx';
 import Dashboard from './screens/Dashboard.jsx';
@@ -42,6 +42,10 @@ function App() {
     const stored = window.localStorage.getItem('mitra.authUser');
     return stored ? JSON.parse(stored) : null;
   });
+  const [darkMode, setDarkMode] = useState(() => {
+    const stored = window.localStorage.getItem('mitra.darkMode');
+    return stored ? JSON.parse(stored) : false;
+  });
   const [route, setRoute] = useState('dashboard');
   const [previousRoute, setPreviousRoute] = useState('dashboard');
   const [runState, setRunState] = useState('idle');
@@ -63,6 +67,18 @@ function App() {
     configKey: '',
   });
   const meta = ROUTE_META[route] || ROUTE_META.dashboard;
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
+
+  function toggleDarkMode() {
+    setDarkMode((previous) => {
+      const next = !previous;
+      window.localStorage.setItem('mitra.darkMode', JSON.stringify(next));
+      return next;
+    });
+  }
 
   function handleAuthenticated(user) {
     setAuthUser(user);
@@ -120,7 +136,7 @@ function App() {
     <div className="app">
       <Sidebar go={go} route={route} runState={runState} />
       <main className="workspace">
-        <TopBar icon={meta.icon} sub={meta.sub} title={meta.title} />
+        <TopBar darkMode={darkMode} icon={meta.icon} onToggleDark={toggleDarkMode} sub={meta.sub} title={meta.title} />
         <div className="screen-frame">
           {/* UploadScreen stays mounted across navigation so the selected
               file, form inputs, and validation/metadata results persist until

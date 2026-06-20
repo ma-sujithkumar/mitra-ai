@@ -25,9 +25,44 @@
   --shadow: 0 10px 30px rgba(30, 36, 50, 0.07);
   --sans: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  /* Variables for elements that previously used hardcoded color literals */
+  --topbar-bg: rgba(255, 255, 255, 0.82);
+  --hero-bg: linear-gradient(120deg, #fff 0%, #fbfbff 58%, #f0f2ff 100%);
+  --dropzone-bg: linear-gradient(180deg, #fbfbff, #fff);
+  --dropzone-hover-bg: linear-gradient(180deg, #f5f6ff, #fff);
+  --metric-bg: rgba(255, 255, 255, 0.72);
   color: var(--ink);
   background: var(--bg);
   font-family: var(--sans);
+}
+
+[data-theme="dark"] {
+  --bg: #0f1117;
+  --panel: #161820;
+  --panel-2: #1b1d28;
+  --panel-3: #22253a;
+  --line: #2a2f3d;
+  --line-soft: #1e2130;
+  --ink: #e6e8f0;
+  --ink-muted: #8a95a8;
+  --ink-faint: #4e5566;
+  --accent-soft: rgba(91, 92, 226, 0.18);
+  --accent-line: rgba(91, 92, 226, 0.35);
+  --success: #2dd4a0;
+  --success-bg: #0b2a1e;
+  --success-line: #154232;
+  --warning: #e0a030;
+  --warning-bg: #2a1c08;
+  --warning-line: #3d2c0f;
+  --error: #f07070;
+  --error-bg: #2a0e0e;
+  --error-line: #3d1515;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --topbar-bg: rgba(22, 24, 32, 0.88);
+  --hero-bg: linear-gradient(120deg, #161820 0%, #1a1c27 58%, #1e2040 100%);
+  --dropzone-bg: linear-gradient(180deg, #1b1d28, #161820);
+  --dropzone-hover-bg: linear-gradient(180deg, #1e2040, #1b1d28);
+  --metric-bg: rgba(255, 255, 255, 0.05);
 }
 
 * {
@@ -246,7 +281,7 @@ h2 {
   gap: 14px;
   min-height: 72px;
   border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.82);
+  background: var(--topbar-bg);
   padding: 0 28px;
   backdrop-filter: blur(12px);
 }
@@ -360,8 +395,7 @@ h2 {
   justify-content: space-between;
   gap: 22px;
   border-color: var(--accent-line);
-  background:
-    linear-gradient(120deg, #fff 0%, #fbfbff 58%, #f0f2ff 100%);
+  background: var(--hero-bg);
   padding: 24px 26px;
 }
 
@@ -986,7 +1020,7 @@ h2 {
   min-height: 180px;
   border: 2px dashed var(--accent-line);
   border-radius: var(--radius);
-  background: linear-gradient(180deg, #fbfbff, #fff);
+  background: var(--dropzone-bg);
   color: var(--ink-muted);
   padding: 26px;
   text-align: center;
@@ -996,7 +1030,7 @@ h2 {
 
 .dropzone:hover {
   border-color: var(--accent);
-  background: linear-gradient(180deg, #f5f6ff, #fff);
+  background: var(--dropzone-hover-bg);
 }
 
 .dropzone input {
@@ -1915,7 +1949,7 @@ h2 {
   gap: 4px;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--metric-bg);
   padding: 9px 10px;
 }
 

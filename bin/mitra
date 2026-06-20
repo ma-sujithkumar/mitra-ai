@@ -254,7 +254,51 @@ function runProcesses(invocations, pythonInterpreter) {
 }
 
 
+function killExistingServers(backendPort) {
+  // Kill any process listening on the backend port (uvicorn) before restarting.
+  logStatus("killing any existing backend process on port " + backendPort);
+  if (process.platform === "win32") {
+    try {
+      const netstatOutput = childProcess.execSync(
+        "netstat -ano | findstr :" + backendPort + " | findstr LISTENING",
+        { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }
+      ).trim();
+      if (netstatOutput) {
+        const pid = netstatOutput.trim().split(/\s+/).pop();
+        if (pid) {
+          childProcess.execSync("taskkill /PID " + pid + " /F", { stdio: "pipe" });
+        }
+      }
+    } catch (killError) {
+      // No process was listening on the port; nothing to kill.
+    }
+  } else {
+    childProcess.execSync("fuser -k " + backendPort + "/tcp 2>/dev/null; true", { shell: true });
+  }
+
+  // Kill any running vite dev server (frontend).
+  logStatus("killing any existing frontend (vite) process");
+  if (process.platform === "win32") {
+    try {
+      childProcess.execSync("taskkill /IM node.exe /F 2>nul", { shell: true, stdio: "pipe" });
+    } catch (killError) {
+      // No node/vite process was running.
+    }
+  } else {
+    // [v]ite is the bracket trick: matches the string "vite" as a regex but the
+    // literal "[v]ite" in the shell's own cmdline does not match, so pkill never
+    // kills the shell process that is running this command.
+    childProcess.execSync("pkill -f '[v]ite' 2>/dev/null; true", { shell: true });
+  }
+
+  // Wait briefly so the OS releases the ports before we bind to them again.
+  logStatus("waiting 1s for ports to release");
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+}
+
+
 function commandUp(pythonInterpreter) {
+  killExistingServers(BACKEND_PORT);
   logStatus("starting backend on http://" + BACKEND_HOST + ":" + BACKEND_PORT);
   logStatus("starting frontend (vite dev) in " + FRONTEND_DIR);
   runProcesses(
