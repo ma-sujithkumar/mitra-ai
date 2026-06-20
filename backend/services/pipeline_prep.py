@@ -233,9 +233,12 @@ class PipelinePrep:
         if not d2v_db_dir:
             logger.debug("=> D2V_DB_DIR not configured; skipping Dataset2Vec query")
             return
+        db_path = Path(d2v_db_dir)
+        if not db_path.is_absolute():
+            db_path = self.config_loader.repo_root / db_path
         output_path = self.reports_dir / "dataset_prior.json"
         try:
-            bridge = D2VBridge(db_dir=d2v_db_dir)
+            bridge = D2VBridge(db_dir=db_path)
             prior = bridge.query(
                 csv_path=engineered_csv,
                 target_column=target_column,
