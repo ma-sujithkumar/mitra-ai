@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from google.adk.agents import LlmAgent
 from google.adk.runners import InMemoryRunner
+from google.genai import types as genai_types
 
 from llm.adk_client import LlmSettings, build_llm_model
 from backend.agents.metadata_gen_agent import LlmSettingsResolver
@@ -75,10 +76,15 @@ async def _invoke_llm_agent(
     session = await session_service.create_session(app_name="judge_agent", user_id="judge")
     response_text_parts: List[str] = []
 
+    # ADK's run_async expects a types.Content (with .role), not a plain dict.
+    new_message = genai_types.Content(
+        role="user",
+        parts=[genai_types.Part(text=prompt_text)],
+    )
     async for event in runner.run_async(
         user_id=session.user_id,
         session_id=session.id,
-        new_message={"role": "user", "parts": [{"text": prompt_text}]},
+        new_message=new_message,
     ):
         if event.is_final_response() and event.content:
             for part in event.content.parts or []:
