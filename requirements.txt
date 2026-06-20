@@ -54,5 +54,14 @@ xlrd>=2.0.1
 # --- File locking (concurrent write-back) ---
 portalocker>=2.7.0
 
+# --- Auth (signup/login) ---
+# passlib 1.7.4 is unmaintained and breaks with bcrypt >= 4.1 (its backend probe
+# trips bcrypt's "password cannot be longer than 72 bytes" error). Pin bcrypt to
+# the last compatible release so the passlib bcrypt backend initializes.
+SQLAlchemy>=2.0.0
+passlib>=1.7.4
+bcrypt>=4.0.0,<4.1
+psycopg2>=2.9.0
+
 # --- Testing ---
 pytest>=8.0.0
