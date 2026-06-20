@@ -74,6 +74,8 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
   const [verdictData, setVerdictData] = useState(null);
   const [tokenData, setTokenData] = useState(null);
   const [loadState, setLoadState] = useState('idle');
+  const [hptData, setHptData] = useState(null);
+  const [hptStatus, setHptStatus] = useState('idle'); // 'idle' | 'running' | 'complete' | 'failed'
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -96,6 +98,8 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
         const shap = await fetchShap(activeSessionId).catch(() => null);
         const verdict = await fetchVerdict(activeSessionId).catch(() => null);
         const tokens = await fetchTokens(activeSessionId).catch(() => null);
+        const hpt = await fetchHpt(activeSessionId).catch(() => null);
+        
         if (cancelled) return;
 
         setLeaderboardData(leaderboard);
@@ -106,6 +110,17 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
         setShapData(features.length ? features : null);
         setVerdictData(verdict?.status && verdict.status !== 'pending' ? verdict : null);
         setTokenData(tokens?.status === 'complete' ? tokens : null);
+        
+        if (hpt?.status === 'complete' && hpt?.hpt_results?.length) {
+          setHptData(hpt.hpt_results);
+          setHptStatus('complete');
+        } else if (hpt?.status === 'running') {
+          setHptStatus('running');
+        } else {
+          setHptStatus('idle');
+          setHptData(null);
+        }
+
         setLoadState('done');
 
         const terminal = leaderboard?.status === 'complete';
@@ -124,6 +139,45 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
       if (timeoutId) clearTimeout(timeoutId);
     };
   }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!activeSessionId || hptStatus !== 'running') return undefined;
+    let timerId = null;
+    let stopped = false;
+    async function checkHpt() {
+      try {
+        const data = await fetchHpt(activeSessionId);
+        if (stopped) return;
+        if (data?.status === 'complete' && data?.hpt_results) {
+          setHptData(data.hpt_results);
+          setHptStatus('complete');
+        } else if (data?.status === 'failed') {
+          setHptStatus('failed');
+        } else {
+          timerId = setTimeout(checkHpt, 2000);
+        }
+      } catch (err) {
+        if (!stopped) {
+          timerId = setTimeout(checkHpt, 5000);
+        }
+      }
+    }
+    checkHpt();
+    return () => {
+      stopped = true;
+      if (timerId) clearTimeout(timerId);
+    };
+  }, [activeSessionId, hptStatus]);
+
+  const handleRunHpt = async () => {
+    try {
+      setHptStatus('running');
+      await runHpt(activeSessionId);
+    } catch (err) {
+      console.error(err);
+      setHptStatus('failed');
+    }
+  };
 
   const models = leaderboardData?.models || [];
   const usingLive = models.length > 0;
@@ -213,6 +267,7 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
             const overfitting = row.overfitting;
             const isOverfitted = overfitting?.is_overfitted;
             const overfitGap = overfitting?.gap;
+            // HPT data merged directly from leaderboard endpoint (used in winner badge + params panel below)
 
             return (
               <div
@@ -227,6 +282,12 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
                       {row.reasons[0]}
                     </small>
                   ) : null}
+                  {/* HPT best score badge shown inline on winner row */}
+                  {row.winner && row.hpt_best_score != null && (
+                    <small style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8, background: 'rgba(236,72,153,0.12)', color: '#ec4899', borderRadius: 4, padding: '1px 6px', fontSize: '0.7rem', fontWeight: 700 }}>
+                      HPT {row.hpt_primary_metric ?? 'score'}: {typeof row.hpt_best_score === 'number' ? row.hpt_best_score.toFixed(4) : row.hpt_best_score}
+                    </small>
+                  )}
                 </span>
                 {metricSchema.map(({ key }) => (
                   <span className="mono" key={key}>
@@ -257,8 +318,119 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
               </div>
             );
           })}
+
+          {/* HPT best params inline panel — only for winner row when tuned */}
+          {displayRows.filter((r) => r.winner && r.hpt_best_params && Object.keys(r.hpt_best_params).length > 0).map((row) => (
+            <div
+              key={`hpt-params-${row.model_name || row.model}`}
+              style={{
+                borderTop: '1px solid rgba(236,72,153,0.2)',
+                padding: '12px 16px',
+                background: 'rgba(236,72,153,0.04)',
+              }}
+            >
+              <p className="section-kicker" style={{ margin: '0 0 6px 0', fontSize: '0.65rem', color: '#ec4899' }}>
+                BEST HYPERPARAMETERS ({row.model_name || row.model}) &mdash; {row.hpt_n_trials ?? '?'} Optuna trials
+              </p>
+              <pre className="mono" style={{ margin: 0, fontSize: '0.75rem', color: '#ccc', whiteSpace: 'pre-wrap', maxHeight: 120, overflowY: 'auto' }}>
+                {JSON.stringify(row.hpt_best_params, null, 2)}
+              </pre>
+            </div>
+          ))}
         </div>
       </section>
+
+      {/* Hyperparameter Tuning Section */}
+      {usingLive && activeSessionId && (
+        <section className="card panel-section" style={{ borderLeft: '4px solid #ec4899', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+              <div className="stage-card-icon" style={{ background: 'rgba(236, 72, 153, 0.15)', color: '#ec4899', width: 36, height: 36, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Icons.cpu size={20} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.15rem' }}>Hyperparameter Tuning (Optuna HPT)</h3>
+                <p className="muted" style={{ margin: '4px 0 0 0', fontSize: '0.85rem' }}>
+                  {hptStatus === 'idle' && "Run Optuna HPT on the top-1 Judge-selected model (5 trials). Results appear in leaderboard."}
+                  {hptStatus === 'running' && "Tuning the top-1 model (5 Optuna trials)... Results will appear in the leaderboard winner row."}
+                  {hptStatus === 'complete' && "HPT completed. Best hyperparameters and score are now in the leaderboard winner row."}
+                  {hptStatus === 'failed' && "Hyperparameter tuning execution failed."}
+                </p>
+              </div>
+            </div>
+            <div>
+              {hptStatus === 'idle' && (
+                <button className="btn btn-primary" onClick={handleRunHpt} style={{ background: '#ec4899', borderColor: '#ec4899' }} type="button">
+                  <Icons.spark size={15} /> Tune Hyperparameters
+                </button>
+              )}
+              {hptStatus === 'running' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div className="spinner small" />
+                  <span className="muted" style={{ fontSize: '0.9rem' }}>Tuning...</span>
+                </div>
+              )}
+              {hptStatus === 'complete' && (
+                <span className="pill pill-done" style={{ background: 'rgba(236, 72, 153, 0.15)', color: '#ec4899', border: '1px solid rgba(236, 72, 153, 0.3)', fontWeight: 600 }}>
+                  Tuned
+                </span>
+              )}
+              {hptStatus === 'failed' && (
+                <button className="btn btn-secondary" onClick={handleRunHpt} type="button">
+                  Retry Tuning
+                </button>
+              )}
+            </div>
+          </div>
+
+          {hptData && hptData.length > 0 && (
+            <div className="hpt-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 15 }}>
+              {hptData.map((model) => (
+                <div className="hpt-card" key={model.name} style={{
+                  background: 'rgba(255, 255, 255, 0.02)',
+                  border: '1px solid rgba(255, 255, 255, 0.06)',
+                  borderRadius: 8,
+                  padding: 16,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h4 style={{ margin: 0, fontSize: '0.975rem' }}>{model.name}</h4>
+                    <span className="mono text-xs muted">{model.n_trials} trials</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 12, fontSize: '0.8rem', color: '#aaa' }}>
+                    <div>Tuning time: <span className="mono">{model.tuning_time_seconds ? model.tuning_time_seconds.toFixed(1) : 'N/A'}s</span></div>
+                    <div>Best trial: <span className="mono">#{model.best_trial_number}</span></div>
+                  </div>
+                  <div style={{ marginTop: 4 }}>
+                    <p className="section-kicker" style={{ marginBottom: 4, fontSize: '0.675rem' }}>Best Hyperparameters</p>
+                    <div style={{
+                      background: 'rgba(0,0,0,0.2)',
+                      padding: 8,
+                      borderRadius: 4,
+                      maxHeight: 100,
+                      overflowY: 'auto'
+                    }}>
+                      <pre className="mono" style={{ margin: 0, fontSize: '0.75rem', whiteSpace: 'pre-wrap', color: '#ccc' }}>
+                        {JSON.stringify(model.best_hyperparameters, null, 2)}
+                      </pre>
+                    </div>
+                  </div>
+                  {model.val_metrics ? (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: '0.8rem' }}>
+                      <span>Validation Score:</span>
+                      <strong className="mono" style={{ color: '#ec4899' }}>
+                        {Object.entries(model.val_metrics).map(([metric, val]) => `${metric}=${val.toFixed(4)}`).join(', ')}
+                      </strong>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Bottom row: SHAP + Judge Reasoning + Token Usage */}
       <div className="leaderboard-grid">

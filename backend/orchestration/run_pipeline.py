@@ -220,8 +220,8 @@ class PipelineRunner:
         task_type = self._read_task_type(metadata_path)
         token_counter = TokenCounter(session_dir=self.session_dir)
 
-        # Stage 4: parallel eval (SHAP || overfitting || HPT)
-        logger.info("=> [4/6] parallel evaluation (SHAP + overfitting + HPT) ...")
+        # Stage 4: parallel eval (SHAP || overfitting) - HPT is a separate on-demand step
+        logger.info("=> [4/6] parallel evaluation (SHAP + overfitting, HPT excluded from pipeline) ...")
         engineered_csv = self.session_dir / "data" / "engineered_dataset.csv"
         if not engineered_csv.exists():
             # Fall back to train.csv if engineered version not yet split
@@ -233,14 +233,16 @@ class PipelineRunner:
             target_column=target_column,
             verbose=self.verbose,
         )
+        # HPT is excluded from the pipeline: run_hpt=False so the Judge evaluates
+        # without waiting for HPT. HPT is triggered on-demand from the leaderboard.
         eval_output = eval_runner.run(
             training_summary=training_summary,
             engineered_dataset_path=engineered_csv,
+            run_hpt=False,
         )
-        logger.info("=> eval complete: shap=%d overfit=%d hpt=%s",
+        logger.info("=> eval complete: shap=%d overfit=%d (hpt=on-demand)",
                     sum(1 for v in eval_output["shap_dirs"].values() if v),
-                    sum(1 for v in eval_output["overfitting_dirs"].values() if v),
-                    "ok" if eval_output["hpt_results_path"] else "skipped")
+                    sum(1 for v in eval_output["overfitting_dirs"].values() if v))
 
         # Stage 5: judge + feedback loop
         logger.info("=> [5/6] judge loop (max_turns=%d) ...", self.max_judge_turns)

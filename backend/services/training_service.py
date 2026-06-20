@@ -875,6 +875,7 @@ class TrainingService:
                 session_dir=session_dir,
                 task_type=task_type,
                 target_column=request.target_column,
+                event_bus=self.event_bus,
             )
             self.event_bus.emit(
                 TrainingEvent(
@@ -1480,7 +1481,7 @@ class TrainingService:
                     stage="hpt",
                     level="info",
                     status="running",
-                    msg="[HPT TUNING] Starting hyperparameter optimization for top 5 models selected by Judge Agent...",
+                    msg="[HPT TUNING] Starting hyperparameter optimization for the top-1 model selected by Judge Agent...",
                     pct=10,
                 )
             )
@@ -1493,7 +1494,8 @@ class TrainingService:
                 try:
                     decision_data = json.loads(judge_decision_path.read_text(encoding="utf-8"))
                     ranked = decision_data.get("ranked_models") or []
-                    top_model_names = [m.get("model_name") for m in ranked if m.get("model_name")][:5]
+                    # Only tune the single top-ranked model (rank 1) per user requirement
+                    top_model_names = [m.get("model_name") for m in ranked if m.get("model_name")][:1]
                 except Exception as exc:
                     logger.warning("=> failed to load judge_decision for HPT filtering: %s", exc)
             
@@ -1503,7 +1505,8 @@ class TrainingService:
                     model_config_path = session_path / "model_config.json"
                     if model_config_path.is_file():
                         model_config = json.loads(model_config_path.read_text(encoding="utf-8"))
-                        top_model_names = [m.get("name") for m in model_config if m.get("name")][:5]
+                        # Fallback: pick only the first model when judge hasn't run yet
+                        top_model_names = [m.get("name") for m in model_config if m.get("name")][:1]
                 except Exception:
                     pass
             
@@ -1526,7 +1529,7 @@ class TrainingService:
                     stage="hpt",
                     level="info",
                     status="running",
-                    msg=f"[HPT TUNING] Tuning models: {', '.join(top_model_names)}",
+                    msg=f"[HPT TUNING] Tuning top-1 model: {top_model_names[0]}",
                     pct=20,
                 )
             )
@@ -1538,11 +1541,11 @@ class TrainingService:
                 verbose=True,
             )
             
-            # Force exactly 5 trials and top 5 models
+            # Restrict to top-1 model only; still run 5 Optuna trials for that model
             hpt_agent.model_config = [m for m in hpt_agent.model_config if m.get("name") in top_model_names]
             hpt_agent.model_config_sorted = sorted(hpt_agent.model_config, key=lambda x: x.get('priority', 999))
             
-            # Set study trials to 5
+            # 5 Optuna trials for the single top-1 model
             hpt_agent.hpt_config['MAX_HPT_TRIALS'] = 5
             
             # Setup data splits
@@ -1590,13 +1593,14 @@ class TrainingService:
                 json.dumps({"hpt_results": hpt_agent.results}, indent=2), encoding="utf-8"
             )
             
+            top1_model_name = top_model_names[0] if top_model_names else "top-1 model"
             self.event_bus.emit(
                 TrainingEvent(
                     session_id=session_id,
                     stage="hpt",
                     level="info",
                     status="all_completed",
-                    msg=f"[HPT TUNING] Hyperparameter tuning completed successfully for {len(hpt_agent.results)} models.",
+                    msg=f"[HPT TUNING] Hyperparameter tuning completed for {top1_model_name}. Best params stored in leaderboard.",
                     pct=100,
                 )
             )

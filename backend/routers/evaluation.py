@@ -68,16 +68,17 @@ class EvaluationArtifactReader:
         return self._read_json_or_none(self.session_dir / TOKEN_USAGE_FILENAME)
 
     def build_leaderboard(self) -> dict[str, Any]:
-        """Merge judge ranking with training metrics into one leaderboard list."""
+        """Merge judge ranking with training metrics, overfitting, and HPT results."""
         judge_decision = self.judge_decision()
         training_summary = self.training_summary()
 
         if judge_decision is None and training_summary is None:
             return {"status": "pending", "selected_model": None, "models": [], "decision_trace": None}
 
-        # Index training metrics and overfitting results by model name for O(1) merge.
+        # Index training metrics, overfitting, and HPT results by model name for O(1) merge.
         metrics_by_model = self._index_training_metrics(training_summary)
         overfitting_by_model = self._index_overfitting()
+        hpt_by_model = self._index_hpt_results()
         selected_model = (judge_decision or {}).get("selected_model")
         decision_trace = (judge_decision or {}).get("decision_trace")
 
@@ -86,6 +87,7 @@ class EvaluationArtifactReader:
         for ranked_model in ranked_models:
             model_name = ranked_model.get("model_name")
             training_record = metrics_by_model.get(model_name, {})
+            hpt_record = hpt_by_model.get(model_name, {})
             leaderboard_rows.append({
                 "rank": ranked_model.get("rank"),
                 "model_name": model_name,
@@ -97,6 +99,11 @@ class EvaluationArtifactReader:
                 "metrics": training_record.get("metrics", {}),
                 "overfitting": overfitting_by_model.get(model_name),
                 "winner": model_name == selected_model,
+                # HPT fields: populated after on-demand tuning of the top-1 model
+                "hpt_best_score": hpt_record.get("best_score"),
+                "hpt_best_params": hpt_record.get("best_hyperparameters"),
+                "hpt_n_trials": hpt_record.get("n_trials"),
+                "hpt_primary_metric": hpt_record.get("primary_metric"),
             })
 
         # If the judge has not run yet, fall back to a metrics-only leaderboard
@@ -289,6 +296,44 @@ class EvaluationArtifactReader:
                 "train_metrics": analysis.get("train_metrics"),
                 "test_metrics": analysis.get("test_metrics"),
                 "cv_results": analysis.get("k_fold_cross_validation_results"),
+            }
+        return result
+
+    def _index_hpt_results(self) -> dict[str, dict[str, Any]]:
+        """Index HPT best params and score by model name from hpt_results.json.
+
+        The file written by training_service._execute_hpt has this shape::
+
+            {"hpt_results": [{"name": "...", "best_hyperparameters": {...},
+                              "val_metrics": {...}, "n_trials": 5, ...}]}
+        """
+        hpt_path = self.evaluation_dir / "hpt" / "hpt_results.json"
+        if not hpt_path.is_file():
+            return {}
+        try:
+            raw_data = json.loads(hpt_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        result: dict[str, dict[str, Any]] = {}
+        for entry in raw_data.get("hpt_results", []):
+            model_name = entry.get("name") or entry.get("model_name")
+            if not model_name:
+                continue
+            # Derive a single scalar best_score from val_metrics
+            val_metrics = entry.get("val_metrics") or {}
+            best_score = (
+                val_metrics.get("accuracy")
+                or val_metrics.get("r2")
+                or val_metrics.get("f1")
+                or next(iter(val_metrics.values()), None)
+            )
+            result[model_name] = {
+                "best_hyperparameters": entry.get("best_hyperparameters"),
+                "best_score": best_score,
+                "val_metrics": val_metrics,
+                "n_trials": entry.get("n_trials"),
+                "primary_metric": entry.get("primary_metric"),
+                "tuning_time_seconds": entry.get("tuning_time_seconds"),
             }
         return result
 
