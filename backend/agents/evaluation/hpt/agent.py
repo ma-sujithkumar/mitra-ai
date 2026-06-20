@@ -145,22 +145,21 @@ class HyperparameterTuningAgent:
                 dict: Training results with metrics
             """
             try:
-                # Initialize MLKit model with config overrides
-                # The exact API may need adjustment based on MLKit implementation
-                mlkit = MLKit(model_name=model_name)
-                
-                # Train with hyperparameters (override config defaults)
-                mlkit.train(data=data_bundle, **hp)
-                
-                # Get predictions on validation set
-                y_val_pred = mlkit.predict(data_bundle.X_val)
-                
-                # Get predictions on training set (for overfitting detection)
-                y_train_pred = mlkit.predict(data_bundle.X_train)
-                
-                # Compute metrics
-                val_metrics = compute_metrics(data_bundle.y_val, y_val_pred, self.problem_type)
-                train_metrics = compute_metrics(data_bundle.y_train, y_train_pred, self.problem_type)
+                # MLKit API: hyperparameter overrides ride on the DataBundle, and
+                # the model is constructed with the data. train() fits on
+                # common.X_train; test() predicts on common.X_test (= validation).
+                trial_data = DataBundle(common=data_bundle.common, hyperparameters=hp)
+                mlkit = MLKit(model_name=model_name, data=trial_data)
+                mlkit.train()
+
+                # Validation predictions (X_test holds the validation split).
+                y_val_pred = mlkit.test()
+                # Training predictions for the overfitting gap (predict directly
+                # on X_train since test() only covers X_test).
+                y_train_pred = mlkit.model.predict(data_bundle.common.X_train)
+
+                val_metrics = compute_metrics(data_bundle.common.y_test, y_val_pred, self.problem_type)
+                train_metrics = compute_metrics(data_bundle.common.y_train, y_train_pred, self.problem_type)
                 
                 return {
                     'train_metrics': train_metrics,

@@ -127,13 +127,15 @@ class DataLoader:
         Returns:
             DataBundle compatible with MLKit
         """
-        # Create DataBundle using MLKit's expected format
-        # This is the standard MLKit DataBundle API
+        # MLKit's DataBundle wraps a CommonData(X_train, y_train, X_test, y_test)
+        # of numpy arrays. The HPT validation split maps to X_test/y_test.
         return DataBundle(
-            X_train=X_train,
-            y_train=y_train,
-            X_val=X_val,
-            y_val=y_val
+            common=CommonData(
+                X_train=np.asarray(X_train),
+                y_train=np.asarray(y_train),
+                X_test=np.asarray(X_val),
+                y_test=np.asarray(y_val),
+            )
         )
     
     def get_complete_data_for_test(self, model_name: str, best_params: Dict) -> Tuple[pd.DataFrame, pd.Series]:
