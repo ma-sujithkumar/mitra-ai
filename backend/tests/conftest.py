@@ -25,7 +25,10 @@ def test_config_loader(tmp_path: Path) -> ConfigLoader:
         "GEMINI_BASE_URL=https://generativelanguage.googleapis.com\n"
         "[metadata_agent]\nCLASSIFICATION_UNIQUE_THRESHOLD=0.05\n"
         "CATEGORICAL_UNIQUE_RATIO=0.05\nLLM_MAX_RETRIES=3\n"
-        "METADATA_CONTEXT_CHAR_LIMIT=20000\n",
+        "METADATA_CONTEXT_CHAR_LIMIT=20000\n"
+        "[authdb]\n"
+        f"USER_WORKSPACE_ROOT={tmp_path / 'mitra'}\n"
+        f"FALLBACK_DB_URL=sqlite:///{tmp_path / 'auth.db'}\n",
         encoding="utf-8",
     )
     return ConfigLoader(config_path=config_path, repo_root=tmp_path)

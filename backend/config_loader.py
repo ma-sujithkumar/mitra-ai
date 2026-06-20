@@ -98,6 +98,8 @@ class AuthDbConfig:
     db_user_default: str
     user_workspace_root: Path
     password_min_length: int
+    fallback_db_url: str
+
 
 
 @dataclass(frozen=True)
@@ -340,6 +342,9 @@ class ConfigLoader:
             ),
             password_min_length=self.parser.getint(
                 "authdb", "PASSWORD_MIN_LENGTH", fallback=8
+            ),
+            fallback_db_url=self.parser.get(
+                "authdb", "FALLBACK_DB_URL", fallback="sqlite:///auth.db"
             ),
         )
 

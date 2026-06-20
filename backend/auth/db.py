@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from dotenv import dotenv_values
@@ -11,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.auth.models import Base
 from backend.config_loader import AuthDbConfig
+
 
 
 class AuthDatabase:
@@ -57,8 +59,29 @@ class AuthDatabase:
 
     def engine(self) -> Engine:
         if self._engine is None:
-            self._engine = create_engine(self._build_url(), pool_pre_ping=True)
-            Base.metadata.create_all(self._engine)
+            logger = logging.getLogger("mitra.auth")
+            db_url = self._build_url()
+            logger.info("auth => attempting connection to database: postgresql")
+            try:
+                engine = create_engine(db_url, pool_pre_ping=True)
+                Base.metadata.create_all(engine)
+                self._engine = engine
+                logger.info("auth => database connection established: postgresql")
+            except Exception as database_error:
+                logger.warning(
+                    "auth => database connection failed for postgresql. error: %s",
+                    str(database_error),
+                )
+                logger.info(
+                    "auth => falling back to database: %s",
+                    self.authdb_config.fallback_db_url,
+                )
+                fallback_engine = create_engine(
+                    self.authdb_config.fallback_db_url, pool_pre_ping=True
+                )
+                Base.metadata.create_all(fallback_engine)
+                self._engine = fallback_engine
+                logger.info("auth => database connection established: sqlite")
         return self._engine
 
     def session_factory(self) -> sessionmaker[Session]:
