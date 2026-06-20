@@ -93,3 +93,12 @@ def cancel_training(
         cancellation_requested=state.cancellation_requested,
         cancelled_jobs=state.cancelled_jobs,
     )
+
+
+@router.post("/reset/{session_id}")
+def reset_training(
+    session_id: str,
+    training_service: TrainingService = Depends(get_training_service),
+) -> dict[str, str]:
+    training_service.reset_run(session_id)
+    return {"session_id": session_id, "status": "reset"}

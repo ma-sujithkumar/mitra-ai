@@ -11,6 +11,7 @@ from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
 from fastapi import Query
+from fastapi import Request
 from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse
 
@@ -192,6 +193,16 @@ class EvaluationArtifactReader:
             return {"status": "pending"}
         return {"status": "complete", **report}
 
+    def hpt_results(self) -> dict[str, Any]:
+        """Return HPT / Optuna results if available."""
+        hpt_path = self.evaluation_dir / "hpt" / "hpt_results.json"
+        if not hpt_path.is_file():
+            return {"status": "pending", "hpt_results": []}
+        try:
+            return {"status": "complete", **json.loads(hpt_path.read_text(encoding="utf-8"))}
+        except Exception:
+            return {"status": "pending", "hpt_results": []}
+
     def model_config(self) -> dict[str, Any]:
         """Return model config (selected families, task type, etc.).
 
@@ -272,8 +283,12 @@ class EvaluationArtifactReader:
             result[model_dir.name] = {
                 "is_overfitted": analysis.get("is_overfitted"),
                 "primary_metric": primary_metric,
-                # Gap value for the primary metric; float or None.
                 "gap": gaps.get(primary_metric) if primary_metric else None,
+                "gap_threshold": analysis.get("gap_threshold"),
+                "gaps": gaps,
+                "train_metrics": analysis.get("train_metrics"),
+                "test_metrics": analysis.get("test_metrics"),
+                "cv_results": analysis.get("k_fold_cross_validation_results"),
             }
         return result
 
@@ -378,6 +393,17 @@ def get_leaderboard(
     return {"session_id": session_id, **reader.build_leaderboard()}
 
 
+@router.post("/{session_id}/hpt/run")
+def run_hpt_endpoint(
+    session_id: str,
+    request: Request,
+) -> dict[str, str]:
+    from backend.services.dependencies import get_training_service
+    training_service = get_training_service(request)
+    training_service.run_hpt(session_id)
+    return {"session_id": session_id, "status": "running"}
+
+
 @router.get("/{session_id}/verdict")
 def get_verdict(
     session_id: str,
@@ -463,6 +489,15 @@ def get_model_config(
 ) -> dict[str, Any]:
     reader = _build_reader(session_id=session_id, session_manager=session_manager)
     return {"session_id": session_id, **reader.model_config()}
+
+
+@router.get("/{session_id}/hpt")
+def get_hpt_results(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    reader = _build_reader(session_id=session_id, session_manager=session_manager)
+    return {"session_id": session_id, **reader.hpt_results()}
 
 
 @router.get("/{session_id}/models/download-all")
