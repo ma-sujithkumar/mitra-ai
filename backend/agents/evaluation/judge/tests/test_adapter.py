@@ -21,6 +21,12 @@ class TestUpstreamAdapter:
         assert abs(result.gap - 0.03) < 1e-6
         assert result.train_vs_cv_gap is not None
         assert abs(result.train_vs_cv_gap - 0.02) < 1e-6
+        assert result.train_metrics is not None
+        assert abs(result.train_metrics["accuracy"] - 0.91) < 1e-6
+        assert result.test_metrics is not None
+        assert abs(result.test_metrics["accuracy"] - 0.88) < 1e-6
+        assert result.cv_results is not None
+        assert result.cv_results["k"] == 5
 
     def test_adapt_overfitting_missing_cv(self) -> None:
         adapter = UpstreamAdapter()
