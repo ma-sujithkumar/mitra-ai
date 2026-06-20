@@ -20,6 +20,8 @@ from google.adk.agents import LlmAgent
 from google.adk.runners import InMemoryRunner
 
 from llm.adk_client import LlmSettings, build_llm_model
+from backend.agents.metadata_gen_agent import LlmSettingsResolver
+from backend.config_loader import ConfigLoader
 from .config_loader import load_judge_config
 from .rule_engine import RuleEngine
 from .schemas import CandidateModel, JudgeDecision, JudgeInput, RankedModel
@@ -182,15 +184,12 @@ class JudgeAgent:
         decision: JudgeDecision,
     ) -> JudgeDecision:
         """Invoke the LLM and merge its output into the decision. Falls back on any error."""
-        model_env_key = self._config.get("anthropic_model_env", "ANTHROPIC_MODEL_NAME")
-        model_name = os.environ.get(model_env_key, "claude-sonnet-4-6")
-        # Build LlmSettings from standard MITRA env vars so the judge uses the
-        # same provider/key as every other agent (no more CLI dependency).
-        judge_llm_settings = LlmSettings(
-            provider=os.environ.get("LLM_TYPE", "anthropic"),
-            model=model_name,
-            api_key=os.environ.get("LLM_API_KEY"),
-        )
+        # Resolve credentials the SAME way every other agent does: via
+        # LlmSettingsResolver, which reads .env (LLM_TYPE/LLM_MODEL/LLM_API_KEY).
+        # Reading os.environ directly was broken -- .env is never exported to the
+        # process environment (no load_dotenv anywhere), so the key was always
+        # empty and the judge silently fell back to rule-only output.
+        judge_llm_settings = LlmSettingsResolver(ConfigLoader()).resolve()
 
         prompt_text = _render_prompt(
             judge_input=judge_input,

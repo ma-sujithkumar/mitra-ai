@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 
 from backend.agents.feature_engineering.orchestrator import FeatureEngineerOrchestrator
+from backend.agents.metadata_gen_agent import LlmSettingsResolver
+from backend.config_loader import ConfigLoader
 
 
 def main() -> int:
@@ -33,12 +35,16 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.cmd == "run":
+        # Resolve LLM credentials the same way every agent does: from .env via
+        # LlmSettingsResolver. The CLI never reads the key from config.yaml.
+        llm_settings = LlmSettingsResolver(ConfigLoader()).resolve(model=args.model)
         orchestrator = FeatureEngineerOrchestrator(
             data_path=args.data,
             target_column=args.target,
             model_string=args.model,
             task=args.task,
             config_path=args.config,
+            llm_settings=llm_settings,
         )
         output_dir, run_id = orchestrator.run()
         print(f"run_id: {run_id}")
