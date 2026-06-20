@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import tempfile
 from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -296,6 +297,41 @@ class TrainingService:
 
         self._emit_cancelled_session(session_id, cancelled_jobs)
         return cancelled_state.model_copy(deep=True)
+
+    def reset_run(self, session_id: str) -> None:
+        """Clear out any existing training runs from memory and disk so it can be re-run."""
+        with self.lock:
+            self.runs.pop(session_id, None)
+            self.futures.pop(session_id, None)
+            self.executors.pop(session_id, None)
+            self.cancel_events.pop(session_id, None)
+            status_path = self.status_paths.pop(session_id, None)
+            
+            session_path = self.session_manager.get_session_path(session_id=session_id)
+            if status_path is None:
+                status_path = (
+                    session_path
+                    / self.config_loader.training_api.session_output_dir
+                    / self.config_loader.training_api.run_status_filename
+                )
+            
+            if status_path.is_file():
+                try:
+                    status_path.unlink()
+                except Exception:
+                    pass
+            
+            # Also clear the judge decision and training summary report files if they exist.
+            reports_dir = session_path / self.config_loader.training_api.session_output_dir
+            for filename in ("judge_decision.json", "training_summary.json"):
+                report_file = reports_dir / filename
+                if report_file.is_file():
+                    try:
+                        report_file.unlink()
+                    except Exception:
+                        pass
+            
+            self.event_bus.reset_session(session_id, clear_history=True)
 
     def shutdown(self) -> None:
         """Cancel active Ray work and stop accepting background jobs."""
@@ -710,13 +746,25 @@ class TrainingService:
         # training is fully settled first. Runs SHAP + overfitting + HPT + judge
         # to populate the leaderboard/verdict. Non-fatal: training stays
         # "completed" even if evaluation fails (artifacts simply stay absent).
-        if (
+        has_eval = (
             completed_summary is not None
             and completed_summary.completed > 0
             and self.config_loader.pipeline.run_post_training_eval
             and not cancel_event.is_set()
-        ):
-            self._run_post_training_evaluation(request, paths, completed_summary)
+        )
+        if has_eval:
+            self._run_post_training_evaluation(
+                request,
+                paths,
+                completed_summary,
+                orchestrator,
+                execution_mode,
+                executor,
+                cancel_event,
+            )
+        else:
+            if not cancel_event.is_set():
+                self.event_bus.close_session(request.session_id)
 
     def _write_training_summary_artifacts(
         self,
@@ -779,8 +827,12 @@ class TrainingService:
         request: TrainingStartRequest,
         paths: ResolvedTrainingPaths,
         summary: TrainingSummary,
+        orchestrator: OrchestratorLike,
+        execution_mode: ExecutionMode,
+        executor: ParallelExecutor | None,
+        cancel_event: Event,
     ) -> None:
-        """Run eval (SHAP/overfitting/HPT) + judge after a successful training.
+        """Run eval (SHAP/overfitting) + judge feedback loop after a successful training.
 
         Mirrors the headless run_pipeline stages 4-5 for the UI path. Any
         failure here is logged and swallowed so the training run stays green;
@@ -788,6 +840,16 @@ class TrainingService:
         appear.
         """
         try:
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=request.session_id,
+                    stage="evaluation",
+                    level="info",
+                    status="running",
+                    msg="[POST-TRAINING EVAL] Starting evaluation (SHAP, Overfitting) and model selection ranking.",
+                    pct=10,
+                )
+            )
             task_type = self._read_task_type(paths.metadata_path)
             # Eval/judge/plot artifacts must land under the session ROOT (the
             # same base the evaluation router reads from), not the training
@@ -814,11 +876,34 @@ class TrainingService:
                 task_type=task_type,
                 target_column=request.target_column,
             )
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=request.session_id,
+                    stage="evaluation",
+                    level="info",
+                    status="running",
+                    msg="[POST-TRAINING EVAL] Running parallel evaluation workers (SHAP explainers, overfitting analyzer)...",
+                    pct=20,
+                )
+            )
+            
+            # Run overfitting and SHAP, excluding HPT from post-training evaluation per user instructions
             eval_output = eval_runner.run(
                 training_summary=summary,
                 engineered_dataset_path=engineered_csv,
+                run_hpt=False,
             )
 
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=request.session_id,
+                    stage="evaluation",
+                    level="info",
+                    status="running",
+                    msg="[POST-TRAINING EVAL] Initial model evaluation completed. Starting Judge Agent multi-turn feedback trials...",
+                    pct=40,
+                )
+            )
             metadata = self._read_json_or_none(paths.metadata_path)
             # Honour per-session advanced overrides (page-1 advanced settings)
             # over the config.ini default for the judge feedback loop length.
@@ -827,14 +912,87 @@ class TrainingService:
                 task_type=task_type,
                 max_turns=max_judge_turns,
             )
-            decision = judge_loop.run(
+
+            # Re-train callback called by the Judge Agent feedback loop on model candidate exclusions
+            def training_callback(excluded_names: list[str]) -> Any:
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=request.session_id,
+                        stage="evaluation",
+                        level="info",
+                        status="running",
+                        msg=f"[JUDGE FEEDBACK] Models rejected by Judge. Selecting new candidates excluding: {excluded_names}...",
+                        pct=50,
+                    )
+                )
+
+                if cancel_event.is_set():
+                    raise RuntimeError("Cancellation requested during judge feedback loop")
+
+                common_arguments = {
+                    "session_id": request.session_id,
+                    "metadata_path": paths.metadata_path,
+                    "model_config_path": paths.model_config_path,
+                    "train_path": paths.train_path,
+                    "test_path": paths.test_path,
+                    "session_dir": paths.session_output_dir,
+                    "target_column": request.target_column,
+                    "manifest_path": paths.manifest_path,
+                    "summary_path": paths.summary_path,
+                }
+                
+                # Overwrites model_config.json and triggers training on the new configuration candidates
+                if execution_mode == "ray":
+                    new_summary = orchestrator.prepare_and_execute_ray(
+                        **common_arguments,
+                        timeout_sec=(
+                            request.timeout_sec
+                            or self.config_loader.training_api.ray_timeout_sec
+                        ),
+                        executor=executor,
+                        close_executor=False,
+                    )
+                else:
+                    new_summary = orchestrator.prepare_and_execute_local(
+                        **common_arguments,
+                    )
+                
+                self._write_training_summary_artifacts(paths, new_summary)
+
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=request.session_id,
+                        stage="evaluation",
+                        level="info",
+                        status="running",
+                        msg="[JUDGE FEEDBACK] Next candidate models trained. Running SHAP and Overfitting check...",
+                        pct=60,
+                    )
+                )
+
+                # Re-run evaluation without HPT for the new candidates
+                nonlocal eval_output
+                eval_output = eval_runner.run(
+                    training_summary=new_summary,
+                    engineered_dataset_path=engineered_csv,
+                    run_hpt=False,
+                )
+                return new_summary
+
+            decision = judge_loop.run_with_feedback(
                 eval_artifacts=EvalArtifacts(
                     shap_dirs=eval_output["shap_dirs"],
                     overfitting_dirs=eval_output["overfitting_dirs"],
-                    hpt_results_path=eval_output["hpt_results_path"],
+                    hpt_results_path=None,
                 ),
                 training_summary=summary,
                 session_dir=session_dir,
+                training_callback=training_callback,
+                metadata_path=paths.metadata_path,
+                feature_selection_path=session_dir / "reports" / "feature_selection.json",
+                mini_data_path=session_dir / "data" / "mini_dataset.csv",
+                model_library_root=self.config_loader.training_api.model_library_root,
+                max_models=10,
                 dataset_id=request.session_id,
                 metadata=metadata,
             )
@@ -843,9 +1001,45 @@ class TrainingService:
                 request.session_id,
                 decision.selected_model,
             )
+
+            # Ensure final training summary is mirrored to reports/ after feedback trials
+            final_summary = None
+            if paths.summary_path.is_file():
+                try:
+                    final_summary = TrainingSummary.model_validate_json(paths.summary_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            if final_summary is None:
+                final_summary = summary
+
+            (reports_dir / "training_summary.json").write_text(
+                final_summary.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
+
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=request.session_id,
+                    stage="evaluation",
+                    level="info",
+                    status="running",
+                    msg=f"[POST-TRAINING EVAL] Judge loop complete. Selected best model: {decision.selected_model or 'None'}. Generating final plots...",
+                    pct=80,
+                )
+            )
             # Generate on-demand visualizations for the UI plot popups; never
             # let a plotting failure affect the (already green) training run.
             self._generate_plots(session_dir, request.session_id)
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=request.session_id,
+                    stage="evaluation",
+                    level="info",
+                    status="all_completed",
+                    msg="[POST-TRAINING EVAL] Post-training evaluation chain fully complete. Leaderboard updated!",
+                    pct=100,
+                )
+            )
         except Exception as eval_exc:  # noqa: BLE001 - eval must never fail training
             logger.warning(
                 "=> post-training evaluation skipped for session=%s: %s: %s",
@@ -853,6 +1047,18 @@ class TrainingService:
                 type(eval_exc).__name__,
                 eval_exc,
             )
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=request.session_id,
+                    stage="evaluation",
+                    level="warn",
+                    status="failed",
+                    msg=f"[POST-TRAINING EVAL] Evaluation skipped or failed: {eval_exc}",
+                    pct=100,
+                )
+            )
+        finally:
+            self.event_bus.close_session(request.session_id)
 
     def _resolve_max_judge_turns(self, session_id: str) -> int:
         """Return the judge-turn count, preferring a per-session override."""
@@ -1254,3 +1460,159 @@ class TrainingService:
             model_library_root,
             target_column=target_column,
         )
+
+    def run_hpt(self, session_id: str) -> None:
+        """Run HPT asynchronously in the background and publish SSE events."""
+        with self.lock:
+            if not hasattr(self, "_active_hpt_runs"):
+                self._active_hpt_runs = set()
+            if session_id in self._active_hpt_runs:
+                return
+            self._active_hpt_runs.add(session_id)
+            
+        self.worker_pool.submit(self._execute_hpt, session_id)
+
+    def _execute_hpt(self, session_id: str) -> None:
+        try:
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=session_id,
+                    stage="hpt",
+                    level="info",
+                    status="running",
+                    msg="[HPT TUNING] Starting hyperparameter optimization for top 5 models selected by Judge Agent...",
+                    pct=10,
+                )
+            )
+            session_path = self.session_manager.get_session_path(session_id=session_id)
+            
+            # 1. Read top 5 model names from judge_decision.json
+            judge_decision_path = session_path / "reports" / "judge_decision.json"
+            top_model_names = []
+            if judge_decision_path.is_file():
+                try:
+                    decision_data = json.loads(judge_decision_path.read_text(encoding="utf-8"))
+                    ranked = decision_data.get("ranked_models") or []
+                    top_model_names = [m.get("model_name") for m in ranked if m.get("model_name")][:5]
+                except Exception as exc:
+                    logger.warning("=> failed to load judge_decision for HPT filtering: %s", exc)
+            
+            # If no judge decision, read from model_config.json
+            if not top_model_names:
+                try:
+                    model_config_path = session_path / "model_config.json"
+                    if model_config_path.is_file():
+                        model_config = json.loads(model_config_path.read_text(encoding="utf-8"))
+                        top_model_names = [m.get("name") for m in model_config if m.get("name")][:5]
+                except Exception:
+                    pass
+            
+            if not top_model_names:
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=session_id,
+                        stage="hpt",
+                        level="warn",
+                        status="failed",
+                        msg="[HPT TUNING] No candidate models found for hyperparameter optimization.",
+                        pct=100,
+                    )
+                )
+                return
+
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=session_id,
+                    stage="hpt",
+                    level="info",
+                    status="running",
+                    msg=f"[HPT TUNING] Tuning models: {', '.join(top_model_names)}",
+                    pct=20,
+                )
+            )
+
+            # 2. Run HyperparameterTuningAgent
+            from backend.agents.evaluation.hpt.agent import HyperparameterTuningAgent
+            hpt_agent = HyperparameterTuningAgent(
+                session_id=session_id,
+                verbose=True,
+            )
+            
+            # Force exactly 5 trials and top 5 models
+            hpt_agent.model_config = [m for m in hpt_agent.model_config if m.get("name") in top_model_names]
+            hpt_agent.model_config_sorted = sorted(hpt_agent.model_config, key=lambda x: x.get('priority', 999))
+            
+            # Set study trials to 5
+            hpt_agent.hpt_config['MAX_HPT_TRIALS'] = 5
+            
+            # Setup data splits
+            X, y, metadata = hpt_agent.data_loader.load_train_data()
+            val_ratio = float(hpt_agent.hpt_config.get('VAL_SPLIT_RATIO', 0.2))
+            X_train, X_val, y_train, y_val = hpt_agent.data_loader.create_validation_split(
+                X, y, hpt_agent.problem_type, val_ratio, 
+                random_state=hpt_agent.hpt_config.get('OPTUNA_SEED', 42)
+            )
+            data_bundle = hpt_agent.data_loader.create_databundle(X_train, y_train, X_val, y_val)
+            
+            hpt_agent.results = []
+            total_models = len(hpt_agent.model_config_sorted)
+            
+            for idx, model_entry in enumerate(hpt_agent.model_config_sorted, 1):
+                model_name = model_entry.get('name')
+                pct = 20 + int((idx - 1) / total_models * 60)
+                
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=session_id,
+                        stage="hpt",
+                        level="info",
+                        status="running",
+                        msg=f"[HPT TUNING] Tuning model {idx}/{total_models}: {model_name} (5 Optuna trials)...",
+                        pct=pct,
+                    )
+                )
+                
+                try:
+                    result = hpt_agent.tune_model(model_entry, data_bundle)
+                    if result:
+                        hpt_agent.results.append(result)
+                except Exception as e:
+                    hpt_agent.failed_models.append(model_name)
+                    logger.error("HPT failed for %s: %s", model_name, e)
+            
+            # Write final results
+            hpt_agent.result_writer.write_results(hpt_agent.results, hpt_agent.failed_models)
+            
+            # Also write hpt_results.json
+            hpt_output_path = session_path / "evaluation" / "hpt" / "hpt_results.json"
+            hpt_output_path.parent.mkdir(parents=True, exist_ok=True)
+            hpt_output_path.write_text(
+                json.dumps({"hpt_results": hpt_agent.results}, indent=2), encoding="utf-8"
+            )
+            
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=session_id,
+                    stage="hpt",
+                    level="info",
+                    status="all_completed",
+                    msg=f"[HPT TUNING] Hyperparameter tuning completed successfully for {len(hpt_agent.results)} models.",
+                    pct=100,
+                )
+            )
+        except Exception as exc:
+            logger.exception("=> HPT execution failed: %s", exc)
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=session_id,
+                    stage="hpt",
+                    level="error",
+                    status="failed",
+                    msg=f"[HPT TUNING] Hyperparameter tuning failed: {exc}",
+                    pct=100,
+                )
+            )
+        finally:
+            with self.lock:
+                if hasattr(self, "_active_hpt_runs"):
+                    self._active_hpt_runs.discard(session_id)
