@@ -176,6 +176,16 @@ export async function fetchValidationReport(sessionId) {
   return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/validation`);
 }
 
+export async function fetchHpt(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/hpt`);
+}
+
+export async function runHpt(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/hpt/run`, {
+    method: 'POST',
+  });
+}
+
 export function modelDownloadUrl(sessionId, modelName) {
   return `/api/runs/${encodeURIComponent(sessionId)}/models/${encodeURIComponent(modelName)}/download`;
 }

@@ -27,3 +27,10 @@ export async function cancelTraining(sessionId) {
     method: 'POST',
   });
 }
+
+export async function resetTraining(sessionId) {
+  return requestJson(`/api/training/reset/${encodeURIComponent(sessionId)}`, {
+    method: 'POST',
+  });
+}
+

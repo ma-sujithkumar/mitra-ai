@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { cancelTraining, fetchTrainingStatus, startTraining } from './training.js';
+import { cancelTraining, fetchTrainingStatus, startTraining, resetTraining } from './training.js';
 
 function jsonResponse(payload, ok = true, status = 200) {
   return {
@@ -46,20 +46,26 @@ test('startTraining sends the backend training contract', async () => {
   assert.equal(payload.status, 'created');
 });
 
-test('status and cancellation encode the session id', async () => {
+test('status, cancellation, and reset encode the session id', async () => {
   const paths = [];
-  globalThis.fetch = async (path) => {
+  const options = [];
+  globalThis.fetch = async (path, opts) => {
     paths.push(path);
+    options.push(opts);
     return jsonResponse({ session_id: 'session with space', status: 'running' });
   };
 
   await fetchTrainingStatus('session with space');
   await cancelTraining('session with space');
+  await resetTraining('session with space');
 
   assert.deepEqual(paths, [
     '/api/training/status/session%20with%20space',
     '/api/training/cancel/session%20with%20space',
+    '/api/training/reset/session%20with%20space',
   ]);
+  assert.equal(options[1].method, 'POST');
+  assert.equal(options[2].method, 'POST');
 });
 
 test('training API surfaces structured backend errors', async () => {
