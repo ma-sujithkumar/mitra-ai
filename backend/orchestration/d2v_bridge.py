@@ -79,24 +79,48 @@ class D2VBridge:
             )
         return self._store
 
-    def _load_encoder(self, n_classes_sample: int = 5) -> Dataset2VecEncoder:
+    def _load_encoder(self, n_classes_sample: int = 26) -> Dataset2VecEncoder:
         """Load the trained encoder from db_dir/encoder/encoder.pt."""
         import torch
+        import yaml
 
         encoder_path = self.db_dir / "encoder" / "encoder.pt"
         if not encoder_path.exists():
             raise FileNotFoundError(
                 f"=> encoder.pt not found at {encoder_path}. Run train_encoder.py first."
             )
-        # Minimal encoder config matching the default architecture used at training time.
-        # The exact config is baked into the state_dict shapes, so architecture
-        # must match. These defaults correspond to the D2V training in Epic 3.
-        encoder_config: Dict[str, Any] = {
-            "embedding_dim": 128,
-            "n_attention_heads": 4,
-            "n_encoder_layers": 4,
-            "dropout": 0.1,
-        }
+        
+        # Load active config from yaml if available, otherwise fall back to matches architecture
+        config_path = Path(__file__).resolve().parents[2] / "backend" / "agents" / "dataset2vec" / "config" / "config.yaml"
+        encoder_config: Dict[str, Any] = {}
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as yaml_file:
+                    full_config = yaml.safe_load(yaml_file)
+                    encoder_config = full_config.get("encoder", {})
+            except Exception as exc:
+                logger.warning("=> failed to load yaml config: %s", exc)
+
+        if not encoder_config:
+            encoder_config = {
+                "embedding_dim": 64,
+                "f_block": {
+                    "hidden": 32,
+                    "layers": 3,
+                    "residual_blocks": 2,
+                },
+                "g_block": {
+                    "hidden": 32,
+                    "layers": 3,
+                    "residual_blocks": 2,
+                },
+                "h_block": {
+                    "hidden": 32,
+                    "layers": 3,
+                },
+                "standardize_inputs": True,
+            }
+
         encoder = Dataset2VecEncoder(encoder_config, n_classes_sample=n_classes_sample)
         encoder.load_state_dict(torch.load(str(encoder_path), map_location="cpu"))
         encoder.eval()
@@ -109,8 +133,21 @@ class D2VBridge:
         Returns path to the written .npz file.
         """
         dataframe = pd.read_csv(csv_path)
-        feature_matrix = dataframe.drop(columns=[target_column]).to_numpy(dtype=np.float64)
-        target_vector = dataframe[target_column].to_numpy(dtype=np.float64)
+        
+        # Factorize non-numeric columns in features and target
+        features_df = dataframe.drop(columns=[target_column])
+        for col in features_df.columns:
+            if not pd.api.types.is_numeric_dtype(features_df[col]):
+                features_df[col], _ = pd.factorize(features_df[col])
+        
+        feature_matrix = features_df.fillna(0.0).to_numpy(dtype=np.float64)
+        
+        if not pd.api.types.is_numeric_dtype(dataframe[target_column]):
+            codes, _ = pd.factorize(dataframe[target_column])
+            target_vector = codes.astype(np.float64)
+        else:
+            target_vector = dataframe[target_column].fillna(0.0).to_numpy(dtype=np.float64)
+            
         dataset_id = csv_path.stem
         npz_path = npz_dir / f"{dataset_id}.npz"
         np.savez(str(npz_path), X_train=feature_matrix, y_train=target_vector)
@@ -122,9 +159,9 @@ class D2VBridge:
         csv_path: Path,
         target_column: str,
         task_type: str,
-        n_instances_sample: int = 100,
-        n_features_sample: int = 50,
-        n_classes_sample: int = 5,
+        n_instances_sample: int = 256,
+        n_features_sample: int = 16,
+        n_classes_sample: int = 26,
         random_state: int = 42,
     ) -> Optional[DatasetPrior]:
         """Embed a new dataset and retrieve warm-start priors from the meta-KB.
@@ -259,9 +296,9 @@ class D2VBridge:
         target_column: str,
         task_type: str,
         judge_decision: Any,
-        n_instances_sample: int = 100,
-        n_features_sample: int = 50,
-        n_classes_sample: int = 5,
+        n_instances_sample: int = 256,
+        n_features_sample: int = 16,
+        n_classes_sample: int = 26,
         random_state: int = 42,
     ) -> None:
         """Append the new dataset's embedding + leaderboard to the meta-KB.
