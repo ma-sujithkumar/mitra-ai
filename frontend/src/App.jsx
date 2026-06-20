@@ -38,6 +38,7 @@ const ROUTE_META = {
 
 function App() {
   const [route, setRoute] = useState('dashboard');
+  const [previousRoute, setPreviousRoute] = useState('dashboard');
   const [runState, setRunState] = useState('idle');
   const [activeSessionId, setActiveSessionId] = useState(
     () => window.localStorage.getItem('mitra.activeTrainingSession') || '',
@@ -59,6 +60,9 @@ function App() {
   const meta = ROUTE_META[route] || ROUTE_META.dashboard;
 
   function go(nextRoute) {
+    if (nextRoute !== route) {
+      setPreviousRoute(route);
+    }
     setRoute(nextRoute);
   }
 
@@ -87,6 +91,8 @@ function App() {
     settings: (
       <Settings
         activeSessionId={activeSessionId}
+        backRoute={previousRoute}
+        go={go}
         llmSettings={llmSettings}
         llmSmokeStatus={llmSmokeStatus}
         setLlmSettings={setLlmSettings}
@@ -110,6 +116,8 @@ function App() {
               go={go}
               llmSettings={llmSettings}
               llmSmokeStatus={llmSmokeStatus}
+              setLlmSettings={setLlmSettings}
+              setLlmSmokeStatus={setLlmSmokeStatus}
               startRun={startRun}
             />
           </div>

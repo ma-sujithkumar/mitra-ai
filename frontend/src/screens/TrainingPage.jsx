@@ -167,14 +167,38 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     <div className="screen-stack">
       <section className="card training-session-bar">
         <div>
-          <p className="section-kicker">Training session</p>
-          <h2>{connectedSessionId || 'Connect to a session'}</h2>
-          <p className="muted">{connectionMessage || 'Use the session created on New Run, or paste a session ID.'}</p>
+          <p className="section-kicker">Training run</p>
+          <h2>
+            {connectedSessionId ? 'Connected automatically' : 'Waiting to connect'}
+          </h2>
+          <p className="muted">
+            {connectionMessage || 'This connects on its own using the run you just started.'}
+          </p>
           {backendStatus?.status ? (
             <span className="mono muted">Backend status: {backendStatus.status}</span>
           ) : null}
         </div>
         <div className="training-session-controls">
+          {['created', 'running'].includes(backendStatus?.status) ? (
+            <button
+              className="btn btn-secondary"
+              disabled={isCancelling}
+              onClick={handleCancel}
+              type="button"
+            >
+              <Icons.pause size={16} />
+              {isCancelling ? 'Cancelling...' : 'Cancel training'}
+            </button>
+          ) : null}
+        </div>
+      </section>
+
+      {/* "Session ID" is an internal identifier, not something users should
+          need to know or type. It is only exposed here, collapsed, as a
+          fallback for re-attaching to a run when nothing auto-connected. */}
+      <details className="advanced-disclosure" open={!activeSessionId && !connectedSessionId}>
+        <summary>Advanced: connect to a specific run manually</summary>
+        <div className="training-session-controls advanced-disclosure-body">
           <input
             aria-label="Training session ID"
             className="input mono"
@@ -192,19 +216,8 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
               Disconnect
             </button>
           ) : null}
-          {['created', 'running'].includes(backendStatus?.status) ? (
-            <button
-              className="btn btn-secondary"
-              disabled={isCancelling}
-              onClick={handleCancel}
-              type="button"
-            >
-              <Icons.pause size={16} />
-              {isCancelling ? 'Cancelling...' : 'Cancel training'}
-            </button>
-          ) : null}
         </div>
-      </section>
+      </details>
 
       <TrainingProgress
         connectionStatus={connectionStatus}

@@ -1,6 +1,7 @@
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   BarChart3,
   Bell,
@@ -17,6 +18,7 @@ import {
   Gauge,
   GitBranch,
   Grid2X2,
+  Info,
   Layers3,
   Pause,
   Play,
@@ -34,6 +36,7 @@ import {
 export const Icons = {
   activity: Activity,
   alert: AlertTriangle,
+  arrowLeft: ArrowLeft,
   arrowRight: ArrowRight,
   bell: Bell,
   brain: Brain,
@@ -51,6 +54,7 @@ export const Icons = {
   gauge: Gauge,
   gear: Settings,
   grid: Grid2X2,
+  info: Info,
   layers: Layers3,
   pause: Pause,
   play: Play,

@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import FormField from '../components/FormField.jsx';
 import MetadataProgress from '../components/MetadataProgress.jsx';
+import RunConfigurationPanel from '../components/RunConfigurationPanel.jsx';
 import Segmented from '../components/Segmented.jsx';
 import StatusPill from '../components/StatusPill.jsx';
+import Toast from '../components/Toast.jsx';
 import {
   fetchPublicConfig,
   fetchRecentUploads,
@@ -26,6 +28,19 @@ const VALIDATION_KEYS = [
   'metadata_match',
 ];
 
+// What the user should actually do when a given check fails or warns, shown
+// next to the check so "I don't know how to make the checks pass" has a
+// concrete answer instead of just a status pill.
+const CHECK_REMEDIATION = {
+  format: 'Re-export the file as a clean CSV/XLS with a single header row.',
+  rows: 'Upload a dataset with more rows, or relax the minimum row requirement.',
+  nulls: 'Fill or drop columns with excessive missing values before re-uploading.',
+  variance: 'Remove or merge constant/near-constant columns and re-upload.',
+  pii: 'Strip personally identifiable columns (names, emails, IDs) and re-upload.',
+  target: 'Set Target column above to a column that exists in the dataset.',
+  metadata_match: 'Make sure the optional metadata file lists the same columns as the dataset.',
+};
+
 const PROBLEM_OPTIONS = [
   { value: 'auto', label: 'Auto' },
   { value: 'classification', label: 'Classify' },
@@ -33,8 +48,9 @@ const PROBLEM_OPTIONS = [
   { value: 'unsupervised', label: 'Cluster' },
 ];
 
-function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
+function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus, setLlmSettings, setLlmSmokeStatus }) {
   const [publicConfig, setPublicConfig] = useState(null);
+  const reviewSectionRef = useRef(null);
   const [recentUploads, setRecentUploads] = useState([]);
   const [datasetFile, setDatasetFile] = useState(null);
   const [metadataFile, setMetadataFile] = useState(null);
@@ -110,6 +126,14 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
   const busy = validationPhase === 'running' || metadataPhase === 'running' || trainingPhase === 'running';
   const canReview = hasDataset && llmVerified && !busy;
 
+  // Auto-scroll to the checks/metadata section as soon as a review starts, so
+  // the user is never left wondering whether they need to scroll down.
+  useEffect(() => {
+    if (reviewStarted && reviewSectionRef.current) {
+      reviewSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [reviewStarted]);
+
   function updateForm(key, value) {
     setForm((currentForm) => ({
       ...currentForm,
@@ -150,6 +174,21 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
   }
 
   async function handleValidateAndReview() {
+    // Surface a concrete, visible error instead of silently no-op'ing when a
+    // mandatory precondition (dataset selected, LLM connection verified) is
+    // missing - a disabled button alone left users clueless about why.
+    const missingReasons = [];
+    if (!hasDataset) {
+      missingReasons.push('Select a dataset file or a recent upload above.');
+    }
+    if (!llmVerified) {
+      missingReasons.push('Click "Test connection" in Run Configuration above and wait for it to pass.');
+    }
+    if (missingReasons.length) {
+      setError(`Cannot validate yet: ${missingReasons.join(' ')}`);
+      return;
+    }
+
     setError(null);
     setValidationEvents([]);
     setMetadataEvents([]);
@@ -271,18 +310,21 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
 
   return (
     <div className="screen-stack">
-      {error ? (
-        <div className="card callout error">
-          <strong>Run setup failed</strong>
-          <span>{error}</span>
-        </div>
-      ) : null}
+      <Toast message={error} onDismiss={() => setError(null)} tone="error" />
+
+      <RunConfigurationPanel
+        llmSettings={llmSettings}
+        llmSmokeStatus={llmSmokeStatus}
+        publicConfig={publicConfig}
+        setLlmSettings={setLlmSettings}
+        setLlmSmokeStatus={setLlmSmokeStatus}
+      />
 
       <div className="upload-grid">
         <section className="card panel-section">
           <div className="section-head">
             <div>
-              <p className="section-kicker">Dataset</p>
+              <p className="section-kicker">Step 2 · Dataset</p>
               <h2>Upload</h2>
             </div>
             <StatusPill status={datasetFile || selectedRecent ? 'passed' : 'queued'} label={datasetFile || selectedRecent ? 'Selected' : 'Required'} />
@@ -343,7 +385,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
         <section className="card panel-section">
           <div className="section-head">
             <div>
-              <p className="section-kicker">Run Metadata</p>
+              <p className="section-kicker">Step 3 · Run Metadata</p>
               <h2>Review Inputs</h2>
             </div>
           </div>
@@ -402,14 +444,10 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
           <div className="llm-ref">
             <div className="llm-ref-head">
               <span className="section-kicker">LLM for this run</span>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={() => go('settings')}
-                type="button"
-              >
-                <Icons.gear size={14} />
-                Configure in Settings
-              </button>
+              <StatusPill
+                status={llmVerified ? 'passed' : 'queued'}
+                label={llmVerified ? 'Verified' : 'Test connection above'}
+              />
             </div>
             <dl className="detail-list">
               <div>
@@ -424,28 +462,12 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
                 <dt>API Key</dt>
                 <dd>{llmSettings.apiKey ? 'Set' : 'Using server credentials'}</dd>
               </div>
-              <div>
-                <dt>Connection</dt>
-                <dd>
-                  <StatusPill
-                    status={llmVerified ? 'passed' : 'queued'}
-                    label={llmVerified ? 'Verified' : 'Test in Settings'}
-                  />
-                </dd>
-              </div>
             </dl>
           </div>
 
-          {!canReview && !busy ? (
-            <p className="muted gate-hint">
-              {!hasDataset ? 'Select a dataset to continue. ' : ''}
-              {!llmVerified ? 'Run a successful LLM connection test in Settings to continue.' : ''}
-            </p>
-          ) : null}
-
           <button
             className="btn btn-primary full-width"
-            disabled={!canReview}
+            disabled={busy}
             onClick={handleValidateAndReview}
             type="button"
           >
@@ -457,7 +479,7 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
 
       {reviewStarted ? (
       <>
-      <section className="card panel-section">
+      <section className="card panel-section" ref={reviewSectionRef}>
         <div className="section-head">
           <div>
             <p className="section-kicker">Validation</p>
@@ -465,6 +487,11 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
           </div>
           <StatusPill status={validationPhase === 'running' ? 'running' : validationPhase === 'done' ? 'passed' : validationPhase === 'error' ? 'failed' : 'queued'} spin={validationPhase === 'running'} />
         </div>
+        {validationPhase === 'running' ? (
+          <div className="progress-bar indeterminate">
+            <span />
+          </div>
+        ) : null}
         {sessionSummary ? (
           <div className="summary-strip">
             <span>{sessionSummary.row_count ?? '-'} rows</span>
@@ -479,11 +506,15 @@ function UploadScreen({ go, startRun, llmSettings, llmSmokeStatus }) {
           )).map((checkKey) => {
             const event = validationByKey[checkKey];
             const status = event?.status || 'queued';
+            const needsFix = status === 'fail' || status === 'warn';
             return (
               <div className={`check-card ${status}`} key={checkKey}>
                 <StatusPill status={status === 'pass' ? 'passed' : status === 'fail' ? 'failed' : status === 'warn' ? 'warn' : 'queued'} />
                 <strong>{event?.label || checkKey}</strong>
                 <span>{event?.warn_message || event?.detail || 'Waiting for validation.'}</span>
+                {needsFix ? (
+                  <span className="check-hint">Fix: {CHECK_REMEDIATION[checkKey] || 'Adjust the dataset and re-upload.'}</span>
+                ) : null}
               </div>
             );
           })}
