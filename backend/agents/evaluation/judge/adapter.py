@@ -42,7 +42,7 @@ class UpstreamAdapter:
         gaps = overfitting_json.get("gaps", {})
         primary_gap = gaps.get(primary_metric, 0.0)
 
-        cv_results = overfitting_json.get("k_fold_cross_validation_results") or {}
+        cv_results = overfitting_json.get("k_fold_cross_validation_results") or overfitting_json.get("cv_results") or {}
         train_vs_cv_gap = cv_results.get("train_vs_cv_gap", None)
 
         logger.debug(
@@ -53,8 +53,11 @@ class UpstreamAdapter:
         )
         return OverfittingInfo(
             is_overfitted=bool(overfitting_json.get("is_overfitted", False)),
-            gap=float(primary_gap),
+            gap=float(primary_gap) if primary_gap is not None else 0.0,
             train_vs_cv_gap=float(train_vs_cv_gap) if train_vs_cv_gap is not None else None,
+            train_metrics=overfitting_json.get("train_metrics"),
+            test_metrics=overfitting_json.get("test_metrics"),
+            cv_results=cv_results if cv_results else None,
         )
 
     def adapt_complexity(self, complexity_dict: Dict[str, Any]) -> ComplexityDescriptor:
@@ -232,6 +235,8 @@ class UpstreamAdapter:
                 "gaps": {
                     primary_metric_key: raw_overfitting.get("gap", 0.0)
                 },
+                "train_metrics": hpt_entry.get("train_metrics"),
+                "test_metrics": hpt_entry.get("val_metrics"),
             }
             train_vs_cv_gap = raw_overfitting.get("train_vs_cv_gap")
             if train_vs_cv_gap is not None:
