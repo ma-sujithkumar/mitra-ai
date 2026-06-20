@@ -5,6 +5,54 @@ export const TERMINAL_MODEL_STATUSES = new Set([
   'cancelled',
 ]);
 
+const TERMINAL_SESSION_STATUSES = new Set([
+  'completed',
+  'partial_failure',
+  'failed',
+  'cancelled',
+]);
+
+function statusDetails(modelState) {
+  return {
+    validation_score: modelState.validation_score ?? null,
+    model_path: modelState.model_path ?? null,
+    training_time_sec: modelState.training_time_sec ?? null,
+    error: modelState.error ?? null,
+  };
+}
+
+function statusSummary(payload, modelStates) {
+  const total = Number(payload.total_models ?? modelStates.length);
+  const completed = Number(payload.completed_models ?? modelStates.filter((item) => item.status === 'completed').length);
+  const failed = Number(
+    payload.failed_models
+    ?? modelStates.filter((item) => ['failed', 'timed_out', 'cancelled'].includes(item.status)).length,
+  );
+  const status = payload.status || (failed > 0 ? 'partial_failure' : 'completed');
+  const messages = {
+    completed: `Training completed: ${completed}/${total} models succeeded`,
+    partial_failure: `Training completed with failures: ${completed}/${total} models succeeded`,
+    failed: 'Training session failed before completion',
+    cancelled: 'Training session was cancelled',
+  };
+
+  return {
+    status,
+    total,
+    completed,
+    failed,
+    message: messages[status] || 'Training session reached a terminal state',
+  };
+}
+
+function orderedModelIds(existingOrder, nextModels) {
+  const nextIds = Object.keys(nextModels).sort();
+  return [
+    ...existingOrder.filter((modelId) => nextModels[modelId]),
+    ...nextIds.filter((modelId) => !existingOrder.includes(modelId)),
+  ];
+}
+
 export function createTrainingState() {
   return {
     models: {},
@@ -139,4 +187,55 @@ export function overallTrainingProgress(state) {
   return Math.round(
     models.reduce((total, model) => total + Number(model.pct || 0), 0) / models.length,
   );
+}
+
+
+export function applyTrainingStatus(state, payload) {
+  if (!payload || typeof payload !== 'object') {
+    return state;
+  }
+
+  const modelStates = Array.isArray(payload.model_states) ? payload.model_states : [];
+  const nextModels = { ...state.models };
+
+  modelStates.forEach((modelState, index) => {
+    if (!modelState?.model_id) {
+      return;
+    }
+
+    const previous = nextModels[modelState.model_id] || {
+      modelId: modelState.model_id,
+      modelName: modelState.model_name || modelState.model_id,
+      priority: index + 1,
+      rationale: 'Restored from backend training status.',
+      status: 'queued',
+      pct: 0,
+      message: '',
+      level: 'info',
+      details: {},
+    };
+
+    nextModels[modelState.model_id] = {
+      ...previous,
+      modelName: modelState.model_name || previous.modelName,
+      status: modelState.status || previous.status,
+      pct: normalizeProgress(modelState.status || previous.status, modelState.pct),
+      message: modelState.error || previous.message || `Backend status: ${modelState.status || previous.status}`,
+      level: ['failed', 'timed_out'].includes(modelState.status) ? 'error' : previous.level,
+      timestamp: modelState.updated_at || previous.timestamp,
+      details: {
+        ...previous.details,
+        ...statusDetails(modelState),
+      },
+    };
+  });
+
+  const terminal = TERMINAL_SESSION_STATUSES.has(payload.status);
+  return {
+    ...state,
+    complete: terminal ? true : state.complete,
+    summary: terminal ? statusSummary(payload, modelStates) : state.summary,
+    models: nextModels,
+    modelOrder: orderedModelIds(state.modelOrder, nextModels),
+  };
 }

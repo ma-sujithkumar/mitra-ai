@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   applyTrainingEvent,
+  applyTrainingStatus,
   createTrainingState,
   overallTrainingProgress,
   selectTrainingModels,
@@ -104,4 +105,111 @@ test('all_completed event stores summary and finishes the session', () => {
     failed: 0,
     message: 'All model training jobs finished: 1 completed, 0 failed',
   });
+});
+
+
+test('backend status hydrates Page 2 after refresh without replayed events', () => {
+  const state = applyTrainingStatus(createTrainingState(), {
+    session_id: 'session-1',
+    status: 'completed',
+    total_models: 2,
+    completed_models: 2,
+    failed_models: 0,
+    model_states: [
+      {
+        model_id: 'model_001',
+        model_name: 'RandomForestClassifier',
+        status: 'completed',
+        pct: 100,
+        updated_at: '2026-06-17T10:02:00Z',
+        validation_score: 0.97,
+        model_path: '.mitra/session-1/training/model_001/model.pkl',
+        training_time_sec: 1.42,
+        error: null,
+      },
+      {
+        model_id: 'model_002',
+        model_name: 'LogisticRegression',
+        status: 'completed',
+        pct: 100,
+        updated_at: '2026-06-17T10:02:02Z',
+        validation_score: 0.94,
+        model_path: '.mitra/session-1/training/model_002/model.pkl',
+        training_time_sec: 0.88,
+        error: null,
+      },
+    ],
+  });
+
+  assert.equal(state.complete, true);
+  assert.equal(state.summary.status, 'completed');
+  assert.equal(state.summary.completed, 2);
+  assert.equal(trainingCounts(state).completed, 2);
+  assert.equal(state.models.model_001.details.validation_score, 0.97);
+  assert.equal(state.models.model_002.details.model_path, '.mitra/session-1/training/model_002/model.pkl');
+});
+
+test('backend status preserves SSE priority and marks partial failures', () => {
+  let state = createTrainingState();
+  state = applyTrainingEvent(state, event({
+    model_id: 'model_010',
+    model_name: 'XGBoostClassifier',
+    details: { priority: 7, rationale: 'High expected tabular score' },
+  }));
+  state = applyTrainingStatus(state, {
+    session_id: 'session-1',
+    status: 'partial_failure',
+    total_models: 1,
+    completed_models: 0,
+    failed_models: 1,
+    model_states: [
+      {
+        model_id: 'model_010',
+        model_name: 'XGBoostClassifier',
+        status: 'timed_out',
+        pct: 35,
+        updated_at: '2026-06-17T10:05:00Z',
+        validation_score: null,
+        model_path: null,
+        training_time_sec: null,
+        error: 'Ray task timed out',
+      },
+    ],
+  });
+
+  assert.equal(state.models.model_010.priority, 7);
+  assert.equal(state.models.model_010.rationale, 'High expected tabular score');
+  assert.equal(state.models.model_010.status, 'timed_out');
+  assert.equal(state.models.model_010.pct, 100);
+  assert.equal(state.summary.status, 'partial_failure');
+  assert.equal(trainingCounts(state).failed, 1);
+});
+
+test('cancelled backend status restores cancelled cards and summary', () => {
+  const state = applyTrainingStatus(createTrainingState(), {
+    session_id: 'session-1',
+    status: 'cancelled',
+    total_models: 1,
+    completed_models: 0,
+    failed_models: 1,
+    model_states: [
+      {
+        model_id: 'model_001',
+        model_name: 'RandomForestClassifier',
+        status: 'cancelled',
+        pct: 10,
+        updated_at: '2026-06-17T10:06:00Z',
+        validation_score: null,
+        model_path: null,
+        training_time_sec: null,
+        error: 'Training cancellation was requested',
+      },
+    ],
+  });
+
+  assert.equal(state.complete, true);
+  assert.equal(state.summary.status, 'cancelled');
+  assert.equal(state.models.model_001.status, 'cancelled');
+  assert.equal(state.models.model_001.pct, 100);
+  assert.equal(state.models.model_001.details.error, 'Training cancellation was requested');
 });

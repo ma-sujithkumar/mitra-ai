@@ -9,6 +9,7 @@ import { cancelTraining, fetchTrainingStatus } from '../api/training.js';
 import { Icons } from '../icons.jsx';
 import {
   applyTrainingEvent,
+  applyTrainingStatus,
   createTrainingState,
   overallTrainingProgress,
   selectTrainingModels,
@@ -23,6 +24,9 @@ function reducer(state, action) {
   }
   if (action.type === 'event') {
     return applyTrainingEvent(state, action.payload);
+  }
+  if (action.type === 'status') {
+    return applyTrainingStatus(state, action.payload);
   }
   return state;
 }
@@ -120,6 +124,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
         const statusPayload = await fetchTrainingStatus(connectedSessionId);
         if (!stopped) {
           setBackendStatus(statusPayload);
+          dispatch({ type: 'status', payload: statusPayload });
           if (['completed', 'partial_failure', 'failed', 'cancelled'].includes(statusPayload.status)) {
             setRunState('done');
           }
