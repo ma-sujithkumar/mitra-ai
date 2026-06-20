@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 from datetime import datetime
@@ -27,24 +26,29 @@ from backend.agents.feature_engineering.tools.scaler import Scaler
 from backend.agents.feature_engineering.tools.selector import FeatureSelector
 from backend.agents.feature_engineering.tools.validator import FeatureValidator
 from backend.agents.feature_engineering.base import PostconditionError, PreconditionError
+from backend.agents.metadata_gen_agent import LlmSettings
+from llm.adk_client import build_llm_model
+
+# Bundled default config lives next to this package. Resolve it relative to this
+# file (not the process cwd) so callers like PipelinePrep work from any working
+# directory. The previous cwd-relative "config/config.yaml" default failed when
+# the orchestrator was driven from the FastAPI server.
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "config.yaml"
 
 
 def _make_model_call(
-    model_string: str,
+    llm_settings: LlmSettings,
     max_tokens: int,
-    api_key: str,
-    base_url: str | None,
 ) -> Callable[[str], str]:
-    """Returns a callable(prompt) -> response_text routed through our ADK-native
-    OpenAICompatibleLlm. No litellm in the path."""
-    from backend.agents.feature_engineering.openai_llm import OpenAICompatibleLlm
+    """Returns a callable(prompt) -> response_text via the canonical LLM factory.
 
-    llm = OpenAICompatibleLlm(
-        model=model_string,
-        api_key=api_key,
-        base_url=base_url,
-        max_tokens=max_tokens,
-    )
+    Uses the SAME path as every other agent: build_llm_model(LlmSettings) from
+    llm/adk_client. Credentials/provider/model come from the resolved LlmSettings
+    (which the caller obtains from LlmSettingsResolver / .env) -- never from
+    config.yaml. build_llm_model picks LiteLlm or the OpenAI-compatible client per
+    provider, so no per-provider base_url handling is needed here.
+    """
+    llm = build_llm_model(llm_settings)
 
     import asyncio
     from google.genai import types as genai_types
@@ -54,7 +58,7 @@ def _make_model_call(
         async def _go():
             contents = [genai_types.Content(role="user", parts=[genai_types.Part(text=prompt)])]
             req = LlmRequest(
-                model=model_string,
+                model=llm_settings.model,
                 contents=contents,
                 config=genai_types.GenerateContentConfig(max_output_tokens=max_tokens),
             )
@@ -86,7 +90,9 @@ class FeatureEngineerOrchestrator:
         target_column: str,
         model_string: str,
         task: str | None = None,
-        config_path: str | Path = "config/config.yaml",
+        config_path: str | Path | None = None,
+        output_dir: str | Path | None = None,
+        llm_settings: LlmSettings | None = None,
     ):
         if task is not None and task not in {"classification", "regression"}:
             raise ValueError(f"task must be 'classification' or 'regression', got {task!r}")
@@ -96,7 +102,16 @@ class FeatureEngineerOrchestrator:
         self.task = task  # may be None; resolved at run() once dataset is loaded
         self.target_column = target_column
         self.model_string = model_string
-        self.config: ConfigSchema = load_config(config_path)
+        # Resolved LLM credentials/provider/model. Sourced from LlmSettingsResolver
+        # (.env) by the caller -- the SAME path metadata_gen uses. Feature
+        # engineering reads NO api key / endpoint from config.yaml.
+        self.llm_settings = llm_settings
+        # Fall back to the package-bundled config when no path is supplied. The
+        # config.yaml supplies non-credential settings only (thresholds, etc.).
+        self.config: ConfigSchema = load_config(config_path or DEFAULT_CONFIG_PATH)
+        # When output_dir is supplied (e.g. by PipelinePrep), artifacts land
+        # directly there. Omit to use the default pipeline_output/<run_id>/ path.
+        self.forced_output_dir: Path | None = Path(output_dir) if output_dir is not None else None
 
     def _infer_task(self, target: pd.Series) -> str:
         """Infer task from target column. Non-numeric -> classification.
@@ -110,40 +125,17 @@ class FeatureEngineerOrchestrator:
     def run(self) -> tuple[Path, str]:
         # Startup sequence (config already validated in __init__)
 
-        # Read API key & endpoint from config. Inject into env BEFORE any ADK / LiteLlm import.
-        # ADK / LiteLlm imports are deliberately kept inside method bodies (_make_model_call)
-        # so env vars are set before the provider client reads them.
-        api_key = (self.config.llm.api_key or "").strip()
-        if not api_key or api_key == "your_actual_key_here":
+        # Credentials come exclusively from the resolved LlmSettings (.env via
+        # LlmSettingsResolver) -- the same source metadata_gen uses. No api key
+        # or endpoint is read from config.yaml. build_llm_model handles the
+        # provider/key wiring, so no manual env injection is needed here.
+        if self.llm_settings is None or not (self.llm_settings.api_key or self.llm_settings.gateway_url):
             raise RuntimeError(
-                "config.llm.api_key is empty or still set to the placeholder. "
-                "Set a real API key in config/config.yaml before running."
+                "Feature engineering requires resolved LLM credentials. Pass "
+                "llm_settings (from LlmSettingsResolver / .env); config.yaml is "
+                "not used for the API key."
             )
-        # Env var name comes from config.llm.api_key_env_var. If it is left as
-        # the default OPENAI_API_KEY but the model_string targets a different
-        # provider, derive from the model prefix as a safety net so the right
-        # provider client picks the key up. Plan ambiguity #22 mandates that
-        # the override is logged so the user can see what happened.
-        configured_env_var = (self.config.llm.api_key_env_var or "").strip() or "OPENAI_API_KEY"
-        env_var = configured_env_var
         env_var_override_msg: str | None = None
-        if env_var == "OPENAI_API_KEY":
-            prefix = self.model_string.split("/", 1)[0].lower()
-            derived = {
-                "openai": "OPENAI_API_KEY",
-                "gemini": "GOOGLE_API_KEY",
-                "google": "GOOGLE_API_KEY",
-                "anthropic": "ANTHROPIC_API_KEY",
-            }.get(prefix, "OPENAI_API_KEY")
-            if derived != configured_env_var:
-                env_var = derived
-                env_var_override_msg = (
-                    f"env_var_override: configured={configured_env_var} "
-                    f"effective={env_var} (from model prefix '{prefix}')"
-                )
-        os.environ[env_var] = api_key
-        if self.config.llm.base_url:
-            os.environ["OPENAI_API_BASE"] = self.config.llm.base_url
 
         # Spec §4 "Null detection in categoricals": only empty strings become
         # NaN. Tokens like "NA", "N/A", "None" reach SemanticTypeInfer as
@@ -167,7 +159,10 @@ class FeatureEngineerOrchestrator:
             ray.init(num_cpus=self.config.pipeline.max_workers, ignore_reinit_error=True, log_to_driver=False)
 
         run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
-        output_dir = Path("pipeline_output") / run_id
+        if self.forced_output_dir is not None:
+            output_dir = self.forced_output_dir
+        else:
+            output_dir = Path("pipeline_output") / run_id
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Route every LLM call's raw response + outcome to raw_responses.txt
@@ -201,10 +196,8 @@ class FeatureEngineerOrchestrator:
         )
 
         model_call = _make_model_call(
-            self.model_string,
+            self.llm_settings,
             self.config.llm.max_tokens,
-            api_key,
-            self.config.llm.base_url,
         )
         # Smoke test — structured-output dry run (spec §5 "Startup smoke test").
         # Sends a one-column SemanticTypeInfer-shaped prompt through the same
@@ -216,8 +209,8 @@ class FeatureEngineerOrchestrator:
         except Exception as e:
             raise RuntimeError(
                 f"Model smoke test failed.\n"
-                f"  model={self.model_string!r}\n"
-                f"  base_url={self.config.llm.base_url!r}\n"
+                f"  model={self.llm_settings.model!r}\n"
+                f"  provider={self.llm_settings.provider!r}\n"
                 f"  error_type={type(e).__name__}\n"
                 f"  error={e}\n"
                 f"--- traceback ---\n{_tb.format_exc()}"

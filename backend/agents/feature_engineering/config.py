@@ -66,9 +66,13 @@ class ValidationSettings(BaseModel):
 
 class LlmConfig(BaseModel):
     max_tokens: int = Field(gt=0)
-    api_key_env_var: str = Field(min_length=1, default="OPENAI_API_KEY")
-    api_key: str = Field(min_length=1)
-    base_url: str | None = None  # optional; if set, used as the OpenAI-compatible endpoint
+    # Credentials are NOT sourced from config.yaml anymore -- they come from the
+    # resolved LlmSettings (.env via LlmSettingsResolver), same as every other
+    # agent. These fields are kept optional only for backward compatibility and
+    # are ignored by the orchestrator.
+    api_key_env_var: str = Field(default="OPENAI_API_KEY")
+    api_key: str = ""
+    base_url: str | None = None
 
 
 class PathsConfig(BaseModel):
