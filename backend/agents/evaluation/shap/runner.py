@@ -95,7 +95,7 @@ class SHAPRunner:
                 max_shap_samples, len(schema_result.feature_dataframe), model_name,
             )
 
-        built_explainer = ExplainerFactory(execution_logger).build(
+        built_explainer = ExplainerFactory(execution_logger).create(
             model_family=loaded_model.model_family,
             model_object=loaded_model.model_object,
             feature_dataframe=feature_df,
