@@ -16,6 +16,7 @@ class PythonConfig:
 class PathConfig:
     workspace_root: Path
     session_log_dir: Path
+    d2v_db_dir: str | None
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,12 @@ class AuthDbConfig:
 
 
 @dataclass(frozen=True)
+class FeatureEngineeringApiConfig:
+    output_subdir: str
+    run_status_filename: str
+
+
+@dataclass(frozen=True)
 class TrainingApiConfig:
     model_library_root: Path
     default_execution_mode: str
@@ -151,6 +158,7 @@ class ConfigLoader:
             session_log_dir=self._resolve_repo_path(
                 self.parser.get("paths", "SESSION_LOG_DIR")
             ),
+            d2v_db_dir=self.parser.get("paths", "D2V_DB_DIR", fallback=None) or None,
         )
         # Optional section: fallbacks keep older config.ini files working.
         self.logging = LoggingConfig(
@@ -307,6 +315,19 @@ class ConfigLoader:
             raise ValueError(
                 "training_api.DEFAULT_EXECUTION_MODE must be 'ray' or 'local'"
             )
+        # [feature_engineering_api] section: optional; fallbacks keep older configs working.
+        self.feature_engineering_api = FeatureEngineeringApiConfig(
+            output_subdir=self.parser.get(
+                "feature_engineering_api",
+                "OUTPUT_SUBDIR",
+                fallback="reports/feature_engineering",
+            ).strip(),
+            run_status_filename=self.parser.get(
+                "feature_engineering_api",
+                "RUN_STATUS_FILENAME",
+                fallback="feature_run.json",
+            ).strip(),
+        )
         # [authdb] section: uses fallbacks so the app starts without a
         # PostgreSQL server; only auth endpoints fail in that case.
         self.authdb = AuthDbConfig(

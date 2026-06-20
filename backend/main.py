@@ -17,6 +17,7 @@ from backend.jobs import JobRegistry
 from backend.routers import auth
 from backend.routers import config
 from backend.routers import evaluation
+from backend.routers import feature_engineering
 from backend.routers import health
 from backend.routers import llm
 from backend.routers import logs
@@ -109,6 +110,7 @@ def create_app(config_loader: ConfigLoader | None = None) -> FastAPI:
     app.include_router(training_events.router)
     app.include_router(training.router)
     app.include_router(evaluation.router)
+    app.include_router(feature_engineering.router)
 
     return app
 
