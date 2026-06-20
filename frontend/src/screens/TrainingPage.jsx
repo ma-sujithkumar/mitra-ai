@@ -619,6 +619,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     { id: 'overfitting', label: 'Overfitting Analysis', status: overfittingStatus, progress: overfittingProgress, icon: <Icons.alert size={18} />, desc: 'Detect train/val score generalization gaps' },
     { id: 'evaluation', label: 'Eval Orchestration', status: stageStatuses.evaluation.status, progress: stageStatuses.evaluation.progress, icon: <Icons.cpu size={18} />, desc: 'Coordinate SHAP, overfitting, judge pipeline' },
     { id: 'judge', label: 'Judge Multi-turn Loop', status: judgeStatus, progress: judgeProgress, icon: <Icons.trophy size={18} />, desc: 'Evaluate constraints and converge on winner' },
+    { id: 'hpt', label: 'HPT Optimization', status: stageStatuses.hpt.status, progress: stageStatuses.hpt.progress, icon: <Icons.spark size={18} />, desc: 'Optuna hyperparameter optimization for top-1 model' },
   ];
 
   return (

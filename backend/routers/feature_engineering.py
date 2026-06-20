@@ -40,6 +40,8 @@ from backend.jobs import JobRegistry
 from backend.jobs import format_sse_event
 from backend.services.pipeline_prep import PipelinePrep
 from backend.session import SessionManager
+from backend.orchestration.events import TrainingEventBus
+from backend.routers.training_events import get_training_event_bus
 
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,7 @@ def start_feature_engineering(
     config_loader: ConfigLoader = Depends(get_config_loader),
     session_manager: SessionManager = Depends(get_session_manager),
     job_registry: JobRegistry = Depends(get_job_registry),
+    event_bus: TrainingEventBus = Depends(get_training_event_bus),
 ) -> dict[str, object]:
     """Kick off PipelinePrep (feature engineering + D2V + model selection) async."""
     session_path = _get_existing_session_path(
@@ -138,6 +141,7 @@ def start_feature_engineering(
         target_column=target_column,
         llm_settings=llm_settings,
         job_registry=job_registry,
+        event_bus=event_bus,
     )
 
     return {
@@ -196,6 +200,7 @@ def _run_pipeline_prep(
     target_column: str,
     llm_settings: LlmSettings,
     job_registry: JobRegistry,
+    event_bus: TrainingEventBus | None = None,
 ) -> None:
     """Background task: run PipelinePrep and record job lifecycle events.
 
@@ -217,6 +222,7 @@ def _run_pipeline_prep(
             config_loader=config_loader,
             session_dir=session_path,
             llm_settings=llm_settings,
+            event_bus=event_bus,
         )
         model_config_path = prep.run(
             raw_data_path=raw_data_path,

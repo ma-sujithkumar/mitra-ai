@@ -28,6 +28,7 @@ from backend.agents.model_selection.selector import select_models
 from backend.config_loader import ConfigLoader
 from backend.orchestration.d2v_bridge import D2VBridge
 from backend.services.feature_status import FeatureEngineeringStatusReader
+from backend.orchestration.events import TrainingEvent, TrainingEventBus
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ class PipelinePrep:
         config_loader: ConfigLoader,
         session_dir: Path,
         llm_settings: Optional[LlmSettings] = None,
+        event_bus: Optional[TrainingEventBus] = None,
     ) -> None:
         self.config_loader = config_loader
         self.session_dir = session_dir
@@ -83,6 +85,7 @@ class PipelinePrep:
         # engineering uses these via build_llm_model -- the same path as
         # metadata_gen -- and reads no key from config.yaml.
         self.llm_settings = llm_settings
+        self.event_bus = event_bus
         self.data_dir = session_dir / "data"
         self.reports_dir = session_dir / "reports"
 
@@ -228,11 +231,35 @@ class PipelinePrep:
         """
         if task_type != "classification":
             logger.info("=> D2V skipped: task_type=%s (classification only)", task_type)
+            if self.event_bus:
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=self.session_dir.name,
+                        stage="d2v",
+                        level="info",
+                        status="completed",
+                        msg="[D2V MATCHER] Dataset2Vec warm-start skipped (classification only).",
+                        pct=100,
+                    )
+                )
             return
         d2v_db_dir = self.config_loader.paths.d2v_db_dir
         if not d2v_db_dir:
             logger.debug("=> D2V_DB_DIR not configured; skipping Dataset2Vec query")
             return
+
+        if self.event_bus:
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_dir.name,
+                    stage="d2v",
+                    level="info",
+                    status="running",
+                    msg="[D2V MATCHER] Querying Dataset2Vec database for past dataset recommendations...",
+                    pct=20,
+                )
+            )
+
         db_path = Path(d2v_db_dir)
         if not db_path.is_absolute():
             db_path = self.config_loader.repo_root / db_path
@@ -247,10 +274,43 @@ class PipelinePrep:
             if prior is not None:
                 output_path.write_text(prior.model_dump_json(indent=2), encoding="utf-8")
                 logger.info("=> dataset_prior.json written: %s", output_path)
+                if self.event_bus:
+                    self.event_bus.emit(
+                        TrainingEvent(
+                            session_id=self.session_dir.name,
+                            stage="d2v",
+                            level="info",
+                            status="completed",
+                            msg=f"[D2V MATCHER] Dataset2Vec lookup complete. Found {len(prior.recommendations)} recommended models.",
+                            pct=100,
+                        )
+                    )
             else:
                 logger.info("=> D2V returned no prior (cold start)")
+                if self.event_bus:
+                    self.event_bus.emit(
+                        TrainingEvent(
+                            session_id=self.session_dir.name,
+                            stage="d2v",
+                            level="info",
+                            status="completed",
+                            msg="[D2V MATCHER] Dataset2Vec lookup complete (cold start: no recommended models found).",
+                            pct=100,
+                        )
+                    )
         except Exception as d2v_error:
             logger.warning("=> D2V query failed (non-fatal): %s", d2v_error)
+            if self.event_bus:
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=self.session_dir.name,
+                        stage="d2v",
+                        level="warn",
+                        status="failed",
+                        msg=f"[D2V MATCHER] Dataset2Vec lookup failed: {d2v_error}",
+                        pct=100,
+                    )
+                )
 
     def _adapt_feature_selection(
         self,
@@ -352,6 +412,17 @@ class PipelinePrep:
         model_config_path: Path,
         max_models: int,
     ) -> None:
+        if self.event_bus:
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_dir.name,
+                    stage="model_selection",
+                    level="info",
+                    status="running",
+                    msg="[MODEL SELECTION] Starting model selection agent...",
+                    pct=20,
+                )
+            )
         model_library_root = self.config_loader.training_api.model_library_root
         select_models(
             metadata_path=metadata_path,
@@ -362,3 +433,21 @@ class PipelinePrep:
             max_models=max_models,
             report_path=self.reports_dir / "model_selection_report.md",
         )
+        if self.event_bus:
+            selected_count = 0
+            if model_config_path.is_file():
+                try:
+                    configs = json.loads(model_config_path.read_text(encoding="utf-8"))
+                    selected_count = len(configs)
+                except Exception:
+                    pass
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_dir.name,
+                    stage="model_selection",
+                    level="info",
+                    status="completed",
+                    msg=f"[MODEL SELECTION] Model selection agent completed. Selected top {selected_count} models.",
+                    pct=100,
+                )
+            )

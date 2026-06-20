@@ -14,6 +14,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Optional
 
+from backend.orchestration.events import TrainingEvent, TrainingEventBus
+
 logger = logging.getLogger(__name__)
 
 # Top-level functions needed so ProcessPoolExecutor can pickle them.
@@ -206,6 +208,7 @@ class EvalRunner:
         target_column: str,
         max_shap_samples: int = 1000,
         verbose: bool = False,
+        event_bus: Optional[TrainingEventBus] = None,
     ) -> None:
         self.session_id = session_id
         self.session_dir = session_dir
@@ -213,6 +216,7 @@ class EvalRunner:
         self.target_column = target_column
         self.max_shap_samples = max_shap_samples
         self.verbose = verbose
+        self.event_bus = event_bus
 
     def run(
         self,
@@ -225,6 +229,18 @@ class EvalRunner:
         Returns a dict with keys: shap_dirs, overfitting_dirs, hpt_results_path
         consumed by JudgeLoop to build JudgeInput.
         """
+        if self.event_bus:
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_id,
+                    stage="shap",
+                    level="info",
+                    status="running",
+                    msg="[SHAP EXPLAINER] Starting SHAP explanation analysis for all trained models...",
+                    pct=10,
+                )
+            )
+
         shap_output_dir = self.session_dir / "evaluation" / "shap"
         shap_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -260,6 +276,30 @@ class EvalRunner:
                     logger.warning("=> SHAP failed for %s: %s", model_name, exc)
                     shap_dirs[model_name] = None
 
+        if self.event_bus:
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_id,
+                    stage="shap",
+                    level="info",
+                    status="completed",
+                    msg="[SHAP EXPLAINER] SHAP explanation analysis completed successfully.",
+                    pct=100,
+                )
+            )
+
+        if self.event_bus:
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_id,
+                    stage="overfitting",
+                    level="info",
+                    status="running",
+                    msg="[OVERFITTING] Starting overfitting analysis (checking train vs. validation gaps)...",
+                    pct=10,
+                )
+            )
+
         # Overfitting and HPT run concurrently with each other (via executor)
         overfit_runner = OverfittingRunner()
         hpt_runner = HPTRunner()
@@ -286,6 +326,18 @@ class EvalRunner:
 
             overfitting_dirs = overfit_future.result()
             hpt_results_path = hpt_future.result() if hpt_future else None
+
+        if self.event_bus:
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_id,
+                    stage="overfitting",
+                    level="info",
+                    status="completed",
+                    msg="[OVERFITTING] Overfitting analysis completed successfully.",
+                    pct=100,
+                )
+            )
 
         return {
             "shap_dirs": shap_dirs,

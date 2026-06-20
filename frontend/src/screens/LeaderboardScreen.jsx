@@ -14,6 +14,7 @@ import {
   modelsDownloadAllUrl,
 } from '../api/client.js';
 import { streamTrainingEvents } from '../api/events.js';
+import { streamEvaluationEvents } from '../api/events.js';
 import { AGENTS, LEADERBOARD, SHAP } from '../data.js';
 import { Icons } from '../icons.jsx';
 
@@ -76,6 +77,8 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
   const [loadState, setLoadState] = useState('idle');
   const [hptData, setHptData] = useState(null);
   const [hptStatus, setHptStatus] = useState('idle'); // 'idle' | 'running' | 'complete' | 'failed'
+  const [hptProgress, setHptProgress] = useState(0);
+  const [hptMessage, setHptMessage] = useState('');
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -138,6 +141,39 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
       cancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
     };
+  }, [activeSessionId]);
+
+  // Subscribe to SSE for real-time HPT stage progress updates.
+  // This gives us live pct + message during tuning without polling.
+  useEffect(() => {
+    if (!activeSessionId) return undefined;
+    const source = streamEvaluationEvents(activeSessionId, {
+      onEvent: (event) => {
+        if (event?.stage !== 'hpt') return;
+        setHptProgress(event.pct ?? 0);
+        setHptMessage(event.msg ?? '');
+        if (event.status === 'running') {
+          setHptStatus('running');
+        } else if (event.status === 'all_completed') {
+          setHptStatus('complete');
+          setHptProgress(100);
+          // Re-fetch leaderboard so HPT best_params appear in winner row immediately
+          fetchLeaderboard(activeSessionId)
+            .then((lb) => setLeaderboardData(lb))
+            .catch(() => {});
+          // Fetch hpt results
+          fetchHpt(activeSessionId)
+            .then((data) => {
+              if (data?.hpt_results?.length) setHptData(data.hpt_results);
+            })
+            .catch(() => {});
+        } else if (event.status === 'failed') {
+          setHptStatus('failed');
+          setHptProgress(0);
+        }
+      },
+    });
+    return () => source?.close?.();
   }, [activeSessionId]);
 
   useEffect(() => {
@@ -352,7 +388,7 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
                 <h3 style={{ margin: 0, fontSize: '1.15rem' }}>Hyperparameter Tuning (Optuna HPT)</h3>
                 <p className="muted" style={{ margin: '4px 0 0 0', fontSize: '0.85rem' }}>
                   {hptStatus === 'idle' && "Run Optuna HPT on the top-1 Judge-selected model (5 trials). Results appear in leaderboard."}
-                  {hptStatus === 'running' && "Tuning the top-1 model (5 Optuna trials)... Results will appear in the leaderboard winner row."}
+                  {hptStatus === 'running' && (hptMessage || "Tuning the top-1 model (5 Optuna trials)...")}
                   {hptStatus === 'complete' && "HPT completed. Best hyperparameters and score are now in the leaderboard winner row."}
                   {hptStatus === 'failed' && "Hyperparameter tuning execution failed."}
                 </p>
@@ -367,7 +403,7 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
               {hptStatus === 'running' && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <div className="spinner small" />
-                  <span className="muted" style={{ fontSize: '0.9rem' }}>Tuning...</span>
+                  <span className="mono" style={{ fontSize: '0.85rem', color: '#ec4899', fontWeight: 600 }}>{hptProgress}%</span>
                 </div>
               )}
               {hptStatus === 'complete' && (
@@ -382,6 +418,22 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
               )}
             </div>
           </div>
+
+          {/* Live progress bar - visible while HPT is running */}
+          {hptStatus === 'running' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
+                <span className="muted mono" style={{ maxWidth: '80%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {hptMessage || 'Initialising Optuna study...'}
+                </span>
+                <strong className="mono" style={{ color: '#ec4899' }}>{hptProgress}%</strong>
+              </div>
+              <div style={{ height: 5, background: 'rgba(255,255,255,0.06)', borderRadius: 3, overflow: 'hidden' }}>
+                <div style={{ width: `${hptProgress}%`, height: '100%', background: 'linear-gradient(90deg, #be185d 0%, #ec4899 100%)', borderRadius: 3, transition: 'width 0.4s ease' }} />
+              </div>
+            </div>
+          )}
+
 
           {hptData && hptData.length > 0 && (
             <div className="hpt-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 15 }}>

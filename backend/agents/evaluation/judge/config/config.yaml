@@ -25,10 +25,11 @@ overfitting_gap_cap: 0.50
 # Number of top SHAP features to include when building shap_summary from a CSV.
 shap_top_n_features: 5
 
-# LLM settings.
+# LLM settings. Credentials are resolved via LlmSettingsResolver (reads .env:
+# LLM_TYPE, LLM_MODEL, LLM_API_KEY, LLM_GATEWAY_URL) - same as every other agent.
 use_llm: true
-anthropic_model_env: ANTHROPIC_MODEL_NAME   # env var holding the model name
 prompt_template: judge_prompt.jinja2
+
 
 # Maps each metric name to its direction for gap computation (mirrors parent tool).
 # This avoids if-else ladders throughout the codebase.

@@ -1585,24 +1585,41 @@ class TrainingService:
                     hpt_agent.failed_models.append(model_name)
                     logger.error("HPT failed for %s: %s", model_name, e)
             
-            # Write final results
-            hpt_agent.result_writer.write_results(hpt_agent.results, hpt_agent.failed_models)
-            
-            # Also write hpt_results.json
+            # Inject primary_metric into each result so the leaderboard endpoint
+            # can surface it without knowing the agent's internal state.
+            enriched_results = []
+            for res in hpt_agent.results:
+                enriched_res = dict(res)
+                enriched_res.setdefault("primary_metric", hpt_agent.primary_metric)
+                enriched_results.append(enriched_res)
+
+            # Write results to canonical evaluation/hpt/hpt_results.json path
             hpt_output_path = session_path / "evaluation" / "hpt" / "hpt_results.json"
             hpt_output_path.parent.mkdir(parents=True, exist_ok=True)
             hpt_output_path.write_text(
-                json.dumps({"hpt_results": hpt_agent.results}, indent=2), encoding="utf-8"
+                json.dumps({"hpt_results": enriched_results}, indent=2), encoding="utf-8"
             )
             
+            # Determine best score from the top-1 tuned result
+            best_score = None
+            if enriched_results:
+                val_metrics = enriched_results[0].get("val_metrics") or {}
+                best_score = (
+                    val_metrics.get("accuracy")
+                    or val_metrics.get("r2")
+                    or val_metrics.get("f1")
+                    or next(iter(val_metrics.values()), None)
+                )
+            
             top1_model_name = top_model_names[0] if top_model_names else "top-1 model"
+            best_score_str = f" | Best {hpt_agent.primary_metric}: {best_score:.4f}" if best_score is not None else ""
             self.event_bus.emit(
                 TrainingEvent(
                     session_id=session_id,
                     stage="hpt",
                     level="info",
                     status="all_completed",
-                    msg=f"[HPT TUNING] Hyperparameter tuning completed for {top1_model_name}. Best params stored in leaderboard.",
+                    msg=f"[HPT TUNING] Hyperparameter tuning completed for {top1_model_name}.{best_score_str} Best params stored in leaderboard.",
                     pct=100,
                 )
             )

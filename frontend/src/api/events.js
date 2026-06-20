@@ -13,7 +13,11 @@ function streamEvents(url, handlers = {}, eventName = null, options = {}) {
 
     handlers.onEvent?.(payload);
 
-    if (payload.type === 'done' || payload.status === 'all_completed') {
+    // Only close the EventSource for the top-level pipeline-wide completion signal.
+    // Individual stage events (stage='hpt', stage='judge') also use 'all_completed'
+    // but should NOT close the stream -- later stages (HPT) still need to stream.
+    const isTopLevelDone = payload.type === 'done' || (payload.status === 'all_completed' && !payload.stage);
+    if (isTopLevelDone) {
       handlers.onDone?.(payload);
       eventSource.close();
     }
@@ -69,13 +73,17 @@ export function streamTrainingEvents(sessionId, handlers = {}) {
 }
 
 /**
- * Stream evaluation-stage events (judge turns, SHAP, overfitting) for a session.
+ * Stream evaluation-stage events (judge turns, SHAP, overfitting, HPT) for a session.
  * Reuses the same /api/training/events SSE endpoint - all pipeline stages share
  * one event bus per session. This export is intended for the leaderboard / evaluation
- * screens so they can show judge progress without the training page being open.
+ * screens so they can show judge/HPT progress without the training page being open.
+ *
+ * replay=false is critical: the leaderboard opens AFTER training completed, so
+ * replaying events would immediately fire the old 'all_completed' from training
+ * and close the stream before any HPT events arrive.
  */
 export function streamEvaluationEvents(sessionId, handlers = {}) {
-  const params = new URLSearchParams({ session_id: sessionId });
+  const params = new URLSearchParams({ session_id: sessionId, replay: 'false' });
   return streamEvents(`/api/training/events?${params.toString()}`, handlers, 'training');
 }
 

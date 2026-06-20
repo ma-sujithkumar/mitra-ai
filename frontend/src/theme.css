@@ -2393,3 +2393,126 @@ h2 {
   --ok: #35d497;
   --err: #f07070;
 }
+
+/* ------------------------------------------------------------------ */
+/* Pipeline execution stages dashboard                                */
+/* ------------------------------------------------------------------ */
+
+.pipeline-stages-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin-top: 15px;
+}
+
+.pipeline-stage-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius);
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pipeline-stage-card.running {
+  background: rgba(59, 130, 246, 0.04);
+  border-color: rgba(59, 130, 246, 0.25);
+  box-shadow: 0 0 15px rgba(59, 130, 246, 0.05);
+}
+
+.pipeline-stage-card.complete {
+  background: rgba(53, 212, 151, 0.02);
+  border-color: rgba(53, 212, 151, 0.15);
+}
+
+.pipeline-stage-card.failed {
+  background: rgba(240, 112, 112, 0.02);
+  border-color: rgba(240, 112, 112, 0.15);
+}
+
+.pipeline-stage-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.stage-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--ink-2);
+  transition: all 0.3s ease;
+}
+
+.pipeline-stage-card.running .stage-card-icon {
+  background: rgba(59, 130, 246, 0.15);
+  color: #3b82f6;
+}
+
+.pipeline-stage-card.complete .stage-card-icon {
+  background: rgba(53, 212, 151, 0.15);
+  color: var(--ok);
+}
+
+.pipeline-stage-card.failed .stage-card-icon {
+  background: rgba(240, 112, 112, 0.15);
+  color: var(--err);
+}
+
+.stage-micro-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: transparent;
+  transition: width 0.4s ease;
+}
+
+.pipeline-stage-card.running .stage-micro-progress {
+  background: linear-gradient(90deg, #3b82f6 0%, #ec4899 100%);
+  animation: progress-pulse 2s infinite linear;
+}
+
+.pipeline-stage-card.complete .stage-micro-progress {
+  background: var(--ok);
+}
+
+.pipeline-stage-card.failed .stage-micro-progress {
+  background: var(--err);
+}
+
+@keyframes progress-pulse {
+  0% { opacity: 0.7; }
+  50% { opacity: 1; }
+  100% { opacity: 0.7; }
+}
+
+.pulse-indicator {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3b82f6;
+  box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
+  animation: pulse-ring 1.6s infinite cubic-bezier(0.66, 0, 0, 1);
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(59, 130, 246, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+}
+
