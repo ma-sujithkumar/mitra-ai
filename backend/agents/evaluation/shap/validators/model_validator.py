@@ -229,7 +229,7 @@ class ModelValidator:
         config/ is at:            epic_4_shap/config/
         """
         return (
-            Path(__file__).resolve().parent.parent.parent.parent
+            Path(__file__).resolve().parent.parent
             / "config"
             / _MODEL_TYPE_CONFIG_FILENAME
         )

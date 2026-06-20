@@ -34,6 +34,8 @@
   color: var(--ink);
   background: var(--bg);
   font-family: var(--sans);
+  /* Tell the browser to use light native-control rendering (scrollbars, selects, inputs). */
+  color-scheme: light;
 }
 
 [data-theme="dark"] {
@@ -63,6 +65,8 @@
   --dropzone-bg: linear-gradient(180deg, #1b1d28, #161820);
   --dropzone-hover-bg: linear-gradient(180deg, #1e2040, #1b1d28);
   --metric-bg: rgba(255, 255, 255, 0.05);
+  /* Switch native browser controls (scrollbars, selects, inputs) to dark rendering. */
+  color-scheme: dark;
 }
 
 * {
@@ -90,6 +94,15 @@ input,
 select,
 textarea {
   font: inherit;
+  color: inherit;
+}
+
+select {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  padding: 6px 10px;
 }
 
 button {
@@ -105,13 +118,13 @@ p {
 
 h1 {
   margin-bottom: 0;
-  font-size: 24px;
+  font-size: 26px;
   line-height: 1.18;
 }
 
 h2 {
   margin-bottom: 8px;
-  font-size: 18px;
+  font-size: 20px;
   line-height: 1.25;
 }
 
@@ -183,13 +196,13 @@ h2 {
 .brand-subtitle {
   margin-top: 2px;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .sidebar-label {
   padding: 0 10px 4px;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
 }
 
@@ -304,7 +317,7 @@ h2 {
 .topbar-copy p {
   margin: 4px 0 0;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .topbar-actions {
@@ -354,7 +367,7 @@ h2 {
 .section-kicker {
   margin-bottom: 4px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -422,7 +435,7 @@ h2 {
 
 .stat-head span {
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 650;
 }
 
@@ -490,12 +503,12 @@ h2 {
 }
 
 .agent-compact strong {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .agent-compact span {
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -519,12 +532,12 @@ h2 {
 }
 
 .agent-row strong {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .agent-row span {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .agent-avatar {
@@ -711,7 +724,7 @@ h2 {
 
 .gate-hint {
   margin: 0 0 12px;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .smoke-test-row {
@@ -723,7 +736,7 @@ h2 {
 }
 
 .smoke-test-msg {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
@@ -807,7 +820,7 @@ h2 {
   background: transparent;
   color: var(--ink-muted);
   padding: 0 11px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
 }
 
@@ -829,12 +842,12 @@ h2 {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
 }
 
 .form-field-hint {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -882,7 +895,7 @@ h2 {
 
 .advanced-disclosure summary {
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--ink-muted);
 }
@@ -904,27 +917,27 @@ h2 {
   padding: 12px 14px;
   border-radius: var(--radius);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   animation: toast-drop-in 0.18s ease-out;
 }
 
 .toast-error {
-  border: 1px solid var(--error-line, #e3a8a3);
-  background: #fdecea;
-  color: var(--error, #c0392b);
+  border: 1px solid var(--error-line);
+  background: var(--error-bg);
+  color: var(--error);
 }
 
 .toast-warn {
-  border: 1px solid var(--line);
-  background: #fff8e6;
-  color: #92670f;
+  border: 1px solid var(--warning-line);
+  background: var(--warning-bg);
+  color: var(--warning);
 }
 
 .toast-success {
-  border: 1px solid var(--line);
-  background: #e9f8ee;
-  color: #1b8a5a;
+  border: 1px solid var(--success-line);
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .toast-close {
@@ -970,7 +983,7 @@ h2 {
 .check-hint {
   display: block;
   margin-top: 4px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--ink-muted);
 }
 
@@ -1004,7 +1017,7 @@ h2 {
   align-items: flex-start;
   gap: 8px;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.45;
 }
 
@@ -1078,7 +1091,7 @@ h2 {
 }
 
 .recent-row strong {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .recent-row small {
@@ -1112,7 +1125,7 @@ h2 {
   background: var(--panel-3);
   color: var(--ink-muted);
   padding: 4px 9px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -1148,7 +1161,7 @@ h2 {
 }
 
 .check-card strong {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .check-card span {
@@ -1171,7 +1184,7 @@ h2 {
   border-radius: var(--radius);
   background: var(--panel-2);
   padding: 9px 11px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .event-row span:first-child {
@@ -1196,7 +1209,7 @@ h2 {
   border-bottom: 1px solid var(--line);
   color: var(--ink-faint);
   padding: 10px 0;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
 }
@@ -1221,7 +1234,7 @@ h2 {
 }
 
 .run-row strong {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .run-row small {
@@ -1390,17 +1403,17 @@ h2 {
 }
 
 .pipeline-stage strong {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .pipeline-stage small {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .pipeline-stage em {
   color: var(--ink-faint);
-  font-size: 11px;
+  font-size: 12px;
   font-style: normal;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1516,7 +1529,7 @@ h2 {
 
 .winner-card span {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .leaderboard-hero {
@@ -1550,7 +1563,7 @@ h2 {
   border-bottom: 1px solid var(--line);
   color: var(--ink-faint);
   padding: 10px 0;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
 }
@@ -1635,7 +1648,7 @@ h2 {
 
 .reason-row small {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .detail-list {
@@ -1654,7 +1667,7 @@ h2 {
 
 .detail-list dt {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -1662,7 +1675,7 @@ h2 {
   min-width: 0;
   margin: 0;
   color: var(--ink);
-  font-size: 13px;
+  font-size: 14px;
   overflow-wrap: anywhere;
 }
 
@@ -1687,7 +1700,7 @@ h2 {
 .model-row code {
   color: var(--ink-muted);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
 
@@ -1955,7 +1968,7 @@ h2 {
 
 .training-model-metrics small {
   color: var(--ink-faint);
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
 }
 

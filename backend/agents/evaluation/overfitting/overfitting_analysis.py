@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 import yaml
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
+from sklearn.preprocessing import LabelEncoder
 
 # Bootstrap sys.path so the shared model_library package resolves regardless of
 # cwd, without hardcoding any path. model_library lives at the repo root:
@@ -126,6 +129,9 @@ class OverfittingAnalyzer:
         self.model_type: str = self.input_data["model_type"]
         self.model_name: str = self.input_data["model_name"]
         self.dataset_path: str = self.input_data["dataset_path"]
+        # Optional separate test CSV / target column for CSV-format datasets.
+        self.test_dataset_path: Optional[str] = self.input_data.get("test_dataset_path")
+        self.target_column: Optional[str] = self.input_data.get("target_column")
         self.precomputed_train_metrics: Optional[dict] = self.input_data.get("train_metrics") or None
         self.precomputed_test_metrics: Optional[dict] = self.input_data.get("test_metrics") or None
 
@@ -161,11 +167,24 @@ class OverfittingAnalyzer:
             )
 
     def load_dataset(self, dataset_path: str) -> CommonData:
-        """Load a .npz file containing X_train, y_train, X_test, y_test arrays."""
+        """Load dataset from a .npz or CSV file pair.
+
+        For .npz: expects X_train, y_train, X_test, y_test arrays.
+        For .csv: loads as pandas DataFrame, splits X/y by target_column, and
+        uses self.test_dataset_path for the test split when provided.
+        """
         if not os.path.isfile(dataset_path):
             raise FileNotFoundError(f"Dataset file not found: '{dataset_path}'")
 
-        npz = np.load(dataset_path)
+        file_extension = Path(dataset_path).suffix.lower()
+
+        if file_extension == ".npz":
+            return self._load_npz_dataset(dataset_path)
+        return self._load_csv_dataset(dataset_path)
+
+    def _load_npz_dataset(self, dataset_path: str) -> CommonData:
+        """Load a .npz archive with X_train, y_train, X_test, y_test arrays."""
+        npz = np.load(dataset_path, allow_pickle=True)
         required_arrays = ["X_train", "y_train", "X_test", "y_test"]
         missing = [arr_name for arr_name in required_arrays if arr_name not in npz]
         if missing:
@@ -173,7 +192,6 @@ class OverfittingAnalyzer:
                 f"Dataset .npz is missing required arrays: {missing}. "
                 f"Found: {list(npz.keys())}"
             )
-
         common = CommonData(
             X_train=npz["X_train"].astype(np.float32),
             y_train=npz["y_train"],
@@ -181,7 +199,65 @@ class OverfittingAnalyzer:
             y_test=npz["y_test"],
         )
         logger.debug(
-            "=> Loaded dataset: X_train=%s y_train=%s X_test=%s y_test=%s",
+            "=> Loaded npz dataset: X_train=%s y_train=%s X_test=%s y_test=%s",
+            common.X_train.shape, common.y_train.shape,
+            common.X_test.shape, common.y_test.shape,
+        )
+        return common
+
+    def _load_csv_dataset(self, train_csv_path: str) -> CommonData:
+        """Load train (and optionally test) CSV files into CommonData arrays.
+
+        Categorical columns are label-encoded to float32. When no separate test
+        CSV is provided a stratified 80/20 split of the training data is used.
+        """
+        if not self.target_column:
+            raise ValueError(
+                "target_column must be set in the input JSON to load CSV datasets."
+            )
+
+        train_df = pd.read_csv(train_csv_path)
+
+        if self.test_dataset_path and os.path.isfile(self.test_dataset_path):
+            test_df = pd.read_csv(self.test_dataset_path)
+        else:
+            # Fall back to an internal 80/20 stratified split.
+            logger.warning(
+                "=> No test CSV provided; using 80/20 split of train data for overfitting."
+            )
+            stratify_col = train_df[self.target_column] if self.model_type == TASK_TYPE_CLASSIFICATION else None
+            train_df, test_df = train_test_split(
+                train_df, test_size=0.2, random_state=42, stratify=stratify_col
+            )
+
+        def encode_dataframe(dataframe: pd.DataFrame, target_col: str) -> tuple:
+            """Encode a dataframe to float32 X array and integer/float y array."""
+            feature_df = dataframe.drop(columns=[target_col]).copy()
+            target_series = dataframe[target_col].copy()
+
+            # Encode categorical feature columns with LabelEncoder.
+            for col in feature_df.select_dtypes(include=["object", "category"]).columns:
+                feature_df[col] = LabelEncoder().fit_transform(feature_df[col].astype(str))
+
+            # Encode the target column if it is not numeric.
+            if target_series.dtype == object or hasattr(target_series, "cat"):
+                target_series = LabelEncoder().fit_transform(target_series.astype(str))
+            else:
+                target_series = target_series.values
+
+            return feature_df.values.astype(np.float32), target_series
+
+        X_train, y_train = encode_dataframe(train_df, self.target_column)
+        X_test, y_test = encode_dataframe(test_df, self.target_column)
+
+        common = CommonData(
+            X_train=X_train,
+            y_train=y_train,
+            X_test=X_test,
+            y_test=y_test,
+        )
+        logger.debug(
+            "=> Loaded csv dataset: X_train=%s y_train=%s X_test=%s y_test=%s",
             common.X_train.shape, common.y_train.shape,
             common.X_test.shape, common.y_test.shape,
         )
@@ -270,8 +346,6 @@ class OverfittingAnalyzer:
 
         Returns (KFoldResult, None) on success or (None, skip_reason) on failure.
         """
-        from sklearn.model_selection import KFold, StratifiedKFold
-
         num_folds = int(self.cfg["k_folds"])
         shuffle = bool(self.cfg["shuffle"])
         random_state = int(self.cfg["random_state"])

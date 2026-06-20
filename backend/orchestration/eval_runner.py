@@ -69,12 +69,25 @@ def _run_overfitting_for_model(
 class OverfittingRunner:
     """Builds overfitting input JSONs from training results and runs OverfittingAnalyzer."""
 
+    @staticmethod
+    def _read_target_column(session_dir: Path) -> Optional[str]:
+        """Return the target column from session metadata.json, or None if unresolvable."""
+        for candidate in [
+            session_dir / "reports" / "metadata.json",
+            session_dir / "metadata.json",
+        ]:
+            if candidate.is_file():
+                meta = json.loads(candidate.read_text(encoding="utf-8"))
+                return meta.get("target_col") or meta.get("target_column")
+        return None
+
     def run(
         self,
         training_summary: Any,
         session_dir: Path,
         dataset_path: Path,
         task_type: str,
+        target_column: Optional[str] = None,
         verbose: bool = False,
     ) -> dict[str, Optional[str]]:
         """Run overfitting analysis for all trained models.
@@ -84,6 +97,20 @@ class OverfittingRunner:
         """
         overfit_dir = session_dir / "evaluation" / "overfitting"
         overfit_dir.mkdir(parents=True, exist_ok=True)
+
+        # Prefer the already-split CSVs so OverfittingAnalyzer gets separate
+        # train and test arrays. Fall back to the single engineered CSV.
+        train_csv = session_dir / "data" / "train.csv"
+        test_csv = session_dir / "data" / "test.csv"
+        if train_csv.is_file() and test_csv.is_file():
+            primary_dataset_path = str(train_csv)
+            test_dataset_path = str(test_csv)
+        else:
+            primary_dataset_path = str(dataset_path)
+            test_dataset_path = None
+
+        # Read target column from session metadata when not passed directly.
+        resolved_target = target_column or self._read_target_column(session_dir)
 
         model_results: dict[str, Optional[str]] = {}
         models = getattr(training_summary, "models", []) or []
@@ -95,12 +122,16 @@ class OverfittingRunner:
                 model_output_dir = str(overfit_dir / model_name)
                 os.makedirs(model_output_dir, exist_ok=True)
 
-                # Build the input JSON expected by OverfittingAnalyzer
+                # Build the input JSON expected by OverfittingAnalyzer.
                 input_payload: dict[str, Any] = {
                     "model_type": task_type,
                     "model_name": model_name,
-                    "dataset_path": str(dataset_path),
+                    "dataset_path": primary_dataset_path,
                 }
+                if test_dataset_path:
+                    input_payload["test_dataset_path"] = test_dataset_path
+                if resolved_target:
+                    input_payload["target_column"] = resolved_target
                 if model_result.validation_score is not None:
                     primary_metric = "accuracy" if task_type == "classification" else "r2"
                     input_payload["test_metrics"] = {primary_metric: model_result.validation_score}
@@ -235,6 +266,7 @@ class EvalRunner:
                 session_dir=self.session_dir,
                 dataset_path=engineered_dataset_path,
                 task_type=self.task_type,
+                target_column=self.target_column,
                 verbose=self.verbose,
             )
             hpt_future = pool.submit(

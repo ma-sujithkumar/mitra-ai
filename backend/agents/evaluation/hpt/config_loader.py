@@ -80,17 +80,25 @@ class ConfigLoader:
     
     def load_metadata(self) -> Dict[str, Any]:
         """
-        Load metadata.json from session root
-        
-        Returns:
-            dict: Dataset characteristics (problem_type, col_types, target_col, etc.)
+        Load metadata.json from session root or reports/ subdirectory.
+
+        The pipeline writes metadata into reports/metadata.json; earlier code
+        placed it directly under the session root. Try both so HPT works
+        regardless of which stage produced the session.
         """
-        metadata_path = self.session_root / "metadata.json"
-        if not metadata_path.exists():
-            raise FileNotFoundError(f"metadata.json not found at {metadata_path}")
-        
-        with open(metadata_path, 'r') as f:
-            return json.load(f)
+        # Prefer reports/ location (current pipeline standard).
+        candidates = [
+            self.session_root / "reports" / "metadata.json",
+            self.session_root / "metadata.json",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                with open(candidate, 'r') as metadata_file:
+                    return json.load(metadata_file)
+        raise FileNotFoundError(
+            f"metadata.json not found at {self.session_root}. "
+            f"Searched: {[str(path) for path in candidates]}"
+        )
     
     def get_primary_metric(self, problem_type: str) -> str:
         """
