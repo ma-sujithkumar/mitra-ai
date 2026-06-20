@@ -146,7 +146,6 @@ class PipelineRunner:
             provider=self.provider,
             model=self.model,
         )
-        llm_model_string = llm_settings.model
         logger.info(
             "=> pipeline start: session=%s provider=%s model=%s mode=%s",
             self.session_id,
@@ -173,7 +172,7 @@ class PipelineRunner:
         prep = PipelinePrep(
             config_loader=self.config_loader,
             session_dir=self.session_dir,
-            llm_model_string=llm_model_string,
+            llm_settings=llm_settings,
         )
         model_config_path = prep.run(
             raw_data_path=dataset_path,
