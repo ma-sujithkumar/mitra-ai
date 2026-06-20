@@ -249,6 +249,56 @@ def test_fallback_can_be_disabled_for_strict_artifact_checks(
 
     assert len(error.value.missing_paths) == 4
 
+def test_existing_metadata_without_output_cols_is_normalized_for_epic3(
+    test_config_loader: ConfigLoader,
+) -> None:
+    session_id = "session_metadata_normalize"
+    session_path = test_config_loader.paths.workspace_root / session_id
+    (session_path / "reports").mkdir(parents=True, exist_ok=True)
+    (session_path / "data").mkdir(parents=True, exist_ok=True)
+    (session_path / "reports" / "metadata.json").write_text(
+        json.dumps(
+            {
+                "problem_type": "supervised",
+                "problem_subtype": "classification",
+                "data_format": "tabular",
+                "target_column": "species",
+                "input_cols": ["sepal_length", "sepal_width"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (session_path / "model_config.json").write_text("[]", encoding="utf-8")
+    (session_path / "data" / "train.csv").write_text(
+        "sepal_length,sepal_width,species\n5.1,3.5,setosa\n",
+        encoding="utf-8",
+    )
+    (session_path / "data" / "test.csv").write_text(
+        "sepal_length,sepal_width,species\n4.9,3.0,setosa\n",
+        encoding="utf-8",
+    )
+    service = TrainingService(
+        config_loader=test_config_loader,
+        session_manager=SessionManager(test_config_loader.paths.workspace_root),
+        event_bus=TrainingEventBus(),
+    )
+
+    paths = service.resolve_paths(
+        TrainingStartRequest(
+            session_id=session_id,
+            target_column="species",
+            problem_type="classification",
+            execution_mode="local",
+        )
+    )
+
+    assert paths.metadata_path.name == "metadata_epic3.json"
+    normalized = json.loads(paths.metadata_path.read_text(encoding="utf-8"))
+    assert normalized["problem_type"] == "classification"
+    assert normalized["target_column"] == "species"
+    assert normalized["target_col"] == "species"
+    assert normalized["output_cols"] == ["species"]
+
 def test_cancel_stops_active_ray_executor_and_preserves_cancelled_state(
     test_config_loader: ConfigLoader,
 ) -> None:

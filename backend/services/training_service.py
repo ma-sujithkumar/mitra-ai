@@ -382,10 +382,17 @@ class TrainingService:
                 missing_paths=missing_paths,
             )
 
-        # Epic 1 metadata.json uses problem_type=supervised/unsupervised plus a
-        # problem_subtype, but Epic 3 expects the legacy classification/regression/
-        # unsupervised value. Translate at this boundary so Epic 3 stays untouched.
-        metadata_path = self._write_epic3_metadata(metadata_path=metadata_path)
+        # Epic 1 metadata.json may use problem_type=supervised plus a
+        # problem_subtype and can omit output_cols even when a target column is
+        # known. Epic 3 routing requires the legacy classification/regression/
+        # unsupervised value plus output_cols. Normalize at this boundary so
+        # routing always receives a complete Epic-3-compatible metadata file.
+        metadata_path = self._write_epic3_metadata(
+            metadata_path=metadata_path,
+            session_path=session_path,
+            target_column=request.target_column,
+            train_path=train_path,
+        )
 
         session_output_dir = (
             session_path / training_config.session_output_dir
@@ -448,22 +455,122 @@ class TrainingService:
                 [str(path) for path in result.created_paths],
             )
 
-    def _write_epic3_metadata(self, metadata_path: Path) -> Path:
-        # Reads the Epic 1 metadata.json and writes a sibling metadata_epic3.json
-        # whose problem_type uses Epic 3's legacy enum. Returns the original path
-        # unchanged if translation is unnecessary or not possible.
+    def _write_epic3_metadata(
+        self,
+        *,
+        metadata_path: Path,
+        session_path: Path,
+        target_column: str | None,
+        train_path: Path,
+    ) -> Path:
+        """Write an Epic-3-compatible metadata view and return its path.
+
+        Epic-1 metadata can be valid for the setup page but still incomplete for
+        Epic-3 routing. The router requires a legacy problem type
+        (classification/regression/unsupervised) and, for supervised tasks, at
+        least one output column. When the target is available from the UI,
+        metadata, run_config, or train split, fill these fields deterministically
+        before the orchestrator prepares jobs. This prevents pre-routing failures
+        that otherwise stop ``training_jobs.json`` and ``training_summary.json``
+        from being generated.
+        """
+
         payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-        legacy_problem_type = self._legacy_problem_type(payload=payload)
-        if legacy_problem_type is None:
-            return metadata_path
         translated_payload = dict(payload)
-        translated_payload["problem_type"] = legacy_problem_type
+        legacy_problem_type = self._legacy_problem_type(payload=payload)
+        if legacy_problem_type is not None:
+            translated_payload["problem_type"] = legacy_problem_type
+        else:
+            legacy_problem_type = translated_payload.get("problem_type")
+
+        if legacy_problem_type in {"classification", "regression"}:
+            target = self._metadata_target_column(
+                payload=translated_payload,
+                session_path=session_path,
+                explicit_target_column=target_column,
+                train_path=train_path,
+            )
+            if target:
+                translated_payload["target_column"] = target
+                translated_payload["target_col"] = target
+                output_cols = translated_payload.get("output_cols")
+                if not isinstance(output_cols, list) or not output_cols:
+                    translated_payload["output_cols"] = [target]
+                if not translated_payload.get("target_col_type"):
+                    translated_payload["target_col_type"] = (
+                        "numeric" if legacy_problem_type == "regression" else "categorical"
+                    )
+                input_cols = translated_payload.get("input_cols")
+                if not isinstance(input_cols, list) or not input_cols:
+                    inferred_input_cols = self._metadata_input_columns(
+                        target_column=target,
+                        train_path=train_path,
+                    )
+                    if inferred_input_cols:
+                        translated_payload["input_cols"] = inferred_input_cols
+
+        if translated_payload == payload:
+            return metadata_path
+
         epic3_metadata_path = metadata_path.parent / "metadata_epic3.json"
         epic3_metadata_path.write_text(
             json.dumps(translated_payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
         return epic3_metadata_path
+
+    @staticmethod
+    def _metadata_target_column(
+        *,
+        payload: dict[str, Any],
+        session_path: Path,
+        explicit_target_column: str | None,
+        train_path: Path,
+    ) -> str | None:
+        if explicit_target_column:
+            return explicit_target_column
+        for key in ("target_column", "target_col"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+        output_cols = payload.get("output_cols")
+        if isinstance(output_cols, list) and output_cols:
+            return str(output_cols[0])
+        run_config_path = session_path / "reports" / "run_config.json"
+        if run_config_path.is_file():
+            try:
+                run_config = json.loads(run_config_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                run_config = {}
+            for key in ("target_col", "target_column"):
+                value = run_config.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        columns = TrainingService._csv_header(train_path)
+        if len(columns) >= 2:
+            return columns[-1]
+        return None
+
+    @staticmethod
+    def _metadata_input_columns(
+        *,
+        target_column: str,
+        train_path: Path,
+    ) -> list[str]:
+        return [column for column in TrainingService._csv_header(train_path) if column != target_column]
+
+    @staticmethod
+    def _csv_header(path: Path) -> list[str]:
+        if not path.is_file():
+            return []
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                header = handle.readline().strip()
+        except OSError:
+            return []
+        if not header:
+            return []
+        return [column.strip() for column in header.split(",") if column.strip()]
 
     @staticmethod
     def _legacy_problem_type(payload: dict[str, Any]) -> str | None:
