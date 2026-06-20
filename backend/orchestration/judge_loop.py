@@ -130,9 +130,15 @@ class JudgeInputBuilder:
             # Build minimal complexity descriptor from model_name
             complexity_dict = self._infer_complexity(model_name)
 
-            # Build metrics dict from training_summary
+            # Build metrics dict from training_summary with all available metrics
+            raw_metrics = getattr(model_result, "metrics", {}) or {}
+            val_metrics = raw_metrics.get("validation") if isinstance(raw_metrics, dict) and "validation" in raw_metrics else raw_metrics
+            
             val_score = getattr(model_result, "validation_score", None)
             metrics_dict: Dict[str, Optional[float]] = {primary_metric: val_score}
+            if isinstance(val_metrics, dict):
+                for metric_key, metric_value in val_metrics.items():
+                    metrics_dict[metric_key] = metric_value
 
             candidate_raws.append({
                 "model_name": model_name,

@@ -294,9 +294,13 @@ class PipelineRunner:
             logger.warning("=> [plots] generation failed (non-fatal): %s", plotting_error)
 
         # Stage 6: dataset2Vec write-back (non-fatal; runs in background)
-        db_dir = Path(__file__).resolve().parents[2] / "DB"
+        d2v_db_path = self.config_loader.paths.d2v_db_dir or "backend/agents/dataset2vec/store"
+        db_dir = Path(d2v_db_path)
+        if not db_dir.is_absolute():
+            db_dir = self.config_loader.repo_root / db_dir
+
         if db_dir.exists():
-            logger.info("=> [6/6] dataset2Vec write-back ...")
+            logger.info("=> [6/6] dataset2Vec write-back using store at %s...", db_dir)
             d2v_bridge = D2VBridge(db_dir=db_dir)
             d2v_bridge.write_back(
                 csv_path=dataset_path,
@@ -305,7 +309,7 @@ class PipelineRunner:
                 judge_decision=judge_decision,
             )
         else:
-            logger.info("=> [6/6] DB/ dir absent; skipping dataset2Vec write-back.")
+            logger.info("=> [6/6] dataset2Vec store directory %s absent; skipping write-back.", db_dir)
 
         # Log command for reproducibility (REQ #13)
         cmd_log = self.session_dir / "pipeline_command.txt"
