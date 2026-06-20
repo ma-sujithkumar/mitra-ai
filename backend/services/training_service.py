@@ -11,6 +11,7 @@ from pathlib import Path
 from threading import Event, RLock
 from typing import Any, Callable, Protocol
 
+from backend.activity_log import ActivityLog
 from backend.config_loader import ConfigLoader
 from backend.schemas.training import ExecutionMode
 from backend.schemas.training import TrainingModelState
