@@ -26,6 +26,7 @@ _MODEL_TYPE_CONFIG_FILENAME: str = "model_type_detection.json"
 _FAMILY_TO_EXPLAINER_KEY: str = "model_family_to_explainer"
 _EXPLAINER_TREE: str = "TreeExplainer"
 _EXPLAINER_LINEAR: str = "LinearExplainer"
+_EXPLAINER_KERNEL: str = "KernelExplainer"
 _DEFAULT_LINEAR_BACKGROUND_SAMPLES: int = 200
 
 
@@ -174,6 +175,9 @@ class ExplainerFactory:
             _EXPLAINER_LINEAR: lambda: self._build_linear_explainer(
                 model_object, feature_dataframe
             ),
+            _EXPLAINER_KERNEL: lambda: self._build_kernel_explainer(
+                model_object, feature_dataframe
+            ),
         }
 
         build_function = explainer_dispatch.get(explainer_type_name)
@@ -248,6 +252,46 @@ class ExplainerFactory:
 
         masker = shap.maskers.Independent(background_dataframe)
         return shap.LinearExplainer(model_object, masker)
+
+    def _build_kernel_explainer(
+        self, model_object: Any, feature_dataframe: pd.DataFrame
+    ) -> Any:
+        """Construct shap.KernelExplainer with a subset of the background data.
+
+        Args:
+            model_object: Fitted estimator (e.g. SVC).
+            feature_dataframe: Cleaned, target-excluded feature DataFrame used as
+                background data.
+
+        Returns:
+            shap.KernelExplainer instance.
+        """
+        num_available_samples: int = len(feature_dataframe)
+        background_samples = min(num_available_samples, 100)
+        
+        if num_available_samples > background_samples:
+            background_dataframe = feature_dataframe.sample(
+                n=background_samples, random_state=42
+            )
+            self._execution_logger.log_explainer_selection(
+                f"KernelExplainer: sampled {background_samples} background "
+                f"rows from {num_available_samples} available for speed."
+            )
+        else:
+            background_dataframe = feature_dataframe
+            self._execution_logger.log_explainer_selection(
+                f"KernelExplainer: using full dataset as background "
+                f"({num_available_samples} rows)."
+            )
+
+        if hasattr(model_object, "predict_proba"):
+            predict_fn = model_object.predict_proba
+        elif hasattr(model_object, "predict"):
+            predict_fn = model_object.predict
+        else:
+            raise SHAPExecutionError("Model object has neither predict_proba nor predict method.")
+
+        return shap.KernelExplainer(predict_fn, background_dataframe)
 
     @staticmethod
     def _load_family_to_explainer_config(config_path: Path) -> dict[str, str]:
