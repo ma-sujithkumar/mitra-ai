@@ -149,10 +149,18 @@ class PipelinePrep:
             self.config_loader.pipeline.train_test_split,
         )
 
-        # Step 4: model selection
+        # Step 4: model selection. The model-selection schema (MetadataInput)
+        # requires the normalized form (enum problem_type + string input_cols),
+        # but the metadata agent emits problem_type='supervised' and input_cols
+        # as {name, col_type} dicts. Normalize before selecting.
+        selection_metadata_path = self._normalize_metadata_for_selection(
+            metadata_path=metadata_path,
+            target_column=target_column,
+            resolved_task=resolved_task,
+        )
         model_config_path = self.reports_dir / "model_config.json"
         self._run_model_selection(
-            metadata_path=metadata_path,
+            metadata_path=selection_metadata_path,
             feature_selection_path=feature_selection_path,
             mini_data_path=mini_data_path,
             model_config_path=model_config_path,
@@ -271,6 +279,67 @@ class PipelinePrep:
             len(train_df),
             len(test_df),
         )
+
+    def _normalize_metadata_for_selection(
+        self,
+        metadata_path: Path,
+        target_column: str,
+        resolved_task: str,
+    ) -> Path:
+        """Write a model_selection.MetadataInput-compatible metadata file.
+
+        Converts the metadata agent's output into the strict shape the
+        model-selection schema expects:
+          - problem_type: 'supervised' -> 'classification'/'regression' (uses the
+            FE-resolved task), 'unsupervised' kept, enum values passed through.
+          - input_cols / drop_cols: [{name, col_type}, ...] -> [name, ...].
+          - output_cols: filled from the target column when empty.
+          - col_types: {name: col_type} derived from the dict-form columns.
+        """
+        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+        problem_type = raw.get("problem_type")
+        if problem_type not in {"classification", "regression", "unsupervised"}:
+            # 'supervised' (or anything non-enum): use the task FE already resolved.
+            problem_type = resolved_task if resolved_task in {"classification", "regression"} else "classification"
+
+        def _names(columns: Any) -> list[str]:
+            names: list[str] = []
+            for column in columns or []:
+                if isinstance(column, dict):
+                    name = column.get("name")
+                    if name:
+                        names.append(str(name))
+                elif column:
+                    names.append(str(column))
+            return names
+
+        def _col_types(columns: Any) -> dict[str, str]:
+            mapping: dict[str, str] = {}
+            for column in columns or []:
+                if isinstance(column, dict) and column.get("name") and column.get("col_type"):
+                    mapping[str(column["name"])] = str(column["col_type"])
+            return mapping
+
+        input_cols = _names(raw.get("input_cols"))
+        drop_cols = _names(raw.get("drop_cols") or raw.get("cols_to_drop"))
+        output_cols = _names(raw.get("output_cols")) or ([target_column] if target_column else [])
+        col_types = _col_types(raw.get("input_cols"))
+        if target_column and raw.get("target_col_type"):
+            col_types[target_column] = str(raw["target_col_type"])
+
+        normalized = {
+            "problem_type": problem_type,
+            "output_cols": output_cols,
+            "input_cols": input_cols,
+            "drop_cols": drop_cols,
+            "col_types": col_types,
+            "data_format": raw.get("data_format", "tabular"),
+            "user_description": raw.get("user_description", ""),
+        }
+        selection_path = self.reports_dir / "metadata_model_selection.json"
+        selection_path.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
+        return selection_path
 
     def _run_model_selection(
         self,
