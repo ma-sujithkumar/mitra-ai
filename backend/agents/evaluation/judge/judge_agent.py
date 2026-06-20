@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from google.adk.agents import LlmAgent
 from google.adk.runners import InMemoryRunner
-from google.adk.sessions import InMemorySessionService
 
 from llm.adk_client import LlmSettings, build_llm_model
 from .config_loader import load_judge_config
@@ -68,8 +67,8 @@ async def _invoke_llm_agent(
         model=llm_model,
         instruction="You are a precise ML model ranking commentator. Respond only with the JSON schema requested.",
     )
-    session_service = InMemorySessionService()
-    runner = InMemoryRunner(agent=agent, app_name="judge_agent", session_service=session_service)
+    runner = InMemoryRunner(agent=agent, app_name="judge_agent")
+    session_service = runner.session_service
 
     session = await session_service.create_session(app_name="judge_agent", user_id="judge")
     response_text_parts: List[str] = []

@@ -80,14 +80,16 @@ class ConfigLoader:
     
     def load_metadata(self) -> Dict[str, Any]:
         """
-        Load metadata.json from session root or reports/ subdirectory.
+        Load metadata from the session, preferring the Epic-3-normalized file.
 
-        The pipeline writes metadata into reports/metadata.json; earlier code
-        placed it directly under the session root. Try both so HPT works
-        regardless of which stage produced the session.
+        training_service.py writes reports/metadata_epic3.json with problem_type
+        already mapped to the canonical 'classification'/'regression'/'unsupervised'
+        enum (raw metadata.json may still say problem_type='supervised'). Prefer
+        the normalized file so HPT reads the same problem_type as training.
         """
-        # Prefer reports/ location (current pipeline standard).
         candidates = [
+            self.session_root / "reports" / "metadata_epic3.json",
+            self.session_root / "metadata_epic3.json",
             self.session_root / "reports" / "metadata.json",
             self.session_root / "metadata.json",
         ]

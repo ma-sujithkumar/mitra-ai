@@ -230,6 +230,21 @@ class HyperparameterTuningAgent:
             primary_metric=self.primary_metric,
         )
 
+        # Build a compact per-trial history for the optimization history plot.
+        # Each entry carries only what the plot generator needs (number, value, best_so_far).
+        raw_trials = optuna_result.get('all_trials', [])
+        best_so_far_score = float("-inf")
+        trial_history = []
+        for raw_trial in raw_trials:
+            val_score = raw_trial.get('val_score', 0.0) or 0.0
+            if val_score > best_so_far_score:
+                best_so_far_score = val_score
+            trial_history.append({
+                'trial_number': raw_trial.get('trial_number'),
+                'value': val_score,
+                'best_so_far': best_so_far_score,
+            })
+
         # Build result entry
         result_entry = {
             'name': model_name,
@@ -246,6 +261,8 @@ class HyperparameterTuningAgent:
             },
             'complexity': self._estimate_complexity(model_entry, selected_trial['hyperparameters']),
             'hyperparam_sensitivity': hyperparam_sensitivity,
+            # Include per-trial history so the optimization history plot renders.
+            'trial_history': trial_history,
             'n_trials': optuna_result['n_trials_run'],
             'n_successful_trials': optuna_result['n_successful_trials'],
             'best_trial_number': selected_trial['trial_number'],

@@ -77,7 +77,10 @@ class SHAPRunner:
         loaded_model = ModelLoader(execution_logger).load(model_path)
         loaded_dataset = DatasetLoader(execution_logger).load(dataset_path)
 
-        schema_result = SchemaValidator(execution_logger).validate(
+        schema_result = SchemaValidator(
+            execution_logger,
+            target_column_candidates=(target_column,),
+        ).validate(
             loaded_dataset=loaded_dataset,
             loaded_model=loaded_model,
             session_context=session_ctx,
