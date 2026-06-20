@@ -20,11 +20,16 @@ class ValidationCheckResult:
     status: str
     detail: str
     warn_message: str | None = None
+    # Optional structured payload (e.g. the per-column null breakdown) so the UI
+    # can render specifics and offer drop/keep actions instead of a bare message.
+    meta: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, object]:
         result_dict = asdict(self)
         if self.warn_message is None:
             result_dict.pop("warn_message")
+        if self.meta is None:
+            result_dict.pop("meta")
         return result_dict
 
 
@@ -90,10 +95,15 @@ class DataValidator:
         null_threshold: float,
         pii_patterns: list[str],
         metadata_match_min_overlap: float,
+        null_drop_threshold: float = 0.5,
         chunk_size_rows: int = 50000,
     ) -> None:
         self.min_rows = min_rows
         self.null_threshold = null_threshold
+        # Columns at/above this null fraction are auto-dropped by feature
+        # engineering before training, so the null check only warns about them
+        # instead of blocking the run. Mirrors imputer.null_drop_threshold.
+        self.null_drop_threshold = null_drop_threshold
         self.pii_patterns = pii_patterns
         self.metadata_match_min_overlap = metadata_match_min_overlap
         self.chunk_size_rows = chunk_size_rows
@@ -113,7 +123,7 @@ class DataValidator:
         checks_by_key = {
             "format": self._check_format(data_file=data_file, summary=summary),
             "rows": self._check_rows(summary=summary),
-            "nulls": self._check_nulls(summary=summary),
+            "nulls": self._check_nulls(summary=summary, target_col=target_col),
             "variance": self._check_variance(summary=summary),
             "pii": self._check_pii(column_names=summary.column_names),
             "target": self._check_target(
@@ -197,6 +207,7 @@ class DataValidator:
     def _check_nulls(
         self,
         summary: DatasetValidationSummary,
+        target_col: str | None = None,
     ) -> ValidationCheckResult:
         if summary.row_count == 0:
             return ValidationCheckResult(
@@ -206,24 +217,77 @@ class DataValidator:
                 detail="0 columns exceed null threshold",
             )
 
-        null_heavy_columns = [
-            column_name
-            for column_name, null_count in summary.null_counts.items()
-            if (null_count / summary.row_count) > self.null_threshold
-        ]
-        if null_heavy_columns:
+        # Build a structured per-column breakdown. Columns at/above the drop
+        # threshold are auto-dropped by feature engineering, so we only WARN
+        # about them (the run still proceeds). The check only FAILS when the
+        # chosen target column itself is too empty, since the target cannot be
+        # dropped and an empty target makes training impossible.
+        normalized_target_col = (target_col or "").strip()
+        sparse_columns: list[dict[str, Any]] = []
+        target_blocked = False
+        for column_name, null_count in summary.null_counts.items():
+            null_rate = null_count / summary.row_count
+            if null_rate < self.null_drop_threshold:
+                continue
+            is_target = column_name == normalized_target_col
+            if is_target and null_rate > self.null_threshold:
+                action = "block"
+                target_blocked = True
+            else:
+                action = "auto-drop"
+            sparse_columns.append(
+                {
+                    "column": column_name,
+                    "null_rate": round(null_rate, 4),
+                    "null_percent": round(null_rate * 100, 1),
+                    "action": action,
+                }
+            )
+
+        meta = {
+            "null_threshold": self.null_threshold,
+            "null_drop_threshold": self.null_drop_threshold,
+            "columns": sparse_columns,
+        }
+
+        if target_blocked:
             return ValidationCheckResult(
                 key="nulls",
                 label=self.check_labels["nulls"],
                 status="fail",
-                detail=f"{len(null_heavy_columns)} columns exceed null threshold",
+                detail=(
+                    f"Target column '{normalized_target_col}' is mostly empty "
+                    "and cannot be used; pick a different target or clean it"
+                ),
+                meta=meta,
+            )
+
+        if sparse_columns:
+            dropped_names = ", ".join(
+                f"{item['column']} ({item['null_percent']}%)"
+                for item in sparse_columns
+            )
+            return ValidationCheckResult(
+                key="nulls",
+                label=self.check_labels["nulls"],
+                status="warn",
+                detail=(
+                    f"{len(sparse_columns)} sparse column(s) will be auto-dropped "
+                    f"before training: {dropped_names}"
+                ),
+                warn_message=(
+                    "Columns above the drop threshold are removed automatically. "
+                    "Raise the null threshold in Run Config to keep them."
+                ),
+                meta=meta,
             )
 
         return ValidationCheckResult(
             key="nulls",
             label=self.check_labels["nulls"],
             status="pass",
-            detail="0 columns exceed null threshold",
+            detail="No columns exceed the null threshold",
+            meta=meta,
         )
 
     def _check_variance(

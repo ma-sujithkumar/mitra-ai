@@ -6,17 +6,20 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.activity_log import configure_file_logging
 from backend.agents.llm_smoke_test import LlmSmokeTester
 from backend.agents.metadata_gen_agent import MetadataAgentRunner
 from backend.auth.db import AuthDatabase
 from backend.auth.service import AuthService
 from backend.config_loader import ConfigLoader
+from backend.config_loader import LoggingConfig
 from backend.jobs import JobRegistry
 from backend.routers import auth
 from backend.routers import config
 from backend.routers import evaluation
 from backend.routers import health
 from backend.routers import llm
+from backend.routers import logs
 from backend.routers import metadata
 from backend.routers import runs
 from backend.routers import upload
@@ -28,18 +31,27 @@ from backend.services.training_service import TrainingService
 from backend.orchestration.events import TrainingEventBus
 
 
-def _configure_mitra_logging() -> None:
+def _configure_mitra_logging(logging_config: LoggingConfig) -> None:
     # Ensure the application's own loggers emit to the console at INFO, since
-    # uvicorn only attaches handlers to its own logger namespaces.
+    # uvicorn only attaches handlers to its own logger namespaces. A rotating
+    # file handler is added so all backend activity is also persisted to disk.
     mitra_logger = logging.getLogger("mitra")
     mitra_logger.setLevel(logging.INFO)
-    if not mitra_logger.handlers:
+    if not any(
+        isinstance(handler, logging.StreamHandler) for handler in mitra_logger.handlers
+    ):
         handler = logging.StreamHandler()
         handler.setFormatter(
             logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
         )
         mitra_logger.addHandler(handler)
         mitra_logger.propagate = False
+    configure_file_logging(
+        log_file=logging_config.log_file,
+        level=logging_config.log_level,
+        max_bytes=logging_config.log_max_bytes,
+        backup_count=logging_config.log_backup_count,
+    )
 
 
 @asynccontextmanager
@@ -51,8 +63,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app(config_loader: ConfigLoader | None = None) -> FastAPI:
-    _configure_mitra_logging()
     resolved_config_loader = config_loader or ConfigLoader()
+    _configure_mitra_logging(logging_config=resolved_config_loader.logging)
     app = FastAPI(title="MITRA Epic 1 API", lifespan=_lifespan)
     app.state.started_at_epoch = time()
     app.state.config_loader = resolved_config_loader
@@ -93,6 +105,7 @@ def create_app(config_loader: ConfigLoader | None = None) -> FastAPI:
     app.include_router(config.router)
     app.include_router(runs.router)
     app.include_router(llm.router)
+    app.include_router(logs.router)
     app.include_router(training_events.router)
     app.include_router(training.router)
     app.include_router(evaluation.router)

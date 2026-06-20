@@ -19,6 +19,14 @@ class PathConfig:
 
 
 @dataclass(frozen=True)
+class LoggingConfig:
+    log_file: Path
+    log_level: str
+    log_max_bytes: int
+    log_backup_count: int
+
+
+@dataclass(frozen=True)
 class UploadConfig:
     max_file_size_mb: int
     allowed_extensions: list[str]
@@ -27,6 +35,7 @@ class UploadConfig:
     recent_upload_limit: int
     min_rows: int
     null_threshold: float
+    null_drop_threshold: float
     pii_patterns: list[str]
     metadata_match_min_overlap: float
 
@@ -141,6 +150,23 @@ class ConfigLoader:
                 self.parser.get("paths", "SESSION_LOG_DIR")
             ),
         )
+        # Optional section: fallbacks keep older config.ini files working.
+        self.logging = LoggingConfig(
+            log_file=self._resolve_repo_path(
+                self.parser.get(
+                    "logging", "LOG_FILE", fallback=".mitra/logs/mitra.log"
+                )
+            ),
+            log_level=self.parser.get(
+                "logging", "LOG_LEVEL", fallback="INFO"
+            ).strip().upper(),
+            log_max_bytes=self.parser.getint(
+                "logging", "LOG_MAX_BYTES", fallback=5242880
+            ),
+            log_backup_count=self.parser.getint(
+                "logging", "LOG_BACKUP_COUNT", fallback=3
+            ),
+        )
         self.upload = UploadConfig(
             max_file_size_mb=self.parser.getint("upload", "MAX_FILE_SIZE_MB"),
             allowed_extensions=self._parse_csv_list(
@@ -153,6 +179,10 @@ class ConfigLoader:
             recent_upload_limit=self.parser.getint("upload", "RECENT_UPLOAD_LIMIT"),
             min_rows=self.parser.getint("upload", "MIN_ROWS"),
             null_threshold=self.parser.getfloat("upload", "NULL_THRESHOLD"),
+            # Fallback keeps older config.ini files (without this key) working.
+            null_drop_threshold=self.parser.getfloat(
+                "upload", "NULL_DROP_THRESHOLD", fallback=0.5
+            ),
             pii_patterns=self._parse_json_string_list(
                 self.parser.get("upload", "PII_PATTERNS")
             ),

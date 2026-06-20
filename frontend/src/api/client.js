@@ -54,6 +54,8 @@ export async function startValidation(payload) {
       session_id: payload.sessionId,
       target_col: payload.targetCol || null,
       validation_split: payload.validationSplit ?? null,
+      // Per-run null threshold override (null => use server default).
+      null_threshold: payload.nullThreshold ?? null,
     }),
   });
 }
@@ -117,6 +119,14 @@ export async function fetchPlots(sessionId) {
 
 export function plotUrl(sessionId, plotPath) {
   return `/api/runs/${encodeURIComponent(sessionId)}/plots/${plotPath}`;
+}
+
+export async function fetchActivityLog(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/activity`);
+}
+
+export function activityLogDownloadUrl(sessionId) {
+  return `/api/logs/download/${encodeURIComponent(sessionId)}`;
 }
 
 export async function fetchAdvancedConfig(sessionId = null) {

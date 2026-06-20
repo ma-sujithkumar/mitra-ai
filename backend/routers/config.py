@@ -53,6 +53,41 @@ TYPE_COERCERS: dict[str, Callable[[Any], Any]] = {
 # paths are intentionally excluded from this surface.
 ADVANCED_PARAM_SPECS: list[dict[str, Any]] = [
     {
+        "group": "Data validation",
+        "key": "upload.null_threshold",
+        "default": 0.8,
+        "section": "upload",
+        "option": "NULL_THRESHOLD",
+        "label": "Null threshold",
+        "type": "float",
+        "minimum": 0.1,
+        "maximum": 1.0,
+        "recommended": 0.8,
+        "hint": "Fraction of empty values a column may have before it is flagged.",
+        "impact": (
+            "Raising this keeps sparser columns; lowering it flags more columns "
+            "as too empty. Columns above the drop threshold are auto-dropped "
+            "either way, except the target column."
+        ),
+    },
+    {
+        "group": "Data validation",
+        "key": "upload.null_drop_threshold",
+        "default": 0.5,
+        "section": "upload",
+        "option": "NULL_DROP_THRESHOLD",
+        "label": "Auto-drop threshold",
+        "type": "float",
+        "minimum": 0.1,
+        "maximum": 1.0,
+        "recommended": 0.5,
+        "hint": "Columns at/above this empty fraction are dropped before training.",
+        "impact": (
+            "Lowering this drops more sparse columns automatically; raising it "
+            "keeps them and lets imputation fill the gaps."
+        ),
+    },
+    {
         "group": "Pipeline",
         "key": "pipeline.train_test_split",
         "default": 0.8,
@@ -62,6 +97,12 @@ ADVANCED_PARAM_SPECS: list[dict[str, Any]] = [
         "type": "float",
         "minimum": 0.5,
         "maximum": 0.95,
+        "recommended": 0.8,
+        "hint": "Fraction of rows used for training; the rest is held out for testing.",
+        "impact": (
+            "Higher means more training data but a smaller, noisier test set; "
+            "0.8 (80/20) is a safe default for most datasets."
+        ),
     },
     {
         "group": "Pipeline",
@@ -73,6 +114,9 @@ ADVANCED_PARAM_SPECS: list[dict[str, Any]] = [
         "type": "int",
         "minimum": 1,
         "maximum": 50,
+        "recommended": 10,
+        "hint": "How many candidate models the selection agent may train.",
+        "impact": "More models explore more options but take longer and cost more.",
     },
     {
         "group": "Pipeline",
@@ -84,6 +128,9 @@ ADVANCED_PARAM_SPECS: list[dict[str, Any]] = [
         "type": "int",
         "minimum": 1,
         "maximum": 200,
+        "recommended": 5,
+        "hint": "Hyperparameter tuning trials per model.",
+        "impact": "More trials can find better hyperparameters but extend training time.",
     },
     {
         "group": "Pipeline",
@@ -93,6 +140,8 @@ ADVANCED_PARAM_SPECS: list[dict[str, Any]] = [
         "option": "RUN_POST_TRAINING_EVAL",
         "label": "Run SHAP + overfitting + HPT + judge after training",
         "type": "bool",
+        "hint": "Run the full evaluation suite so the leaderboard and verdict populate.",
+        "impact": "Turn off to stop at the training summary and finish faster.",
     },
     {
         "group": "Pipeline",
@@ -104,6 +153,9 @@ ADVANCED_PARAM_SPECS: list[dict[str, Any]] = [
         "type": "int",
         "minimum": 1,
         "maximum": 10,
+        "recommended": 3,
+        "hint": "How many feedback rounds the judge agent may take.",
+        "impact": "More turns can refine the verdict but add LLM calls.",
     },
     {
         "group": "Training",
@@ -114,6 +166,8 @@ ADVANCED_PARAM_SPECS: list[dict[str, Any]] = [
         "label": "Execution mode",
         "type": "enum",
         "choices": ["ray", "local"],
+        "hint": "Run training on a Ray cluster or in-process locally.",
+        "impact": "Use 'local' for small datasets/debugging; 'ray' to parallelize.",
     },
     {
         "group": "Training",
@@ -125,6 +179,9 @@ ADVANCED_PARAM_SPECS: list[dict[str, Any]] = [
         "type": "int",
         "minimum": 1,
         "maximum": 16,
+        "recommended": 2,
+        "hint": "How many training runs may execute at once.",
+        "impact": "Higher uses more CPU/memory; keep low on constrained machines.",
     },
     {
         "group": "Hyperparameter Tuning",
@@ -136,6 +193,9 @@ ADVANCED_PARAM_SPECS: list[dict[str, Any]] = [
         "type": "float",
         "minimum": 0.0,
         "maximum": 1.0,
+        "recommended": 0.10,
+        "hint": "Max allowed train-vs-validation score gap before flagging overfit.",
+        "impact": "Lower is stricter and rejects more overfit models.",
     },
     {
         "group": "Hyperparameter Tuning",
@@ -147,6 +207,9 @@ ADVANCED_PARAM_SPECS: list[dict[str, Any]] = [
         "type": "float",
         "minimum": 0.05,
         "maximum": 0.5,
+        "recommended": 0.2,
+        "hint": "Fraction of training data held out to validate HPT trials.",
+        "impact": "Larger gives more reliable validation but less tuning data.",
     },
     {
         "group": "Hyperparameter Tuning",
@@ -158,8 +221,14 @@ ADVANCED_PARAM_SPECS: list[dict[str, Any]] = [
         "type": "int",
         "minimum": 0,
         "maximum": 2_147_483_647,
+        "recommended": 42,
+        "hint": "Seed for reproducible hyperparameter search.",
+        "impact": "Fixing the seed makes tuning runs repeatable.",
     },
 ]
+
+# Optional descriptive fields surfaced to the UI for tooltips/recommendations.
+SPEC_DISPLAY_FIELDS = ("hint", "recommended", "impact")
 
 # Fast lookup from "section.option" key -> spec, built once at import time.
 SPEC_BY_KEY: dict[str, dict[str, Any]] = {
@@ -214,6 +283,8 @@ def public_config(
             "allowed_extensions": config_loader.upload.allowed_extensions,
             "max_file_size_mb": config_loader.upload.max_file_size_mb,
             "recent_upload_limit": config_loader.upload.recent_upload_limit,
+            "null_threshold": config_loader.upload.null_threshold,
+            "null_drop_threshold": config_loader.upload.null_drop_threshold,
         },
         "pipeline": {
             "train_test_split": config_loader.pipeline.train_test_split,
@@ -266,6 +337,10 @@ def advanced_config(
             param_view["minimum"] = spec["minimum"]
         if "maximum" in spec:
             param_view["maximum"] = spec["maximum"]
+        # Pass through optional tooltip/recommended/impact metadata when present.
+        for display_field in SPEC_DISPLAY_FIELDS:
+            if display_field in spec:
+                param_view[display_field] = spec[display_field]
         params.append(param_view)
 
     return {"session_id": session_id, "params": params}

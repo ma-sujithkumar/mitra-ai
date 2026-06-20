@@ -1,0 +1,54 @@
+{
+  "SESSION_NOT_FOUND": {
+    "message": "This run could not be found.",
+    "fix": "Re-upload your dataset to start a fresh run."
+  },
+  "UNSUPPORTED_FILE_EXTENSION": {
+    "message": "That file type is not supported.",
+    "fix": "Upload a .csv, .xls, or .xlsx file (metadata may also be .json)."
+  },
+  "FILE_TOO_LARGE": {
+    "message": "The file is larger than the allowed limit.",
+    "fix": "Reduce the file size or split the dataset, then upload again."
+  },
+  "VALIDATION_REQUIRED": {
+    "message": "Validation must run before metadata generation.",
+    "fix": "Click Validate & Review first, then continue."
+  },
+  "VALIDATION_FAILED": {
+    "message": "Metadata generation needs validation to pass first.",
+    "fix": "Resolve the blocking checks above, then re-run validation."
+  },
+  "LLM_CONFIGURATION_UNAVAILABLE": {
+    "message": "The LLM configuration is unavailable.",
+    "fix": "Check provider, model, and gateway settings in Run Configuration."
+  },
+  "LLM_CREDENTIALS_REQUIRED": {
+    "message": "LLM credentials are required for this step.",
+    "fix": "Add an API key or gateway URL in Run Configuration and test the connection."
+  },
+  "METADATA_GENERATION_FAILED": {
+    "message": "Metadata generation failed.",
+    "fix": "Verify the LLM connection, then retry. Check the activity log for details."
+  },
+  "TRAINING_ARTIFACTS_INVALID": {
+    "message": "Training cannot start because required files are missing.",
+    "fix": "Re-run validation and metadata generation to regenerate the artifacts."
+  },
+  "TRAINING_ALREADY_EXISTS": {
+    "message": "A training run is already in progress for this dataset.",
+    "fix": "Open Live Training to watch it, or cancel it before starting again."
+  },
+  "TRAINING_NOT_FOUND": {
+    "message": "No training run was found for this session.",
+    "fix": "Start training from the New Run screen."
+  },
+  "TRAINING_NOT_CANCELLABLE": {
+    "message": "This training run can no longer be cancelled.",
+    "fix": "It has already finished or stopped; refresh to see the final status."
+  },
+  "ACTIVITY_LOG_NOT_FOUND": {
+    "message": "No activity log exists yet for this run.",
+    "fix": "Run an action (upload, validate, train) to generate log entries."
+  }
+}

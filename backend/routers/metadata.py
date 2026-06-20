@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from backend.activity_log import ActivityLog
 from backend.agents.metadata_gen_agent import LlmSettings
 from backend.agents.metadata_gen_agent import LlmSettingsResolver
 from backend.agents.metadata_gen_agent import MetadataAgentRunner
@@ -65,6 +66,8 @@ def start_metadata(
         session_id=metadata_request.session_id,
         job_type="metadata",
     )
+    activity_log = ActivityLog(session_path=session_path)
+    activity_log.record(stage="metadata", message="Metadata generation started")
 
     llm_settings = _resolve_llm_settings(
         metadata_request=metadata_request,
@@ -99,6 +102,8 @@ def start_metadata(
         event={
             "type": "progress",
             "step": "reading_data",
+            "step_index": 1,
+            "step_total": 3,
             "message": "Reading dataset sample",
         },
     )
@@ -122,6 +127,8 @@ def start_metadata(
             event={
                 "type": "progress",
                 "step": "inferring_schema",
+                "step_index": 2,
+                "step_total": 3,
                 "message": (
                     f"Inferring schema with {llm_settings.provider}/"
                     f"{llm_settings.model}"
@@ -151,9 +158,16 @@ def start_metadata(
         job_type="metadata",
         event={
             "type": "done",
+            "step": "writing_metadata",
+            "step_index": 3,
+            "step_total": 3,
             "artifact": "metadata.json",
             "metadata_fields": sorted(result.metadata.keys()),
         },
+    )
+    activity_log.record(
+        stage="metadata",
+        message=f"Metadata generated ({len(result.metadata)} fields)",
     )
     job_registry.mark_done(
         session_id=metadata_request.session_id,

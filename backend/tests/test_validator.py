@@ -16,12 +16,14 @@ def check_status(results: list[object], key: str) -> str:
 def build_validator(
     min_rows: int = 10,
     null_threshold: float = 0.8,
+    null_drop_threshold: float = 0.5,
     pii_patterns: list[str] | None = None,
     metadata_match_min_overlap: float = 0.5,
 ) -> DataValidator:
     return DataValidator(
         min_rows=min_rows,
         null_threshold=null_threshold,
+        null_drop_threshold=null_drop_threshold,
         pii_patterns=pii_patterns if pii_patterns is not None else ["(?i)email"],
         metadata_match_min_overlap=metadata_match_min_overlap,
     )
@@ -53,14 +55,41 @@ def test_validator_passes_clean_dataset(tmp_path: Path) -> None:
     assert all(result.status == "pass" for result in results)
 
 
-def test_validator_fails_null_heavy_column(tmp_path: Path) -> None:
+def test_validator_warns_and_autodrops_null_heavy_feature(tmp_path: Path) -> None:
+    # A sparse non-target column should WARN (and be auto-dropped) rather than
+    # block the run, matching the feature-engineering imputer behaviour.
     data_file = tmp_path / "data.csv"
     write_csv(
         path=data_file,
         content="feature,target\n,x\n,y\n,z\n,w\n1,v\n",
     )
 
-    validator = build_validator(min_rows=1, null_threshold=0.5)
+    validator = build_validator(min_rows=1, null_threshold=0.5, null_drop_threshold=0.5)
+    results = list(
+        validator.validate(
+            data_file=data_file,
+            session_id="sid",
+            target_col="target",
+        )
+    )
+
+    nulls_check = next(result for result in results if result.key == "nulls")
+    assert nulls_check.status == "warn"
+    assert nulls_check.meta is not None
+    sparse_columns = [item["column"] for item in nulls_check.meta["columns"]]
+    assert "feature" in sparse_columns
+    assert nulls_check.meta["columns"][0]["action"] == "auto-drop"
+
+
+def test_validator_blocks_null_heavy_target(tmp_path: Path) -> None:
+    # The target itself cannot be dropped, so an empty target is a hard block.
+    data_file = tmp_path / "data.csv"
+    write_csv(
+        path=data_file,
+        content="feature,target\n1,\n2,\n3,\n4,\n5,v\n",
+    )
+
+    validator = build_validator(min_rows=1, null_threshold=0.5, null_drop_threshold=0.5)
     results = list(
         validator.validate(
             data_file=data_file,

@@ -7,7 +7,9 @@ const STATUS_MAP = {
   completed: ['pill-done', 'Completed'],
   complete: ['pill-done', 'Complete'],
   review: ['pill-warn', 'Review'],
-  warn: ['pill-warn', 'Watch'],
+  warn: ['pill-warn', 'Warning'],
+  warning: ['pill-warn', 'Warning'],
+  blocked: ['pill-err', 'Blocked'],
   error: ['pill-err', 'Error'],
   failed: ['pill-err', 'Failed'],
   timed_out: ['pill-err', 'Timed out'],
@@ -18,11 +20,12 @@ const STATUS_MAP = {
 
 function StatusPill({ status, label, spin = false }) {
   const [className, defaultLabel] = STATUS_MAP[status] || ['pill-idle', status];
+  const resolvedLabel = label || defaultLabel;
 
   return (
-    <span className={`pill ${className}`}>
+    <span className={`pill ${className}`} role="status" aria-label={`Status: ${resolvedLabel}`}>
       {status === 'running' && spin ? <span className="spinner small" /> : <span className="dot" />}
-      {label || defaultLabel}
+      {resolvedLabel}
     </span>
   );
 }

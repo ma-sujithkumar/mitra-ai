@@ -8,6 +8,7 @@ from fastapi import Depends
 from fastapi import HTTPException
 from fastapi import UploadFile
 
+from backend.activity_log import ActivityLog
 from backend.config_loader import ConfigLoader
 from backend.dependencies import get_config_loader
 from backend.dependencies import get_session_manager
@@ -68,6 +69,14 @@ def upload_dataset(
             },
         ) from error
 
+    # Record the upload as the first entry in this run's activity log.
+    ActivityLog(session_path=session_info.session_path).record(
+        stage="upload",
+        message=(
+            f"{session_info.original_filename} accepted "
+            f"({summary.row_count} rows, {summary.column_count} cols)"
+        ),
+    )
     session_manager.write_session_metadata(
         session_id=session_info.session_id,
         updates={
