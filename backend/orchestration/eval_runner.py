@@ -214,7 +214,12 @@ class EvalRunner:
         self.max_shap_samples = max_shap_samples
         self.verbose = verbose
 
-    def run(self, training_summary: Any, engineered_dataset_path: Path) -> dict[str, Any]:
+    def run(
+        self,
+        training_summary: Any,
+        engineered_dataset_path: Path,
+        run_hpt: bool = True,
+    ) -> dict[str, Any]:
         """Run all three eval branches in parallel.
 
         Returns a dict with keys: shap_dirs, overfitting_dirs, hpt_results_path
@@ -269,14 +274,18 @@ class EvalRunner:
                 target_column=self.target_column,
                 verbose=self.verbose,
             )
-            hpt_future = pool.submit(
-                hpt_runner.run,
-                session_id=self.session_id,
-                session_dir=self.session_dir,
-                verbose=self.verbose,
-            )
+            if run_hpt:
+                hpt_future = pool.submit(
+                    hpt_runner.run,
+                    session_id=self.session_id,
+                    session_dir=self.session_dir,
+                    verbose=self.verbose,
+                )
+            else:
+                hpt_future = None
+
             overfitting_dirs = overfit_future.result()
-            hpt_results_path = hpt_future.result()
+            hpt_results_path = hpt_future.result() if hpt_future else None
 
         return {
             "shap_dirs": shap_dirs,
