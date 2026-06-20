@@ -120,7 +120,14 @@ def test_start_runs_in_background_and_persists_summary(
     assert wait_for_terminal(service, session_id) == "completed"
     final_state = service.get_status(session_id)
     assert final_state.completed_models == 1
-    assert Path(final_state.summary_path or "").is_file()
+    summary_path = Path(final_state.summary_path or "")
+    assert summary_path.is_file()
+    training_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert training_summary["status"] == "completed"
+    assert training_summary["completed"] == 1
+    reports_summary_path = session_path / "reports" / "training_summary.json"
+    assert reports_summary_path.is_file()
+    assert json.loads(reports_summary_path.read_text(encoding="utf-8")) == training_summary
     assert (session_path / "training" / "training_run.json").is_file()
     assert fake_executor.closed is True
 

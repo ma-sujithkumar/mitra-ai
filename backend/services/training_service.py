@@ -558,6 +558,7 @@ class TrainingService:
 
             if cancel_event.is_set():
                 return
+            self._write_training_summary_artifacts(paths, summary)
             summary_updates = self._summary_state_updates(summary)
             self._update_state(
                 request.session_id,
@@ -609,6 +610,62 @@ class TrainingService:
             and not cancel_event.is_set()
         ):
             self._run_post_training_evaluation(request, paths, completed_summary)
+
+    def _write_training_summary_artifacts(
+        self,
+        paths: ResolvedTrainingPaths,
+        summary: TrainingSummary,
+    ) -> None:
+        """Persist the canonical training summary before optional evaluation.
+
+        The orchestrator writes ``training/training_summary.json``, but the
+        backend service is the UI/API boundary. Re-writing it here guarantees
+        the file is complete and also mirrors the same payload into
+        ``reports/training_summary.json`` so Leaderboard can render a
+        training-only result even when Epic-4/Judge is disabled or skipped.
+        """
+
+        if hasattr(summary, "model_dump"):
+            payload = summary.model_dump(mode="json")
+        else:
+            payload = {
+                "session_id": getattr(summary, "session_id", paths.session_path.name),
+                "status": getattr(summary, "status", "failed"),
+                "total_models": getattr(summary, "total_models", None),
+                "completed": getattr(summary, "completed", 0),
+                "failed": getattr(summary, "failed", 0),
+                "models": [
+                    item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+                    for item in getattr(summary, "models", [])
+                ],
+            }
+        for destination in (
+            paths.summary_path,
+            paths.session_path / "reports" / "training_summary.json",
+        ):
+            self._atomic_write_json(destination, payload)
+
+    @staticmethod
+    def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_descriptor, temp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        try:
+            with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, path)
+        except Exception:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
+            raise
 
     def _run_post_training_evaluation(
         self,
