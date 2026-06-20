@@ -1,5 +1,6 @@
 import { useState } from 'react';
 
+import AuthPage from './auth/AuthPage.jsx';
 import Dashboard from './screens/Dashboard.jsx';
 import LeaderboardScreen from './screens/LeaderboardScreen.jsx';
 import TrainingPage from './screens/TrainingPage.jsx';
@@ -37,6 +38,10 @@ const ROUTE_META = {
 };
 
 function App() {
+  const [authUser, setAuthUser] = useState(() => {
+    const stored = window.localStorage.getItem('mitra.authUser');
+    return stored ? JSON.parse(stored) : null;
+  });
   const [route, setRoute] = useState('dashboard');
   const [previousRoute, setPreviousRoute] = useState('dashboard');
   const [runState, setRunState] = useState('idle');
@@ -58,6 +63,11 @@ function App() {
     configKey: '',
   });
   const meta = ROUTE_META[route] || ROUTE_META.dashboard;
+
+  function handleAuthenticated(user) {
+    setAuthUser(user);
+    window.localStorage.setItem('mitra.authUser', JSON.stringify(user));
+  }
 
   function go(nextRoute) {
     if (nextRoute !== route) {
@@ -100,6 +110,11 @@ function App() {
       />
     ),
   };
+
+  // Auth gate: render the login/signup page until a user is authenticated.
+  if (!authUser) {
+    return <AuthPage onAuthenticated={handleAuthenticated} />;
+  }
 
   return (
     <div className="app">

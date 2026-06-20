@@ -77,6 +77,21 @@ class MetadataAgentConfig:
 
 
 @dataclass(frozen=True)
+class AuthDbConfig:
+    db_host_env: str
+    db_port_env: str
+    db_name_env: str
+    db_user_env: str
+    db_password_env: str
+    db_host_default: str
+    db_port_default: str
+    db_name_default: str
+    db_user_default: str
+    user_workspace_root: Path
+    password_min_length: int
+
+
+@dataclass(frozen=True)
 class TrainingApiConfig:
     model_library_root: Path
     default_execution_mode: str
@@ -260,6 +275,43 @@ class ConfigLoader:
             raise ValueError(
                 "training_api.DEFAULT_EXECUTION_MODE must be 'ray' or 'local'"
             )
+        # [authdb] section: uses fallbacks so the app starts without a
+        # PostgreSQL server; only auth endpoints fail in that case.
+        self.authdb = AuthDbConfig(
+            db_host_env=self.parser.get(
+                "authdb", "DB_HOST_ENV", fallback="AUTHDB_HOST"
+            ),
+            db_port_env=self.parser.get(
+                "authdb", "DB_PORT_ENV", fallback="AUTHDB_PORT"
+            ),
+            db_name_env=self.parser.get(
+                "authdb", "DB_NAME_ENV", fallback="AUTHDB_NAME"
+            ),
+            db_user_env=self.parser.get(
+                "authdb", "DB_USER_ENV", fallback="AUTHDB_USER"
+            ),
+            db_password_env=self.parser.get(
+                "authdb", "DB_PASSWORD_ENV", fallback="AUTHDB_PASSWORD"
+            ),
+            db_host_default=self.parser.get(
+                "authdb", "DB_HOST_DEFAULT", fallback="127.0.0.1"
+            ),
+            db_port_default=self.parser.get(
+                "authdb", "DB_PORT_DEFAULT", fallback="5432"
+            ),
+            db_name_default=self.parser.get(
+                "authdb", "DB_NAME_DEFAULT", fallback="authdb"
+            ),
+            db_user_default=self.parser.get(
+                "authdb", "DB_USER_DEFAULT", fallback="postgres"
+            ),
+            user_workspace_root=self._resolve_repo_path(
+                self.parser.get("authdb", "USER_WORKSPACE_ROOT", fallback="mitra")
+            ),
+            password_min_length=self.parser.getint(
+                "authdb", "PASSWORD_MIN_LENGTH", fallback=8
+            ),
+        )
 
     def base_model_for_provider(self, provider: str) -> str:
         provider_models = self.llm_models.as_provider_map()

@@ -27,7 +27,7 @@ numpy>=1.21.0
 scipy>=1.11.0
 
 # --- ML / model library ---
-scikit-learn>=1.8.0
+scikit-learn>=1.7.0
 xgboost>=2.0.0
 torch>=2.0.0
 torchvision>=0.15.0

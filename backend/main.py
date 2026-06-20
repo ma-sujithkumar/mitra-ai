@@ -8,8 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.agents.llm_smoke_test import LlmSmokeTester
 from backend.agents.metadata_gen_agent import MetadataAgentRunner
+from backend.auth.db import AuthDatabase
+from backend.auth.service import AuthService
 from backend.config_loader import ConfigLoader
 from backend.jobs import JobRegistry
+from backend.routers import auth
 from backend.routers import config
 from backend.routers import evaluation
 from backend.routers import health
@@ -65,6 +68,16 @@ def create_app(config_loader: ConfigLoader | None = None) -> FastAPI:
     )
     app.state.metadata_agent_runner = MetadataAgentRunner()
     app.state.llm_smoke_tester = LlmSmokeTester()
+    # Auth database is lazy: the engine/tables are created on first request so
+    # the app still starts when PostgreSQL is unavailable; only auth endpoints fail then.
+    auth_database = AuthDatabase(
+        authdb_config=resolved_config_loader.authdb,
+        repo_root=resolved_config_loader.repo_root,
+    )
+    app.state.auth_service = AuthService(
+        database=auth_database,
+        authdb_config=resolved_config_loader.authdb,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -72,6 +85,7 @@ def create_app(config_loader: ConfigLoader | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.include_router(auth.router)
     app.include_router(upload.router)
     app.include_router(validate.router)
     app.include_router(metadata.router)

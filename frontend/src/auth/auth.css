@@ -1,0 +1,95 @@
+.auth-shell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 28px 26px;
+}
+
+.auth-head {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.auth-brand-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 800;
+  font-size: 20px;
+}
+
+.auth-form {
+  margin-top: 18px;
+}
+
+.auth-alert {
+  margin-top: 16px;
+  border: 1px solid var(--error-line);
+  border-radius: var(--radius);
+  background: var(--error-bg);
+  color: var(--error);
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.auth-errors {
+  margin: 0 0 16px;
+  padding-left: 18px;
+  color: var(--error);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.auth-link {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.auth-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 24, 33, 0.45);
+  padding: 24px;
+  z-index: 50;
+}
+
+.auth-modal {
+  width: 100%;
+  max-width: 380px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 22px 20px;
+}
+
+.auth-modal p {
+  margin: 8px 0 18px;
+  font-size: 13px;
+}

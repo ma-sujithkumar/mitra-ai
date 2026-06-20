@@ -4,6 +4,7 @@ from fastapi import Request
 
 from backend.agents.llm_smoke_test import LlmSmokeTester
 from backend.agents.metadata_gen_agent import MetadataAgentRunner
+from backend.auth.service import AuthService
 from backend.config_loader import ConfigLoader
 from backend.jobs import JobRegistry
 from backend.session import SessionManager
@@ -27,3 +28,7 @@ def get_metadata_agent_runner(request: Request) -> MetadataAgentRunner:
 
 def get_llm_smoke_tester(request: Request) -> LlmSmokeTester:
     return request.app.state.llm_smoke_tester
+
+
+def get_auth_service(request: Request) -> AuthService:
+    return request.app.state.auth_service
