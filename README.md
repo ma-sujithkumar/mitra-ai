@@ -206,8 +206,14 @@ The codebase itself is never written to at runtime — only this directory.
   live inside the repo — see [Configuration](#configini-environment--paths)).
 * **Node.js 18+** and npm, for the frontend.
 * An API key for at least one LLM provider (OpenAI, Anthropic, or Gemini).
+* **Windows users:** the run commands below are given for **PowerShell**.
+  `bin/setup.sh` is a Bash script, so installing via it requires **Git Bash**
+  (ships with Git for Windows) or WSL; otherwise use the manual `pip` / `npm`
+  install shown for Windows below.
 
 ### Installation
+
+#### Linux / macOS
 
 1. Clone the repo and create a virtual environment (anywhere on disk):
    ```sh
@@ -235,6 +241,36 @@ The codebase itself is never written to at runtime — only this directory.
    ```sh
    bin/mitra up
    ```
+
+#### Windows (PowerShell)
+
+1. Clone the repo and create a virtual environment (anywhere on disk):
+   ```powershell
+   git clone git@github.com:Deeplearning1227/deeplearning-repo.git mitra
+   cd mitra
+   python -m venv C:\venvs\mitra
+   ```
+2. Point `config.ini` at that interpreter using a **native Windows path with
+   backslashes** (the launcher does not understand Git-Bash-style `/d/...`
+   paths — see [Configuration](#configini-environment--paths)):
+   ```ini
+   [python]
+   PYTHON=C:\venvs\mitra\Scripts\python.exe
+   ```
+3. Install dependencies. Either run the setup script from **Git Bash**
+   (`bin/setup.sh`), or install manually from PowerShell:
+   ```powershell
+   & "C:\venvs\mitra\Scripts\python.exe" -m pip install -r requirements.txt
+   cd frontend; npm install; cd ..
+   ```
+4. Copy the LLM credentials template and fill in a provider key:
+   ```powershell
+   Copy-Item .env.example .env
+   # edit .env: LLM_TYPE=anthropic / openai / gemini, LLM_API_KEY=...
+   ```
+5. Start the app — see [Usage](#run-the-full-app-backend--frontend) for the
+   two-terminal Windows flow (the bundled `bin/mitra up` launcher does not yet
+   start the frontend on Windows).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -299,6 +335,15 @@ Resolution rules that matter when configuring `[python] PYTHON`:
 | `relative/path` | Resolved relative to the repo root |
 | `some-command` (not a path) | Passed straight to the OS as a command on `PATH` |
 
+> [!IMPORTANT]
+> **On Windows**, `[python] PYTHON` must be a **native Windows path** (e.g.
+> `C:\venvs\mitra\Scripts\python.exe`) or a bare command on `PATH` (e.g.
+> `python`). The launcher resolves the venv interpreter at
+> `<venv>\Scripts\python.exe`. Git-Bash-style paths such as
+> `/d/conda/envs/mitra311/python.exe` are **not** understood by the Node
+> launcher and cause the backend to fail with `ENOENT` — use `D:\conda\...`
+> instead.
+
 `config.ini` never contains secrets, absolute machine-specific defaults baked
 into code, or LLM API keys — those live in `.env`.
 
@@ -342,28 +387,55 @@ own location, so it can also be invoked with a full path from anywhere.
 
 ### Run the full app (backend + frontend)
 
-```sh
-bin/mitra up
-```
-
 * Backend: `http://127.0.0.1:8000` (override with `MITRA_HOST`/`MITRA_PORT`)
 * Frontend: `http://127.0.0.1:5173` (Vite picks the next free port if busy)
-* `Ctrl-C` stops both processes cleanly.
 
 Open the frontend URL, upload a dataset on the first screen, and the Live
 Training page takes over automatically.
 
+**Linux / macOS** — one command starts both; `Ctrl-C` stops both cleanly:
+
+```sh
+bin/mitra up
+```
+
+**Windows (PowerShell)** — the bundled launcher cannot spawn `npm` on Windows
+(a Node `spawn EINVAL` limitation, see [Troubleshooting](#troubleshooting)),
+so start the two services in **separate terminals**:
+
+```powershell
+# Terminal 1 - backend (uses the interpreter from config.ini [python] PYTHON)
+& "C:\venvs\mitra\Scripts\python.exe" -m uvicorn backend.main:create_app --factory --host 127.0.0.1 --port 8000
+
+# Terminal 2 - frontend
+cd frontend; npm run dev
+```
+
 ### Run backend or frontend only
+
+**Linux / macOS:**
 
 ```sh
 bin/mitra backend     # uvicorn only, same host/port rules as above
 bin/mitra frontend    # vite dev server only
 ```
 
+**Windows (PowerShell):**
+
+```powershell
+# Backend only
+& "C:\venvs\mitra\Scripts\python.exe" -m uvicorn backend.main:create_app --factory --host 127.0.0.1 --port 8000
+
+# Frontend only
+cd frontend; npm run dev
+```
+
 ### Run headless via `--cli`
 
 Runs the identical agent DAG without a browser — useful for batch jobs, CI,
-or scripted experiments:
+or scripted experiments.
+
+**Linux / macOS:**
 
 ```sh
 bin/mitra cli -- \
@@ -381,6 +453,21 @@ Equivalent direct form:
 
 ```sh
 "$PYTHON" -m backend.orchestration.run_pipeline --dataset train.csv --target label
+```
+
+**Windows (PowerShell)** — invoke the pipeline module directly with your
+configured interpreter:
+
+```powershell
+& "C:\venvs\mitra\Scripts\python.exe" -m backend.orchestration.run_pipeline `
+  --dataset path\to\train.csv `
+  --target target_column `
+  --session-id my_run_001 `
+  --provider anthropic `
+  --model claude-sonnet-4-6 `
+  --mode local `
+  --max-models 10 `
+  -v
 ```
 
 Artifacts land in `.mitra/<user_id>/<session_id>/` exactly as described in
@@ -405,9 +492,23 @@ Artifacts land in `.mitra/<user_id>/<session_id>/` exactly as described in
 
 ## Testing
 
+**Linux / macOS:**
+
 ```sh
 # Backend (pytest)
 "$PYTHON" -m pytest backend/tests -q
+
+# Frontend (node:test + vite build)
+cd frontend
+npm test
+npm run build
+```
+
+**Windows (PowerShell):**
+
+```powershell
+# Backend (pytest)
+& "C:\venvs\mitra\Scripts\python.exe" -m pytest backend/tests -q
 
 # Frontend (node:test + vite build)
 cd frontend
@@ -441,6 +542,25 @@ SHAP/overfitting/HPT/judge after training when this is enabled.
 Confirm `.env` has a valid `LLM_API_KEY` for the selected `LLM_TYPE`, or that
 the per-run BYOM fields in the UI are filled in and smoke-tested before
 starting a run.
+
+**(Windows) `bin/mitra up` crashes with `Error: spawn EINVAL`**
+
+The Node launcher cannot spawn `npm.cmd` on Windows (a Node security
+restriction on spawning `.cmd`/`.bat` files without a shell). Start the
+backend and frontend in two separate terminals instead — see
+[Run the full app](#run-the-full-app-backend--frontend). Confirm the
+interpreter on Windows:
+
+```powershell
+& "C:\venvs\mitra\Scripts\python.exe" -c "import uvicorn; print(uvicorn.__version__)"
+```
+
+**(Windows) Backend fails with `ENOENT` / interpreter not found**
+
+`[python] PYTHON` in `config.ini` is set to a Git-Bash-style path such as
+`/d/conda/envs/mitra311/python.exe`. The Node launcher needs a native Windows
+path — change it to `D:\conda\envs\mitra311\python.exe` (backslashes), or to a
+bare `python` that resolves on `PATH`.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
