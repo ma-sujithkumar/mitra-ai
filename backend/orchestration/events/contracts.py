@@ -30,7 +30,7 @@ class TrainingEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     session_id: str = Field(min_length=1)
-    stage: Literal["training"] = "training"
+    stage: Literal["training", "evaluation"] = "training"
     level: TrainingEventLevel = "info"
     msg: str = Field(min_length=1)
     pct: int = Field(default=0, ge=0, le=100)
