@@ -14,15 +14,20 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pandas as pd
 
 from backend.agents.feature_engineering.orchestrator import FeatureEngineerOrchestrator
+from backend.agents.metadata_gen_agent import LlmSettings
 from backend.agents.model_selection.schemas import EngineeredFeature, FeatureSelectionInput
 from backend.agents.model_selection.selector import select_models
 from backend.config_loader import ConfigLoader
+from backend.orchestration.d2v_bridge import D2VBridge
+from backend.services.feature_status import FeatureEngineeringStatusReader
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +75,14 @@ class PipelinePrep:
         self,
         config_loader: ConfigLoader,
         session_dir: Path,
-        llm_model_string: Optional[str] = None,
+        llm_settings: Optional[LlmSettings] = None,
     ) -> None:
         self.config_loader = config_loader
         self.session_dir = session_dir
-        self.llm_model_string = llm_model_string
+        # Resolved LLM credentials (LlmSettingsResolver / .env). Feature
+        # engineering uses these via build_llm_model -- the same path as
+        # metadata_gen -- and reads no key from config.yaml.
+        self.llm_settings = llm_settings
         self.data_dir = session_dir / "data"
         self.reports_dir = session_dir / "reports"
 
@@ -105,8 +113,8 @@ class PipelinePrep:
         max_models = max_models or self.config_loader.pipeline.max_ml_models
         mini_data_path = mini_data_path or raw_data_path
 
-        # Step 1: feature engineering
-        feature_output_dir, run_id = self._run_feature_engineering(
+        # Step 1: feature engineering — artifacts land in reports/feature_engineering/
+        feature_output_dir, run_id, resolved_task = self._run_feature_engineering(
             raw_data_path=raw_data_path,
             target_column=target_column,
         )
@@ -114,6 +122,16 @@ class PipelinePrep:
 
         engineered_csv = feature_output_dir / "engineered_dataset.csv"
         feature_artifact_path = feature_output_dir / "feature_artifact.json"
+
+        # Step 1b: persist structured feature_run.json so the UI can read status.
+        self._write_feature_run_status(feature_output_dir)
+
+        # Step 1c: Dataset2Vec warm-start query (non-fatal).
+        self._run_d2v_query(
+            engineered_csv=engineered_csv,
+            target_column=target_column,
+            task_type=resolved_task,
+        )
 
         # Step 2: adapt feature_artifact -> feature_selection.json
         feature_selection_path = self.reports_dir / "feature_selection.json"
@@ -148,18 +166,73 @@ class PipelinePrep:
         self,
         raw_data_path: Path,
         target_column: str,
-    ) -> tuple[Path, str]:
-        if not self.llm_model_string:
+    ) -> tuple[Path, str, str]:
+        """Run FE orchestrator and return (output_dir, run_id, task_type)."""
+        if self.llm_settings is None or not (self.llm_settings.api_key or self.llm_settings.gateway_url):
             raise RuntimeError(
-                "llm_model_string is required for feature engineering "
-                "(pass the resolved LiteLlm model string, e.g. 'anthropic/claude-sonnet-4-6')"
+                "Feature engineering requires resolved LLM credentials "
+                "(LlmSettings from LlmSettingsResolver / .env)."
             )
+        fe_output_dir = self.session_dir / self.config_loader.feature_engineering_api.output_subdir
         orchestrator = FeatureEngineerOrchestrator(
             data_path=raw_data_path,
             target_column=target_column,
-            model_string=self.llm_model_string,
+            model_string=self.llm_settings.model,
+            output_dir=fe_output_dir,
+            llm_settings=self.llm_settings,
         )
-        return orchestrator.run()
+        output_path, run_id = orchestrator.run()
+        # Read the resolved task type from the artifact so D2V can use it.
+        artifact_path = output_path / "feature_artifact.json"
+        resolved_task = "classification"
+        if artifact_path.is_file():
+            artifact_data = json.loads(artifact_path.read_text(encoding="utf-8"))
+            resolved_task = artifact_data.get("task", "classification")
+        return output_path, run_id, resolved_task
+
+    def _write_feature_run_status(self, fe_dir: Path) -> None:
+        """Parse FE raw artifacts and write feature_run.json atomically."""
+        reader = FeatureEngineeringStatusReader(self.session_dir)
+        status_payload = reader.read()
+        status_path = fe_dir / self.config_loader.feature_engineering_api.run_status_filename
+        fe_dir.mkdir(parents=True, exist_ok=True)
+        # Write atomically using tempfile to avoid partial reads by the UI poller.
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=fe_dir, suffix=".tmp")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as status_file:
+                json.dump(status_payload, status_file, indent=2)
+            os.replace(tmp_path, status_path)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+        logger.info("=> feature_run.json written: %s", status_path)
+
+    def _run_d2v_query(
+        self,
+        engineered_csv: Path,
+        target_column: str,
+        task_type: str,
+    ) -> None:
+        """Query Dataset2Vec for similar past datasets; non-fatal on failure."""
+        d2v_db_dir = self.config_loader.paths.d2v_db_dir
+        if not d2v_db_dir:
+            logger.debug("=> D2V_DB_DIR not configured; skipping Dataset2Vec query")
+            return
+        output_path = self.reports_dir / "dataset_prior.json"
+        try:
+            bridge = D2VBridge(db_dir=d2v_db_dir)
+            prior = bridge.query(
+                csv_path=engineered_csv,
+                target_column=target_column,
+                task_type=task_type,
+            )
+            if prior is not None:
+                output_path.write_text(prior.model_dump_json(indent=2), encoding="utf-8")
+                logger.info("=> dataset_prior.json written: %s", output_path)
+            else:
+                logger.info("=> D2V returned no prior (cold start)")
+        except Exception as d2v_error:
+            logger.warning("=> D2V query failed (non-fatal): %s", d2v_error)
 
     def _adapt_feature_selection(
         self,
