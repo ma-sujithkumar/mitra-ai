@@ -379,15 +379,63 @@ class ModelSelectionOrchestratorAgent:
                 f"No {profile.task_type} model is exposed by MLKit.MODEL_REGISTRY"
             )
 
+        # Check for dataset_prior.json warm-start recommendations from Dataset2Vec
+        d2v_models = []
+        prior_path = Path(output_path).parent / "dataset_prior.json"
+        if not prior_path.exists():
+            prior_path = Path(metadata_path).parent / "dataset_prior.json"
+        
+        if prior_path.is_file():
+            try:
+                prior_data = json.loads(prior_path.read_text(encoding="utf-8"))
+                if not prior_data.get("cold_start", True):
+                    ranked_list = prior_data.get("ranked_models") or []
+                    for item in ranked_list:
+                        m_name = item.get("model_name")
+                        m_score = item.get("score", 0.0)
+                        if m_name:
+                            d2v_models.append((m_name, m_score))
+            except Exception as e:
+                logger.warning("=> Failed to parse dataset_prior.json: %s", e)
+
         fallback = self.deterministic_agent.run(
             profile, task_descriptors, max_models=max_models
         )
+
+        d2v_suggestions = []
+        if d2v_models:
+            d2v_map = {name: score for name, score in d2v_models}
+            allowed_descriptors = [d for d in task_descriptors if d.model_name in d2v_map]
+            for desc in allowed_descriptors:
+                score = d2v_map[desc.model_name]
+                d2v_suggestions.append(
+                    RankedSuggestion(
+                        model_name=desc.model_name,
+                        rationale=f"Dataset2Vec warm-start recommendation (similarity score: {score:.3f})",
+                        score=score,
+                    )
+                )
+            d2v_suggestions.sort(key=lambda item: -item.score)
+            
+            # Pad with fallback if needed to satisfy max_models
+            existing_names = {s.model_name for s in d2v_suggestions}
+            for s in fallback:
+                if len(d2v_suggestions) >= max_models:
+                    break
+                if s.model_name not in existing_names:
+                    d2v_suggestions.append(s)
+                    existing_names.add(s.model_name)
+
         suggestions = fallback
         selection_mode = "deterministic"
         warnings: list[str] = []
         rejected_llm_models: list[str] = []
 
-        if self.llm_agent is not None:
+        if d2v_suggestions:
+            suggestions = d2v_suggestions[:max_models]
+            selection_mode = "dataset2vec"
+            logger.info("=> ModelSelection: selected models using Dataset2Vec prior: %s", [s.model_name for s in suggestions])
+        elif self.llm_agent is not None:
             try:
                 llm_suggestions = self.llm_agent.run(
                     profile, task_descriptors, max_models=max_models
