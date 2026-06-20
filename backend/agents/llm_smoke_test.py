@@ -56,6 +56,7 @@ class LlmSmokeTester:
 
         started_at_epoch = time.monotonic()
         try:
+            litellm._turn_on_debug()
             litellm.completion(
                 model=llm_settings.model,
                 messages=[{"role": "user", "content": SMOKE_TEST_PROMPT}],
