@@ -35,6 +35,10 @@ class OverfittingInfo(BaseModel):
         None,
         description="Train score minus CV mean. Null if K-fold was skipped.",
     )
+    train_metrics: Optional[Dict[str, Optional[float]]] = None
+    test_metrics: Optional[Dict[str, Optional[float]]] = None
+    cv_results: Optional[Dict[str, Any]] = None
+
 
 
 class CandidateModel(BaseModel):
@@ -77,6 +81,7 @@ class DecisionTrace(BaseModel):
 
     rule_outcomes: Dict[str, Any]
     llm_commentary: Optional[str] = None
+    transcript: Optional[str] = None
 
 
 class JudgeDecision(BaseModel):
