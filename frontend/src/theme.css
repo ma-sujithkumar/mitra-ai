@@ -268,14 +268,43 @@ h2 {
   font-weight: 700;
 }
 
+.user-chip-text {
+  min-width: 0;
+  flex: 1;
+}
+
 .user-name {
   font-size: 13px;
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .user-subtitle {
   color: var(--ink-faint);
   font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logout-button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-3);
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.logout-button:hover {
+  color: var(--ink);
+  border-color: var(--line-strong, var(--line));
 }
 
 .workspace {

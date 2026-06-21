@@ -1,7 +1,9 @@
 import { NAV_ITEMS } from '../data.js';
 import { Icons } from '../icons.jsx';
 
-function Sidebar({ route, go, runState = 'idle' }) {
+function Sidebar({ route, go, runState = 'idle', authUser = null, onLogout }) {
+  const displayName = authUser?.name || authUser?.username || 'User';
+  const avatarInitial = displayName.trim().charAt(0).toUpperCase() || 'U';
   return (
     <aside className="sidebar">
       <button className="brand-button" onClick={() => go('dashboard')} type="button">
@@ -40,11 +42,23 @@ function Sidebar({ route, go, runState = 'idle' }) {
 
       <div className="sidebar-footer">
         <div className="user-chip">
-          <div className="user-avatar">M</div>
-          <div>
-            <div className="user-name">Course Team</div>
-            <div className="user-subtitle">Local workspace</div>
+          <div className="user-avatar">{avatarInitial}</div>
+          <div className="user-chip-text">
+            <div className="user-name">{displayName}</div>
+            {authUser?.username ? (
+              <div className="user-subtitle">@{authUser.username}</div>
+            ) : null}
           </div>
+          {onLogout ? (
+            <button
+              className="logout-button"
+              onClick={onLogout}
+              title="Log out"
+              type="button"
+            >
+              <Icons.logOut size={16} />
+            </button>
+          ) : null}
         </div>
       </div>
     </aside>

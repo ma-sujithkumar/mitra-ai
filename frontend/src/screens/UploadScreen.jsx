@@ -148,8 +148,6 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, resumeSession, ro
   // metadata failed the pipeline hard-fails here (no fallback artifacts).
   const metadataFailed = validationPhase === 'done' && metadataPhase === 'error';
   const canContinueToFeatureEngineering = validationPhase === 'done' && metadataPhase === 'done';
-  const baseModel = publicConfig?.llm?.base_models?.[llmSettings.provider] || '';
-  const effectiveModel = llmSettings.model || baseModel || 'Provider base model';
   const reviewStarted = validationPhase !== 'idle';
   // Mandatory gates for Validate & Review: a dataset is selected and the
   // current LLM configuration passed a connection test in Settings.
@@ -586,30 +584,6 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, resumeSession, ro
               value={form.description}
             />
           </FormField>
-
-          <div className="llm-ref">
-            <div className="llm-ref-head">
-              <span className="section-kicker">LLM for this run</span>
-              <StatusPill
-                status={llmVerified ? 'passed' : 'queued'}
-                label={llmVerified ? 'Verified' : 'Test connection above'}
-              />
-            </div>
-            <dl className="detail-list">
-              <div>
-                <dt>Provider</dt>
-                <dd className="capitalize">{llmSettings.provider || 'Not set'}</dd>
-              </div>
-              <div>
-                <dt>Model</dt>
-                <dd className="mono">{effectiveModel}</dd>
-              </div>
-              <div>
-                <dt>API Key</dt>
-                <dd>{llmSettings.apiKey ? 'Set' : 'Using server credentials'}</dd>
-              </div>
-            </dl>
-          </div>
 
           <button
             className="btn btn-primary full-width"

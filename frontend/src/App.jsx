@@ -92,6 +92,11 @@ function App() {
     });
   }
 
+  function handleLogout() {
+    setAuthUser(null);
+    window.localStorage.removeItem('mitra.authUser');
+  }
+
   function handleAuthenticated(user) {
     setAuthUser(user);
     window.localStorage.setItem('mitra.authUser', JSON.stringify(user));
@@ -185,7 +190,7 @@ function App() {
 
   return (
     <div className="app">
-      <Sidebar go={go} route={route} runState={runState} />
+      <Sidebar authUser={authUser} go={go} onLogout={handleLogout} route={route} runState={runState} />
       <main className="workspace">
         <TopBar darkMode={darkMode} icon={meta.icon} onToggleDark={toggleDarkMode} sub={meta.sub} title={meta.title} />
         <div className="screen-frame">
