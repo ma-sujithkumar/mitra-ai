@@ -523,9 +523,11 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     // Keep polling even after the SSE stream closes: the backend closes the stream right after
     // emitting the top-level all_completed event, which may arrive before the verdict poll
     // has seen status='complete'. Without this the canContinue button never shows.
+    // maxAttempts is 0 (unlimited) because judge turns can take longer than a fixed cap
+    // (training + 3 judge LLM calls can exceed 5 min). stopWhen handles exit.
     enabled: Boolean(connectedSessionId),
     intervalMs: 2000,
-    maxAttempts: 150,
+    maxAttempts: 0,
     maxErrorAttempts: 6,
     stopWhen: (data) => data?.status === 'complete',
     resetKey: `${connectedSessionId}-${runToken}`,
@@ -613,6 +615,17 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
       }));
     }
   }, [verdictData]);
+
+  // When the pipeline marks itself complete via SSE, ensure the verdict poll is
+  // still running. If it already capped (maxAttempts=0 now, but kept as safety)
+  // or gave up, restart it so the canContinue button can appear.
+  useEffect(() => {
+    if (state.complete && verdictData?.status !== 'complete') {
+      restartVerdictPoll();
+    }
+  // restartVerdictPoll is stable (useCallback); state.complete is the signal.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.complete]);
 
   useEffect(() => {
     setPolledEvalLogs((prev) => {
