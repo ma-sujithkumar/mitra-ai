@@ -68,6 +68,27 @@ class EvaluationArtifactReader:
     def token_usage(self) -> dict[str, Any] | None:
         return self._read_json_or_none(self.session_dir / TOKEN_USAGE_FILENAME)
 
+    def shap_status(self) -> dict[str, Any]:
+        status_path = self.evaluation_dir / "shap_status.json"
+        data = self._read_json_or_none(status_path)
+        if data is None:
+            return {"status": "pending", "progress": 0, "message": "Awaiting SHAP analysis..."}
+        return data
+
+    def overfitting_status(self) -> dict[str, Any]:
+        status_path = self.evaluation_dir / "overfitting_status.json"
+        data = self._read_json_or_none(status_path)
+        if data is None:
+            return {"status": "pending", "progress": 0, "message": "Awaiting Overfitting analysis..."}
+        return data
+
+    def judge_status(self) -> dict[str, Any]:
+        status_path = self.reports_dir / "judge_status.json"
+        data = self._read_json_or_none(status_path)
+        if data is None:
+            return {"status": "pending", "progress": 0, "message": "Awaiting Judge Agent..."}
+        return data
+
     def build_leaderboard(self) -> dict[str, Any]:
         """Merge judge ranking with training metrics, overfitting, and HPT results."""
         judge_decision = self.judge_decision()
@@ -131,6 +152,13 @@ class EvaluationArtifactReader:
         judge_decision = self.judge_decision()
         if judge_decision is None:
             return {"status": "pending", "selected_model": None}
+
+        # If the judge is still running or pending, the verdict is not complete.
+        status_data = self.judge_status()
+        judge_status_str = status_data.get("status", "pending")
+        if judge_status_str not in ("all_completed", "completed", "failed"):
+            return {"status": "pending", "selected_model": None}
+
         judge_decision.setdefault("status", "complete")
         return judge_decision
 
@@ -467,6 +495,33 @@ def get_verdict(
 ) -> dict[str, Any]:
     reader = _build_reader(session_id=session_id, session_manager=session_manager)
     return {"session_id": session_id, **reader.verdict()}
+
+
+@router.get("/{session_id}/evaluation/shap/status")
+def get_shap_status(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    reader = _build_reader(session_id=session_id, session_manager=session_manager)
+    return {"session_id": session_id, **reader.shap_status()}
+
+
+@router.get("/{session_id}/evaluation/overfitting/status")
+def get_overfitting_status(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    reader = _build_reader(session_id=session_id, session_manager=session_manager)
+    return {"session_id": session_id, **reader.overfitting_status()}
+
+
+@router.get("/{session_id}/evaluation/judge/status")
+def get_judge_status(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    reader = _build_reader(session_id=session_id, session_manager=session_manager)
+    return {"session_id": session_id, **reader.judge_status()}
 
 
 @router.get("/{session_id}/shap")

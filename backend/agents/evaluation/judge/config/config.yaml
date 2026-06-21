@@ -1,13 +1,17 @@
 # Weights for the scoring function: performance, overfitting, complexity.
 # Must sum to 1.0.
+# Increased performance weight (accuracy/f1) to 0.75; reduced overfitting to 0.20
+# and complexity (explainability) to 0.05 — predictive quality is the primary signal.
 weights:
-  performance: 0.60
-  overfitting: 0.30
-  complexity:  0.10
+  performance: 0.75
+  overfitting: 0.20
+  complexity:  0.05
 
 # Hard-gate floors: models scoring below these are always rejected.
-accuracy_floor: 0.60     # classification: primary metric = accuracy
-r2_floor: 0.40           # regression:     primary metric = r2
+# Relaxed from 0.60/0.40 => 0.30/0.20 to allow models that perform meaningfully
+# above random baseline to pass (e.g. 15 classes: random ~6.7%, 14-20% is real signal).
+accuracy_floor: 0.30     # classification: primary metric = accuracy
+r2_floor: 0.20           # regression:     primary metric = r2
 
 # Tie-break: if two models' primary-metric diff <= tie_break_pct, prefer simpler.
 tie_break_pct: 0.01
@@ -80,7 +84,8 @@ findings:
     - mae
     - rmse
   # Class balance: macro recall below this => weak minority-class recall.
-  macro_recall_floor: 0.50
+  # Relaxed from 0.50 => 0.30 to avoid false flags on multiclass datasets (15+ classes).
+  macro_recall_floor: 0.30
   # Class balance: |f1_weighted - f1_macro| above this => class prediction skew.
   f1_spread_warn: 0.15
   # Generalization: primary train-test gap above this => generalization concern.

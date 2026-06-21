@@ -35,6 +35,7 @@ class ModelRouter:
         train_path: str | Path,
         test_path: str | Path,
         session_dir: str | Path,
+        model_id_start: int = 1,
     ) -> list[TrainingJob]:
         models = sorted(selected_models, key=lambda item: item.priority)
         if not models:
@@ -65,7 +66,8 @@ class ModelRouter:
         root = Path(session_dir).resolve()
 
         jobs: list[TrainingJob] = []
-        for index, selected in enumerate(models, start=1):
+        # model_id_start lets callback training use IDs that don't conflict with already-trained models.
+        for index, selected in enumerate(models, start=model_id_start):
             descriptor = self._resolve_descriptor(selected, metadata)
             trainer_type = self._trainer_type(descriptor, metadata)
             model_id = f"model_{index:03d}"

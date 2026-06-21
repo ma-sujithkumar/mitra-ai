@@ -19,6 +19,8 @@ def select_models(
     llm_client: LLMClient | None = None,
     report_path: str | Path | None = None,
     excluded_model_names: list[str] | None = None,
+    approved_model_names: list[str] | None = None,
+    rejected_model_names: list[str] | None = None,
 ) -> list[ModelCandidate]:
     """Select models strictly from MLKit.MODEL_REGISTRY and write JSON output."""
     return ModelSelectionOrchestratorAgent(
@@ -32,4 +34,6 @@ def select_models(
         max_models=max_models,
         report_path=report_path,
         excluded_model_names=excluded_model_names,
+        approved_model_names=approved_model_names,
+        rejected_model_names=rejected_model_names,
     )

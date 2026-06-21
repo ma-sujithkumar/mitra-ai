@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("mitra.metadata_router")
+
 
 from fastapi import APIRouter
 from fastapi import Depends
@@ -344,6 +348,11 @@ def _metadata_generation_failed(
     job_registry: JobRegistry,
     exception: Exception,
 ) -> None:
+    # Log the traceback to preserve visibility of swallowed exceptions.
+    logger.exception(
+        "Metadata generation failed for session: %s",
+        metadata_request.session_id,
+    )
     failure_message = _metadata_failure_message(exception=exception)
     job_registry.mark_error(
         session_id=metadata_request.session_id,

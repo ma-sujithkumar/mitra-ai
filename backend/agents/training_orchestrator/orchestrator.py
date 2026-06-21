@@ -89,6 +89,20 @@ class TrainingOrchestrator:
         self.aggregator = TrainingResultAggregator()
         self.event_sink = event_sink or NullTrainingEventSink()
 
+    def _get_existing_completed_result(self, job: TrainingJob, summary_path: Path | None) -> Optional[dict[str, Any]]:
+        if not summary_path or not summary_path.is_file():
+            return None
+        try:
+            summary_data = json.loads(summary_path.read_text(encoding="utf-8"))
+            for existing in summary_data.get("models", []):
+                if existing.get("model_name") == job.model_name and existing.get("status") == "completed":
+                    m_path = existing.get("model_path")
+                    if m_path and Path(m_path).is_file():
+                        return existing
+        except Exception:
+            pass
+        return None
+
     def prepare(
         self,
         *,
@@ -99,6 +113,7 @@ class TrainingOrchestrator:
         test_path: str | Path,
         session_dir: str | Path,
         output_path: str | Path | None = None,
+        model_id_start: int = 1,
     ) -> TrainingJobManifest:
         """Validate inputs, create jobs, and atomically write a manifest."""
         if not session_id.strip():
@@ -127,9 +142,10 @@ class TrainingOrchestrator:
             train_path=train,
             test_path=test,
             session_dir=session_root,
+            model_id_start=model_id_start,
         )
         for job in jobs:
-            Path(job.output_dir).mkdir(parents=True, exist_ok=False)
+            Path(job.output_dir).mkdir(parents=True, exist_ok=True)
 
         manifest = TrainingJobManifest(
             session_id=session_id,
@@ -187,6 +203,23 @@ class TrainingOrchestrator:
 
         results: list[TrainingResult] = []
         for job in manifest.jobs:
+            existing = self._get_existing_completed_result(job, summary_destination)
+            if existing:
+                result = TrainingResult(
+                    model_id=job.model_id,
+                    model_name=job.model_name,
+                    status="completed",
+                    metrics=existing.get("metrics") or {},
+                    model_path=existing.get("model_path"),
+                    training_time_sec=existing.get("training_time_sec") or 0.0,
+                    error=None,
+                )
+                job.status = "completed"
+                results.append(result)
+                self._write_manifest(manifest, manifest_destination)
+                self._emit_result_event(manifest=manifest, job=job, result=result)
+                continue
+
             job.status = "running"
             self._write_manifest(manifest, manifest_destination)
             self._emit_job_event(
@@ -250,74 +283,101 @@ class TrainingOrchestrator:
                 target_column=target_column,
             )
 
+        precompleted_results: list[TrainingResult] = []
+        jobs_to_train: list[TrainingJob] = []
+
         for job in manifest.jobs:
-            job.status = "running"
+            existing = self._get_existing_completed_result(job, summary_destination)
+            if existing:
+                result = TrainingResult(
+                    model_id=job.model_id,
+                    model_name=job.model_name,
+                    status="completed",
+                    metrics=existing.get("metrics") or {},
+                    model_path=existing.get("model_path"),
+                    training_time_sec=existing.get("training_time_sec") or 0.0,
+                    error=None,
+                )
+                job.status = "completed"
+                precompleted_results.append(result)
+            else:
+                job.status = "running"
+                jobs_to_train.append(job)
+
         self._write_manifest(manifest, manifest_destination)
 
-        results: list[TrainingResult]
-        emitted_terminal: dict[str, tuple[str, str | None]] = {}
+        # Emit result events for precompleted jobs
+        for result in precompleted_results:
+            job_item = next(item for item in manifest.jobs if item.model_id == result.model_id)
+            self._emit_result_event(manifest=manifest, job=job_item, result=result)
 
-        def on_result(raw_result: TrainingResult) -> None:
-            try:
-                result = TrainingResult.model_validate(raw_result)
-                job = next(
-                    item for item in manifest.jobs if item.model_id == result.model_id
-                )
-                if result.model_name != job.model_name:
-                    return
-                self._emit_result_event(manifest=manifest, job=job, result=result)
-                emitted_terminal[result.model_id] = (result.status, result.error)
-            except Exception:
-                # Event callbacks are observability only.  Result validation and
-                # failure normalization remain the orchestrator's responsibility.
-                return
+        results: list[TrainingResult] = list(precompleted_results)
+        emitted_terminal: dict[str, tuple[str, str | None]] = {
+            res.model_id: (res.status, res.error) for res in precompleted_results
+        }
 
-        try:
-            executor.start()
-            handles = executor.submit_all(
-                manifest.jobs,
-                resource_overrides=resource_overrides,
-            )
-            for job in manifest.jobs:
-                self._emit_job_event(
-                    manifest=manifest,
-                    job=job,
-                    status="submitted",
-                    pct=10,
-                    msg=f"{job.model_name} submitted to Ray",
-                )
-                self._emit_job_event(
-                    manifest=manifest,
-                    job=job,
-                    status="running",
-                    pct=25,
-                    msg=f"{job.model_name} training started on Ray",
-                )
-            raw_results = self._collect_parallel_results(
-                executor=executor,
-                handles=handles,
-                timeout_sec=timeout_sec,
-                on_result=on_result,
-            )
-            results = self._normalize_parallel_results(
-                manifest=manifest,
-                raw_results=raw_results,
-            )
-        except Exception as exc:
-            results = [
-                self._failed_result(
-                    job,
-                    f"Ray execution failed: {type(exc).__name__}: {exc}",
-                )
-                for job in manifest.jobs
-            ]
-        finally:
-            if close_executor or owns_executor:
+        if jobs_to_train:
+            def on_result(raw_result: TrainingResult) -> None:
                 try:
-                    executor.close()
+                    result_validated = TrainingResult.model_validate(raw_result)
+                    job_item = next(
+                        item for item in manifest.jobs if item.model_id == result_validated.model_id
+                    )
+                    if result_validated.model_name != job_item.model_name:
+                        return
+                    self._emit_result_event(manifest=manifest, job=job_item, result=result_validated)
+                    emitted_terminal[result_validated.model_id] = (result_validated.status, result_validated.error)
                 except Exception:
-                    # Cleanup must never prevent state/summary persistence.
-                    pass
+                    return
+
+            try:
+                executor.start()
+                handles = executor.submit_all(
+                    jobs_to_train,
+                    resource_overrides=resource_overrides,
+                )
+                for job in jobs_to_train:
+                    self._emit_job_event(
+                        manifest=manifest,
+                        job=job,
+                        status="submitted",
+                        pct=10,
+                        msg=f"{job.model_name} submitted to Ray",
+                    )
+                    self._emit_job_event(
+                        manifest=manifest,
+                        job=job,
+                        status="running",
+                        pct=25,
+                        msg=f"{job.model_name} training started on Ray",
+                    )
+                raw_results = self._collect_parallel_results(
+                    executor=executor,
+                    handles=handles,
+                    timeout_sec=timeout_sec,
+                    on_result=on_result,
+                )
+                results_ray = self._normalize_parallel_results(
+                    manifest=manifest,
+                    raw_results=raw_results,
+                )
+                for r in results_ray:
+                    if r.model_id in {job_item.model_id for job_item in jobs_to_train}:
+                        results.append(r)
+            except Exception as exc:
+                for job in jobs_to_train:
+                    results.append(
+                        self._failed_result(
+                            job,
+                            f"Ray execution failed: {type(exc).__name__}: {exc}",
+                        )
+                    )
+            finally:
+                if close_executor or owns_executor:
+                    try:
+                        executor.close()
+                    except Exception:
+                        pass
 
         by_id = {result.model_id: result for result in results}
         for job in manifest.jobs:
@@ -347,6 +407,7 @@ class TrainingOrchestrator:
         manifest_path: str | Path | None = None,
         summary_path: str | Path | None = None,
         worker: TrainingWorker | None = None,
+        model_id_start: int = 1,
     ) -> TrainingSummary:
         """Convenience entry point for prepare -> local train -> aggregate."""
 
@@ -362,6 +423,7 @@ class TrainingOrchestrator:
             test_path=test_path,
             session_dir=session_root,
             output_path=destination,
+            model_id_start=model_id_start,
         )
         return self.execute_local(
             manifest,
@@ -387,6 +449,7 @@ class TrainingOrchestrator:
         resource_overrides: Mapping[str, Any] | None = None,
         executor: ParallelTrainingExecutor | None = None,
         close_executor: bool = True,
+        model_id_start: int = 1,
     ) -> TrainingSummary:
         """Convenience entry point for prepare -> Ray train -> aggregate."""
 
@@ -402,6 +465,7 @@ class TrainingOrchestrator:
             test_path=test_path,
             session_dir=session_root,
             output_path=destination,
+            model_id_start=model_id_start,
         )
         return self.execute_ray(
             manifest,

@@ -83,7 +83,8 @@ class TestPerDimensionFindings:
 
     def test_below_floor_fails_predictive_quality(self, judge_config: dict) -> None:
         engine = FindingsEngine(judge_config)
-        weak = _make_candidate("Weak", metrics={"accuracy": 0.30, "recall_macro": 0.30})
+        # 0.20 is clearly below the relaxed accuracy_floor of 0.30.
+        weak = _make_candidate("Weak", metrics={"accuracy": 0.20, "recall_macro": 0.20})
         statuses = _status_by_dimension(engine.build_findings(weak))
         assert statuses["predictive_quality"] == STATUS_FAIL
 
@@ -178,7 +179,8 @@ class TestExplanations:
 
     def test_rejected_model_has_findings_and_decision(self, judge_config: dict) -> None:
         engine = RuleEngine(judge_config)
-        weak = _make_candidate("Weak", metrics={"accuracy": 0.30, "recall_macro": 0.30})
+        # 0.20 is below the relaxed accuracy_floor of 0.30 so it is rejected.
+        weak = _make_candidate("Weak", metrics={"accuracy": 0.20, "recall_macro": 0.20})
         survivors, gate_outcomes = engine.apply_hard_gates([weak])
         decision = engine.rank(survivors, gate_outcomes, [weak])
         rejected = decision.ranked_models[0]

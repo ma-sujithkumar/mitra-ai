@@ -353,11 +353,15 @@ class ModelSelectionOrchestratorAgent:
         max_models: int = 5,
         report_path: str | Path | None = None,
         excluded_model_names: list[str] | None = None,
+        approved_model_names: list[str] | None = None,
+        rejected_model_names: list[str] | None = None,
     ) -> list[ModelCandidate]:
         if not 1 <= max_models <= MAX_SELECTABLE_MODELS:
             raise ValueError(f"max_models must be between 1 and {MAX_SELECTABLE_MODELS}")
 
         excluded_set = set(excluded_model_names or [])
+        approved_set = set(approved_model_names or [])
+        rejected_set = set(rejected_model_names or [])
 
         metadata = MetadataInput.model_validate_json(
             Path(metadata_path).read_text(encoding="utf-8")
@@ -398,73 +402,158 @@ class ModelSelectionOrchestratorAgent:
             except Exception as e:
                 logger.warning("=> Failed to parse dataset_prior.json: %s", e)
 
-        fallback = self.deterministic_agent.run(
-            profile, task_descriptors, max_models=max_models
-        )
+        # Separate descriptors into approved, new, and rejected
+        approved_descs = [d for d in task_descriptors if d.model_name in approved_set]
+        new_descs = [d for d in task_descriptors if d.model_name not in approved_set and d.model_name not in rejected_set]
+        rejected_descs = [d for d in task_descriptors if d.model_name in rejected_set]
 
-        d2v_suggestions = []
-        if d2v_models:
-            d2v_map = {name: score for name, score in d2v_models}
-            allowed_descriptors = [d for d in task_descriptors if d.model_name in d2v_map]
-            for desc in allowed_descriptors:
-                score = d2v_map[desc.model_name]
-                d2v_suggestions.append(
-                    RankedSuggestion(
-                        model_name=desc.model_name,
-                        rationale=f"Dataset2Vec warm-start recommendation (similarity score: {score:.3f})",
-                        score=score,
-                    )
-                )
-            d2v_suggestions.sort(key=lambda item: -item.score)
-            
-            # Pad with fallback if needed to satisfy max_models
-            existing_names = {s.model_name for s in d2v_suggestions}
-            for s in fallback:
-                if len(d2v_suggestions) >= max_models:
-                    break
-                if s.model_name not in existing_names:
-                    d2v_suggestions.append(s)
-                    existing_names.add(s.model_name)
-
-        suggestions = fallback
-        selection_mode = "deterministic"
         warnings: list[str] = []
         rejected_llm_models: list[str] = []
 
-        if d2v_suggestions:
-            suggestions = d2v_suggestions[:max_models]
-            selection_mode = "dataset2vec"
-            logger.info("=> ModelSelection: selected models using Dataset2Vec prior: %s", [s.model_name for s in suggestions])
-        elif self.llm_agent is not None:
-            try:
-                llm_suggestions = self.llm_agent.run(
-                    profile, task_descriptors, max_models=max_models
-                )
-                valid_llm, invalid_llm = self.validation_agent.run(
-                    llm_suggestions,
-                    catalog,
-                    profile.task_type,
-                    max_models,
-                )
-                suggestions = valid_llm + [
-                    item
-                    for item in fallback
-                    if item.model_name not in {entry.model_name for entry in valid_llm}
-                ]
-                suggestions = suggestions[:max_models]
-                selection_mode = (
-                    "llm" if len(valid_llm) == len(suggestions) else "llm_with_fallback"
-                )
-                rejected_llm_models = invalid_llm
-                if invalid_llm:
-                    warnings.append(
-                        "Rejected LLM model names not present in the MLKit registry or wrong for task: "
-                        + ", ".join(invalid_llm)
+        if approved_set or rejected_set:
+            # Multi-turn model feedback re-selection loop
+            new_fallback = self.deterministic_agent.run(
+                profile, new_descs, max_models=max_models
+            )
+            new_suggestions = new_fallback
+
+            d2v_suggestions = []
+            if d2v_models:
+                d2v_map = {name: score for name, score in d2v_models}
+                allowed_new_descs = [d for d in new_descs if d.model_name in d2v_map]
+                for desc in allowed_new_descs:
+                    score = d2v_map[desc.model_name]
+                    d2v_suggestions.append(
+                        RankedSuggestion(
+                            model_name=desc.model_name,
+                            rationale=f"Dataset2Vec warm-start recommendation (similarity score: {score:.3f})",
+                            score=score,
+                        )
                     )
-            except (ValueError, json.JSONDecodeError, ValidationError, RuntimeError) as exc:
-                logger.warning("LLM ranking failed; using deterministic fallback: %s", exc)
-                warnings.append(f"LLM ranking failed; deterministic fallback used: {exc}")
-                selection_mode = "deterministic"
+                d2v_suggestions.sort(key=lambda item: -item.score)
+                
+                existing_names = {s.model_name for s in d2v_suggestions}
+                for s in new_fallback:
+                    if len(d2v_suggestions) >= max_models:
+                        break
+                    if s.model_name not in existing_names:
+                        d2v_suggestions.append(s)
+                        existing_names.add(s.model_name)
+
+            if d2v_suggestions:
+                new_suggestions = d2v_suggestions
+            elif self.llm_agent is not None:
+                try:
+                    llm_suggestions = self.llm_agent.run(
+                        profile, new_descs, max_models=max_models
+                    )
+                    valid_llm, invalid_llm = self.validation_agent.run(
+                        llm_suggestions,
+                        catalog,
+                        profile.task_type,
+                        max_models,
+                    )
+                    new_suggestions = valid_llm + [
+                        item
+                        for item in new_fallback
+                        if item.model_name not in {entry.model_name for entry in valid_llm}
+                    ]
+                except Exception as exc:
+                    logger.warning("LLM feedback ranking failed: %s", exc)
+
+            # Assemble suggestions: approved first, then ranked new ones, then rejected at bottom
+            assembled_suggestions = []
+            for m_name in approved_model_names or []:
+                if m_name in catalog:
+                    assembled_suggestions.append(
+                        RankedSuggestion(
+                            model_name=m_name,
+                            rationale="Retained by Judge Agent.",
+                            score=1.0,
+                        )
+                    )
+            for sug in new_suggestions:
+                if sug.model_name not in {s.model_name for s in assembled_suggestions}:
+                    assembled_suggestions.append(sug)
+            for m_name in rejected_model_names or []:
+                if len(assembled_suggestions) >= max_models:
+                    break
+                if m_name in catalog and m_name not in {s.model_name for s in assembled_suggestions}:
+                    assembled_suggestions.append(
+                        RankedSuggestion(
+                            model_name=m_name,
+                            rationale="Rejected by Judge Agent; placed at bottom of queue.",
+                            score=0.0,
+                        )
+                    )
+            suggestions = assembled_suggestions[:max_models]
+            selection_mode = "feedback_reselection"
+        else:
+            # Original cold-start run
+            fallback = self.deterministic_agent.run(
+                profile, task_descriptors, max_models=max_models
+            )
+
+            d2v_suggestions = []
+            if d2v_models:
+                d2v_map = {name: score for name, score in d2v_models}
+                allowed_descriptors = [d for d in task_descriptors if d.model_name in d2v_map]
+                for desc in allowed_descriptors:
+                    score = d2v_map[desc.model_name]
+                    d2v_suggestions.append(
+                        RankedSuggestion(
+                            model_name=desc.model_name,
+                            rationale=f"Dataset2Vec warm-start recommendation (similarity score: {score:.3f})",
+                            score=score,
+                        )
+                    )
+                d2v_suggestions.sort(key=lambda item: -item.score)
+                
+                existing_names = {s.model_name for s in d2v_suggestions}
+                for s in fallback:
+                    if len(d2v_suggestions) >= max_models:
+                        break
+                    if s.model_name not in existing_names:
+                        d2v_suggestions.append(s)
+                        existing_names.add(s.model_name)
+
+            suggestions = fallback
+            selection_mode = "deterministic"
+
+            if d2v_suggestions:
+                suggestions = d2v_suggestions[:max_models]
+                selection_mode = "dataset2vec"
+                logger.info("=> ModelSelection: selected models using Dataset2Vec prior: %s", [s.model_name for s in suggestions])
+            elif self.llm_agent is not None:
+                try:
+                    llm_suggestions = self.llm_agent.run(
+                        profile, task_descriptors, max_models=max_models
+                    )
+                    valid_llm, invalid_llm = self.validation_agent.run(
+                        llm_suggestions,
+                        catalog,
+                        profile.task_type,
+                        max_models,
+                    )
+                    suggestions = valid_llm + [
+                        item
+                        for item in fallback
+                        if item.model_name not in {entry.model_name for entry in valid_llm}
+                    ]
+                    suggestions = suggestions[:max_models]
+                    selection_mode = (
+                        "llm" if len(valid_llm) == len(suggestions) else "llm_with_fallback"
+                    )
+                    rejected_llm_models = invalid_llm
+                    if invalid_llm:
+                        warnings.append(
+                            "Rejected LLM model names not present in the MLKit registry or wrong for task: "
+                            + ", ".join(invalid_llm)
+                        )
+                except (ValueError, json.JSONDecodeError, ValidationError, RuntimeError) as exc:
+                    logger.warning("LLM ranking failed; using deterministic fallback: %s", exc)
+                    warnings.append(f"LLM ranking failed; deterministic fallback used: {exc}")
+                    selection_mode = "deterministic"
 
         accepted, invalid = self.validation_agent.run(
             suggestions, catalog, profile.task_type, max_models

@@ -172,6 +172,9 @@ class MetadataAgentToolAdapter:
         # as a JSON-encoded string instead of a structured object, so coerce it
         # back to a dict before writing.
         normalized_metadata = self._coerce_metadata_dict(metadata=metadata)
+        # Ensure session_id is present inside metadata object as required by schema.
+        # Models calling write_metadata(session_id, metadata) may omit it from the metadata dict.
+        normalized_metadata["session_id"] = session_id
         # Map dtype-style enum values (e.g. "float") onto the schema vocabulary.
         normalized_metadata = self._normalize_metadata_enums(
             metadata=normalized_metadata

@@ -281,7 +281,7 @@ class PipelinePrep:
                             stage="d2v",
                             level="info",
                             status="completed",
-                            msg=f"[D2V MATCHER] Dataset2Vec lookup complete. Found {len(prior.recommendations)} recommended models.",
+                            msg=f"[D2V MATCHER] Dataset2Vec lookup complete. Found {len(prior.ranked_models)} recommended models.",
                             pct=100,
                         )
                     )

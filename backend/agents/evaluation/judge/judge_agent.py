@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from google.adk.agents import LlmAgent
@@ -60,16 +60,78 @@ def _render_prompt(
     )
 
 
+class JudgeTools:
+    """Mandatory tools connected to the Judge Agent to fetch metadata, statistics and model evaluation details dynamically."""
+
+    def __init__(self, judge_input: JudgeInput) -> None:
+        self._judge_input = judge_input
+
+    def get_dataset_metadata(self) -> dict[str, Any]:
+        """Retrieve user-provided metadata for the dataset, including description and target column."""
+        return self._judge_input.metadata or {}
+
+    def get_dataset_statistics(self) -> dict[str, Any]:
+        """Retrieve descriptive statistics (minidata / pd.describe metrics) of the validation dataset."""
+        return self._judge_input.minidata or {}
+
+    def get_model_evaluation_details(self, model_name: str) -> dict[str, Any]:
+        """Retrieve detailed validation metrics, overfitting checks, CV results, diagnostics, complexity, and SHAP features for a specific model candidate."""
+        for candidate in self._judge_input.candidates:
+            if candidate.model_name == model_name:
+                res = {
+                    "model_name": candidate.model_name,
+                    "task_type": candidate.task_type,
+                    "metrics": candidate.metrics,
+                    "complexity": {
+                        "n_params": candidate.complexity.n_params,
+                        "depth": candidate.complexity.depth,
+                        "family_rank": candidate.complexity.family_rank,
+                    }
+                }
+                if candidate.overfitting:
+                    res["overfitting"] = {
+                        "is_overfitted": candidate.overfitting.is_overfitted,
+                        "gap": candidate.overfitting.gap,
+                        "train_vs_cv_gap": candidate.overfitting.train_vs_cv_gap,
+                        "train_metrics": candidate.overfitting.train_metrics,
+                        "test_metrics": candidate.overfitting.test_metrics,
+                        "cv_results": candidate.overfitting.cv_results,
+                        "diagnostics": candidate.overfitting.diagnostics,
+                    }
+                if candidate.shap_summary:
+                    res["shap_summary"] = {
+                        "top_features": candidate.shap_summary.get("top_features", []),
+                        "mean_abs_shap": candidate.shap_summary.get("mean_abs_shap", {}),
+                        "feature_concentration": candidate.shap_summary.get("feature_concentration"),
+                    }
+                if getattr(candidate, "hyperparam_sensitivity", None):
+                    res["hyperparam_sensitivity"] = candidate.hyperparam_sensitivity
+                return res
+        return {"error": f"Model '{model_name}' not found."}
+
+
 async def _invoke_llm_agent(
     prompt_text: str,
     llm_settings: LlmSettings,
+    tools_instance: JudgeTools,
+    tool_call_callback: Optional[Callable[[str, dict[str, Any]], None]] = None,
 ) -> Optional[str]:
-    """Run the ADK LlmAgent via the shared LiteLlm factory and return the raw text response."""
+    """Run the ADK LlmAgent via the shared LiteLlm factory, using connected tools to fetch data on demand."""
     llm_model = build_llm_model(llm_settings)
     agent = LlmAgent(
         name="judge_llm",
         model=llm_model,
-        instruction="You are a precise ML model ranking commentator. Respond only with the JSON schema requested.",
+        instruction=(
+            "You are an expert ML model selection judge. Your role is to provide a rationale and "
+            "flag any concerns for a rule-based ranking. You CANNOT change the verdicts or scores. "
+            "To construct your response, you MUST call the tools to retrieve dataset metadata, statistics, "
+            "and model evaluation details. Do not assume or guess. Respond only with the requested JSON schema."
+        ),
+        tools=[
+            tools_instance.get_dataset_metadata,
+            tools_instance.get_dataset_statistics,
+            tools_instance.get_model_evaluation_details,
+        ],
     )
     runner = InMemoryRunner(agent=agent, app_name="judge_agent")
     session_service = runner.session_service
@@ -87,6 +149,11 @@ async def _invoke_llm_agent(
         session_id=session.id,
         new_message=new_message,
     ):
+        function_calls = event.get_function_calls() if hasattr(event, "get_function_calls") else []
+        for call in function_calls:
+            if tool_call_callback:
+                tool_call_callback(call.name, call.args)
+
         if event.is_final_response() and event.content:
             for part in event.content.parts or []:
                 if hasattr(part, "text") and part.text:
@@ -147,12 +214,14 @@ class JudgeAgent:
         self,
         judge_input: JudgeInput,
         use_llm: Optional[bool] = None,
+        status_callback: Optional[Callable[[str, Optional[Dict[str, Any]]], None]] = None,
     ) -> JudgeDecision:
         """Run the full judge pipeline and return a JudgeDecision.
 
         Args:
             judge_input: Structured input with all candidate models.
             use_llm: Override config use_llm setting. Pass False for rule-only mode.
+            status_callback: Optional callback to track live status and tool calls.
 
         Returns:
             JudgeDecision with rule-authoritative verdicts and optional LLM enrichment.
@@ -176,7 +245,7 @@ class JudgeAgent:
 
         # Step 2: LLM rationale (additive only; any failure falls back to rule-only output).
         if should_use_llm:
-            decision = self._enrich_with_llm(judge_input, decision)
+            decision = self._enrich_with_llm(judge_input, decision, status_callback)
 
         logger.debug(
             "=> JudgeAgent decision: selected=%s total_ranked=%d",
@@ -189,6 +258,7 @@ class JudgeAgent:
         self,
         judge_input: JudgeInput,
         decision: JudgeDecision,
+        status_callback: Optional[Callable[[str, Optional[Dict[str, Any]]], None]] = None,
     ) -> JudgeDecision:
         """Invoke the LLM and merge its output into the decision. Falls back on any error."""
         # Opt-in litellm wire-level debug (judge prompts/responses in backend logs),
@@ -232,11 +302,34 @@ class JudgeAgent:
             )
             decision = decision.model_copy(update={"decision_trace": updated_trace})
 
+            # Create tools instance and local callback wrapper to track tool calls live
+            tools_instance = JudgeTools(judge_input)
+            active_calls = []
+
+            def tool_call_callback(name: str, args: dict[str, Any]) -> None:
+                call_info = {
+                    "name": name,
+                    "args": args,
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+                active_calls.append(call_info)
+                logger.info("=> [JUDGE LLM] tool call: %s with args %s", name, args)
+                if status_callback:
+                    status_callback(
+                        f"Agent calling tool '{name}'...",
+                        {"tool_calls": active_calls}
+                    )
+
             # Call the LLM with a 30-second timeout to prevent pipeline hanging
             llm_call_started = time.monotonic()
             raw_response = asyncio.run(
                 asyncio.wait_for(
-                    _invoke_llm_agent(prompt_text, judge_llm_settings),
+                    _invoke_llm_agent(
+                        prompt_text=prompt_text,
+                        llm_settings=judge_llm_settings,
+                        tools_instance=tools_instance,
+                        tool_call_callback=tool_call_callback,
+                    ),
                     timeout=30.0,
                 )
             )

@@ -220,6 +220,17 @@ class JudgeLoop:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> JudgeDecision:
         """Run the judge once and return the decision. No feedback loop."""
+        def status_callback(msg: str, details: Optional[Dict[str, Any]] = None) -> None:
+            self._write_judge_status(
+                session_dir=session_dir,
+                turn=1,
+                max_turns=1,
+                status="running",
+                message=msg,
+                details=details,
+            )
+
+        self._write_judge_status(session_dir, 1, 1, "running", "Building evaluation input from SHAP, overfitting, and training metrics...")
         self._emit_judge_event(
             turn_number=1,
             total_turns=1,
@@ -235,6 +246,7 @@ class JudgeLoop:
             metadata=metadata,
         )
         candidate_count = len(judge_input.candidates) if judge_input else 0
+        self._write_judge_status(session_dir, 1, 1, "running", f"Evaluating {candidate_count} model candidate(s) with rule engine + LLM...")
         self._emit_judge_event(
             turn_number=1,
             total_turns=1,
@@ -242,7 +254,7 @@ class JudgeLoop:
             msg=f"[JUDGE] Evaluating {candidate_count} model candidate(s) with rule engine + LLM...",
             pct=40,
         )
-        decision = self.judge_agent.judge(judge_input, use_llm=self.use_llm)
+        decision = self.judge_agent.judge(judge_input, use_llm=self.use_llm, status_callback=status_callback)
         self._persist_decision(decision, session_dir, turn=1)
         # Stream per-model Judge findings live to the leaderboard.
         self._emit_findings_stream(decision, turn_number=1, total_turns=1)
@@ -250,6 +262,14 @@ class JudgeLoop:
             "=> judge turn 1: selected=%s ranked=%d",
             decision.selected_model,
             len(decision.ranked_models),
+        )
+        self._write_judge_status(
+            session_dir=session_dir,
+            turn=1,
+            max_turns=1,
+            status="completed",
+            message=f"Decision: selected model = {decision.selected_model or 'none'} ({len(decision.ranked_models)} models ranked).",
+            details={"selected_model": decision.selected_model, "ranked_count": len(decision.ranked_models)},
         )
         self._emit_judge_event(
             turn_number=1,
@@ -288,11 +308,27 @@ class JudgeLoop:
             training_callback: fn(excluded_names: List[str]) -> new training_summary
         """
         excluded_model_names: List[str] = []
+        accumulated_approved: List[str] = []
+        accumulated_rejected: List[str] = []
         current_training_summary = training_summary
         current_eval_artifacts = eval_artifacts
         last_decision: Optional[JudgeDecision] = None
+        # Initialize decision to None so the return below is always defined
+        # even when the loop breaks before judge_agent.judge() is called.
+        decision: Optional[JudgeDecision] = None
 
         for turn_number in range(1, self.max_turns + 1):
+            def status_callback(msg: str, details: Optional[Dict[str, Any]] = None) -> None:
+                self._write_judge_status(
+                    session_dir=session_dir,
+                    turn=turn_number,
+                    max_turns=self.max_turns,
+                    status="running",
+                    message=msg,
+                    details=details,
+                )
+
+            self._write_judge_status(session_dir, turn_number, self.max_turns, "running", f"Turn {turn_number}/{self.max_turns}: Building evaluation input (excluded: {len(excluded_model_names)} models)...")
             self._emit_judge_event(
                 turn_number=turn_number,
                 total_turns=self.max_turns,
@@ -310,6 +346,7 @@ class JudgeLoop:
 
             if not judge_input.candidates:
                 logger.warning("=> judge turn %d: no candidates left, stopping loop.", turn_number)
+                self._write_judge_status(session_dir, turn_number, self.max_turns, "failed", f"Turn {turn_number}: No candidate models remaining after exclusions. Stopping.")
                 self._emit_judge_event(
                     turn_number=turn_number,
                     total_turns=self.max_turns,
@@ -320,6 +357,7 @@ class JudgeLoop:
                 break
 
             candidate_count = len(judge_input.candidates)
+            self._write_judge_status(session_dir, turn_number, self.max_turns, "running", f"Turn {turn_number}/{self.max_turns}: Evaluating {candidate_count} candidate(s) with LLM...")
             self._emit_judge_event(
                 turn_number=turn_number,
                 total_turns=self.max_turns,
@@ -327,7 +365,7 @@ class JudgeLoop:
                 msg=f"[JUDGE] Turn {turn_number}/{self.max_turns}: Evaluating {candidate_count} candidate(s) with LLM...",
                 pct=max(20, int((turn_number - 0.5) / self.max_turns * 70)),
             )
-            decision = self.judge_agent.judge(judge_input, use_llm=self.use_llm)
+            decision = self.judge_agent.judge(judge_input, use_llm=self.use_llm, status_callback=status_callback)
             self._persist_decision(decision, session_dir, turn=turn_number)
             # Stream per-model Judge findings live to the leaderboard.
             self._emit_findings_stream(decision, turn_number=turn_number, total_turns=self.max_turns)
@@ -341,64 +379,107 @@ class JudgeLoop:
                 len(decision.ranked_models),
             )
 
-            # If a winner was found, stop the loop.
-            if decision.selected_model is not None:
-                logger.info("=> judge loop done: selected=%s after %d turn(s)", decision.selected_model, turn_number)
+            # Collect rejected model names from this turn.
+            rejected_names = [
+                ranked_model.model_name
+                for ranked_model in decision.ranked_models
+                if ranked_model.verdict == "reject"
+            ]
+
+            # Update accumulated approved/rejected tracking for reporting.
+            for ranked_model in decision.ranked_models:
+                if ranked_model.verdict == "select":
+                    if ranked_model.model_name not in accumulated_approved:
+                        accumulated_approved.append(ranked_model.model_name)
+                    if ranked_model.model_name in accumulated_rejected:
+                        accumulated_rejected.remove(ranked_model.model_name)
+                elif ranked_model.verdict == "reject":
+                    if ranked_model.model_name not in accumulated_rejected:
+                        accumulated_rejected.append(ranked_model.model_name)
+                    if ranked_model.model_name in accumulated_approved:
+                        accumulated_approved.remove(ranked_model.model_name)
+
+            # Stop when: no rejections (all candidates accepted) OR turn ceiling hit.
+            # A winner alone does NOT stop the loop -- if any models are rejected and
+            # turns remain, we expand the pool with fresh candidates to find even better.
+            if not rejected_names or turn_number >= self.max_turns:
+                final_status = "all_completed" if decision.selected_model is not None else "completed"
+                final_msg = (
+                    f"Converged on turn {turn_number}/{self.max_turns}: Winner = {decision.selected_model} ({len(decision.ranked_models)} models ranked)."
+                    if decision.selected_model is not None
+                    else f"Reached max turns ({self.max_turns}) with no clear winner. Returning best available."
+                )
+                logger.info("=> judge loop done after turn %d: selected=%s", turn_number, decision.selected_model)
+                self._write_judge_status(
+                    session_dir=session_dir,
+                    turn=turn_number,
+                    max_turns=self.max_turns,
+                    status=final_status,
+                    message=final_msg,
+                    details={"selected_model": decision.selected_model, "ranked_count": len(decision.ranked_models), "turn": turn_number},
+                )
                 self._emit_judge_event(
                     turn_number=turn_number,
                     total_turns=self.max_turns,
-                    status="all_completed",
-                    msg=f"[JUDGE] Converged on turn {turn_number}/{self.max_turns}: Winner = {decision.selected_model} ({len(decision.ranked_models)} models ranked).",
+                    status=final_status,
+                    msg=f"[JUDGE] {final_msg}",
                     pct=100,
                     details={"selected_model": decision.selected_model, "ranked_count": len(decision.ranked_models), "turn": turn_number},
                 )
                 return decision
 
-            if turn_number >= self.max_turns:
-                logger.warning("=> judge loop reached max_turns=%d with no winner.", self.max_turns)
-                self._emit_judge_event(
-                    turn_number=turn_number,
-                    total_turns=self.max_turns,
-                    status="completed",
-                    msg=f"[JUDGE] Reached max turns ({self.max_turns}) with no clear winner. Returning best available.",
-                    pct=100,
-                )
-                break
-
-            # All rejected -- collect rejected names and re-select
-            newly_rejected = [
-                ranked_model.model_name
-                for ranked_model in decision.ranked_models
-                if ranked_model.verdict == "reject"
-            ]
-            excluded_model_names.extend(newly_rejected)
+            # There are rejected models and turns remaining: expand the pool.
+            # Exclude ALL tried models (approved + rejected) so the next turn brings
+            # in genuinely fresh candidates the judge has never seen.
+            all_tried_names = [rm.model_name for rm in decision.ranked_models]
+            excluded_model_names.extend(all_tried_names)
             excluded_model_names = list(set(excluded_model_names))
 
+            accepted_count = len(decision.ranked_models) - len(rejected_names)
+            # Halve the new-candidate count each turn: turn 2 => N/2, turn 3 => N/4, etc.
+            # Ensures later turns add fewer models so training stays fast.
+            new_models_count = max(2, max_models // (2 ** turn_number))
             logger.info(
-                "=> judge feedback: all rejected on turn %d. Excluded so far: %s",
+                "=> judge feedback turn %d: %d accepted, %d rejected. Selecting %d new candidates. Excluded: %s",
                 turn_number,
+                accepted_count,
+                len(rejected_names),
+                new_models_count,
                 excluded_model_names,
+            )
+            feedback_msg = (
+                f"Turn {turn_number}: {accepted_count} accepted, {len(rejected_names)} rejected. "
+                f"Selecting {new_models_count} new candidates for turn {turn_number + 1}..."
+            )
+            self._write_judge_status(
+                session_dir=session_dir,
+                turn=turn_number,
+                max_turns=self.max_turns,
+                status="running",
+                message=feedback_msg,
             )
             self._emit_judge_event(
                 turn_number=turn_number,
                 total_turns=self.max_turns,
                 status="running",
-                msg=f"[JUDGE] Turn {turn_number}: All models rejected. Re-selecting candidates (excluding: {', '.join(excluded_model_names[:5])})...",
+                msg=f"[JUDGE] {feedback_msg}",
                 pct=max(30, int(turn_number / self.max_turns * 60)),
+                details={"accepted": accepted_count, "rejected": len(rejected_names)},
             )
 
-            # Re-invoke model selection excluding all rejected names, then re-train.
+            # Re-invoke model selection with half the original count for subsequent turns.
             self._reselect_models(
-                excluded_model_names=excluded_model_names,
+                approved_model_names=accumulated_approved,
+                rejected_model_names=accumulated_rejected,
                 session_dir=session_dir,
                 metadata_path=metadata_path,
                 feature_selection_path=feature_selection_path,
                 mini_data_path=mini_data_path,
                 model_library_root=model_library_root,
-                max_models=max_models,
+                max_models=new_models_count,
             )
 
-            # Re-train via callback; callback should also re-run EvalRunner.
+            # Re-train via callback; callback merges models across turns and re-runs EvalRunner.
             callback_result = training_callback(excluded_model_names)
             if isinstance(callback_result, tuple):
                 current_training_summary, new_eval_output = callback_result
@@ -410,11 +491,12 @@ class JudgeLoop:
             else:
                 current_training_summary = callback_result
 
-        return last_decision or decision  # type: ignore[return-value]
+        return last_decision or decision  # type: ignore[return-value]  # decision init'd above
 
     def _reselect_models(
         self,
-        excluded_model_names: List[str],
+        approved_model_names: List[str],
+        rejected_model_names: List[str],
         session_dir: Path,
         metadata_path: Path,
         feature_selection_path: Path,
@@ -422,7 +504,7 @@ class JudgeLoop:
         model_library_root: Path,
         max_models: int,
     ) -> None:
-        """Re-run select_models() with exclusions and overwrite model_config.json."""
+        """Re-run select_models() with judge feedback and overwrite model_config.json."""
         from backend.agents.model_selection.selector import select_models
         model_config_path = session_dir / "reports" / "model_config.json"
         select_models(
@@ -432,9 +514,10 @@ class JudgeLoop:
             model_library_root=model_library_root,
             output_path=model_config_path,
             max_models=max_models,
-            excluded_model_names=excluded_model_names,
+            approved_model_names=approved_model_names,
+            rejected_model_names=rejected_model_names,
         )
-        logger.info("=> re-selected models (excluded %d). Config: %s", len(excluded_model_names), model_config_path)
+        logger.info("=> re-selected models (approved %d, rejected %d). Config: %s", len(approved_model_names), len(rejected_model_names), model_config_path)
 
     def _emit_judge_event(
         self,
@@ -532,3 +615,45 @@ class JudgeLoop:
         turn_path = reports_dir / f"judge_decision_turn_{turn}.json"
         turn_path.write_text(json.dumps(decision_data, indent=2), encoding="utf-8")
         logger.debug("=> judge decision written: %s", canonical_path)
+
+    def _write_judge_status(
+        self,
+        session_dir: Path,
+        turn: int,
+        max_turns: int,
+        status: str,
+        message: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        reports_dir = session_dir / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        status_path = reports_dir / "judge_status.json"
+        
+        # Load existing logs or initialize
+        existing_logs = []
+        if status_path.is_file():
+            try:
+                data = json.loads(status_path.read_text(encoding="utf-8"))
+                existing_logs = data.get("logs", [])
+            except Exception:
+                pass
+        
+        # Add new message to logs if it's different from the last one
+        if not existing_logs or existing_logs[-1] != message:
+            existing_logs.append(message)
+            # Keep last 100 log statements to save space
+            if len(existing_logs) > 100:
+                existing_logs = existing_logs[-100:]
+
+        try:
+            status_path.write_text(json.dumps({
+                "status": status,
+                "progress": int(100 * (turn / max(1, max_turns))),
+                "message": message,
+                "turn": turn,
+                "max_turns": max_turns,
+                "logs": existing_logs,
+                **(details or {}),
+            }, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.debug("Failed to write judge status: %s", e)

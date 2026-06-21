@@ -24,7 +24,7 @@ from backend.orchestration.events import TrainingEventBus
 from backend.orchestration.events import TrainingEventSink
 from backend.agents.ray_wrapper import RayExecutor
 from backend.agents.training_orchestrator import TrainingOrchestrator
-from backend.agents.training_orchestrator.contracts import TrainingSummary
+from backend.agents.training_orchestrator.contracts import TrainingSummary, TrainingSummaryItem
 from backend.orchestration.eval_runner import EvalRunner
 from backend.orchestration.judge_loop import EvalArtifacts, JudgeLoop
 from backend.orchestration.plotting import PipelinePlotGenerator
@@ -321,15 +321,24 @@ class TrainingService:
                 except Exception:
                     pass
             
-            # Also clear the judge decision and training summary report files if they exist.
-            reports_dir = session_path / self.config_loader.training_api.session_output_dir
-            for filename in ("judge_decision.json", "training_summary.json"):
+            # Also clear the judge decision, model config, and training summary report files if they exist.
+            reports_dir = session_path / "reports"
+            for filename in ("judge_decision.json", "training_summary.json", "judge_status.json", "model_config.json"):
                 report_file = reports_dir / filename
                 if report_file.is_file():
                     try:
                         report_file.unlink()
                     except Exception:
                         pass
+            
+            # Clear evaluation outputs
+            eval_dir = session_path / "evaluation"
+            if eval_dir.is_dir():
+                import shutil
+                try:
+                    shutil.rmtree(eval_dir)
+                except Exception:
+                    pass
             
             self.event_bus.reset_session(session_id, clear_history=True)
 
@@ -708,10 +717,12 @@ class TrainingService:
                 return
             self._write_training_summary_artifacts(paths, summary)
             summary_updates = self._summary_state_updates(summary)
+            # Keep status as "running" here — the full pipeline (eval + judge turns) is still
+            # in progress. Final terminal status is set after _run_post_training_evaluation()
+            # so the frontend status poll never sees "completed" while judge turns are pending.
             self._update_state(
                 request.session_id,
-                status=summary.status,
-                finished_at=self._utc_now(),
+                status="running",
                 completed_models=summary.completed,
                 failed_models=summary.failed,
                 error=None,
@@ -767,8 +778,23 @@ class TrainingService:
                 executor,
                 cancel_event,
             )
+            # Eval (including all judge turns) is complete — update to the final terminal status
+            # so the frontend status poll reflects the true pipeline outcome.
+            if completed_summary is not None and not cancel_event.is_set():
+                self._update_state(
+                    request.session_id,
+                    status=completed_summary.status,
+                    finished_at=self._utc_now(),
+                )
         else:
             if not cancel_event.is_set():
+                # Eval skipped — mark terminal status now so the status poll stops.
+                if completed_summary is not None:
+                    self._update_state(
+                        request.session_id,
+                        status=completed_summary.status,
+                        finished_at=self._utc_now(),
+                    )
                 self.event_bus.emit(
                     TrainingEvent(
                         session_id=request.session_id,
@@ -931,7 +957,14 @@ class TrainingService:
                 session_id=request.session_id,
             )
 
-            # Re-train callback called by the Judge Agent feedback loop on model candidate exclusions
+            # Accumulated pool of all models and eval artifacts across all judge turns.
+            # Starts with the initial training run; each callback call merges in new models.
+            accumulated_summary_items: list[TrainingSummaryItem] = list(summary.models)
+            accumulated_shap_dirs: dict[str, Any] = dict(eval_output.get("shap_dirs", {}))
+            accumulated_overfitting_dirs: dict[str, Any] = dict(eval_output.get("overfitting_dirs", {}))
+
+            # Re-train callback called by the Judge Agent feedback loop on model candidate exclusions.
+            # model_config.json is already rewritten by _reselect_models() before this is called.
             def training_callback(excluded_names: list[str]) -> Any:
                 self.event_bus.emit(
                     TrainingEvent(
@@ -947,19 +980,76 @@ class TrainingService:
                 if cancel_event.is_set():
                     raise RuntimeError("Cancellation requested during judge feedback loop")
 
+                # Filter model_config.json to exclude already-trained models (approved from
+                # previous turns). The reselection agent includes approved models in its output
+                # so the judge sees them in the next turn, but we must NOT re-train them.
+                model_config_path = paths.session_path / "reports" / "model_config.json"
+                already_trained_names: set[str] = {item.model_name for item in accumulated_summary_items}
+                if model_config_path.is_file():
+                    all_model_configs = json.loads(model_config_path.read_text(encoding="utf-8"))
+                    new_only_configs = [cfg for cfg in all_model_configs if cfg.get("model_name") not in already_trained_names]
+                    if new_only_configs:
+                        model_config_path.write_text(json.dumps(new_only_configs, indent=2), encoding="utf-8")
+                        logger.info(
+                            "=> training_callback: %d new models to train (filtered %d already-trained from config)",
+                            len(new_only_configs),
+                            len(all_model_configs) - len(new_only_configs),
+                        )
+                    else:
+                        # All reselected models already trained — build merged summary from
+                        # accumulated data and skip re-training to avoid wasted work.
+                        logger.info("=> training_callback: all reselected models already trained, skipping re-train turn.")
+                        total_count = len(accumulated_summary_items)
+                        completed_count = sum(1 for item in accumulated_summary_items if item.status == "completed")
+                        failed_count = sum(1 for item in accumulated_summary_items if item.status == "failed")
+                        all_completed = completed_count == total_count
+                        all_failed = failed_count == total_count
+                        status_map: dict[tuple[bool, bool], str] = {(True, False): "completed", (False, True): "failed"}
+                        skip_merged_summary = TrainingSummary(
+                            session_id=request.session_id,
+                            status=status_map.get((all_completed, all_failed), "partial_failure"),
+                            total_models=total_count,
+                            completed=completed_count,
+                            failed=failed_count,
+                            models=list(accumulated_summary_items),
+                        )
+                        skip_merged_eval_output: dict[str, Any] = {
+                            "shap_dirs": dict(accumulated_shap_dirs),
+                            "overfitting_dirs": dict(accumulated_overfitting_dirs),
+                            "hpt_results_path": None,
+                        }
+                        return skip_merged_summary, skip_merged_eval_output
+
                 common_arguments = {
                     "session_id": request.session_id,
                     "metadata_path": paths.metadata_path,
-                    "model_config_path": paths.model_config_path,
+                    "model_config_path": model_config_path,
                     "train_path": paths.train_path,
                     "test_path": paths.test_path,
                     "session_dir": paths.session_output_dir,
                     "target_column": request.target_column,
                     "manifest_path": paths.manifest_path,
                     "summary_path": paths.summary_path,
+                    # Assign IDs starting after all already-trained models so SSE events
+                    # use unique model IDs (model_011, model_012 etc.) that don't conflict
+                    # with existing model cards in the frontend.
+                    "model_id_start": len(accumulated_summary_items) + 1,
                 }
-                
-                # Overwrites model_config.json and triggers training on the new configuration candidates
+
+                # Signal the frontend that a new training wave is beginning so the training
+                # stage card and model list update even though initial training is "done".
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=request.session_id,
+                        stage="training",
+                        level="info",
+                        status="running",
+                        msg=f"[JUDGE FEEDBACK] Starting training for {len(new_only_configs)} new candidate(s)...",
+                        pct=5,
+                    )
+                )
+
+                # Train only the truly new models (model_config.json was filtered above).
                 if execution_mode == "ray":
                     new_summary = orchestrator.prepare_and_execute_ray(
                         **common_arguments,
@@ -974,8 +1064,6 @@ class TrainingService:
                     new_summary = orchestrator.prepare_and_execute_local(
                         **common_arguments,
                     )
-                
-                self._write_training_summary_artifacts(paths, new_summary)
 
                 self.event_bus.emit(
                     TrainingEvent(
@@ -988,15 +1076,68 @@ class TrainingService:
                     )
                 )
 
-                # Re-run evaluation without HPT for the new candidates
-                nonlocal eval_output
-                eval_output = eval_runner.run(
+                # Re-run evaluation without HPT for the new candidates only.
+                new_eval_output = eval_runner.run(
                     training_summary=new_summary,
                     engineered_dataset_path=engineered_csv,
                     run_hpt=False,
                 )
-                return new_summary, eval_output
 
+                # Validate renumbered IDs match what the orchestrator emitted via SSE.
+                # model_id_start = len(accumulated_summary_items) + 1, so the formula below
+                # produces the same IDs the orchestrator assigned (model_011, model_012, ...).
+                new_items_renumbered: list[TrainingSummaryItem] = []
+                for new_item_index, new_item in enumerate(new_summary.models):
+                    renumbered_slot = len(accumulated_summary_items) + new_item_index + 1
+                    new_item_data = new_item.model_dump()
+                    new_item_data["model_id"] = f"model_{renumbered_slot:03d}"
+                    new_items_renumbered.append(TrainingSummaryItem.model_validate(new_item_data))
+
+                accumulated_summary_items.extend(new_items_renumbered)
+
+                # Merge eval artifact directories (later turns overwrite on collision by name).
+                accumulated_shap_dirs.update(new_eval_output.get("shap_dirs", {}))
+                accumulated_overfitting_dirs.update(new_eval_output.get("overfitting_dirs", {}))
+
+                # Build a merged TrainingSummary satisfying the strict Pydantic validator.
+                total_count = len(accumulated_summary_items)
+                completed_count = sum(1 for item in accumulated_summary_items if item.status == "completed")
+                failed_count = sum(1 for item in accumulated_summary_items if item.status == "failed")
+                all_completed = completed_count == total_count
+                all_failed = failed_count == total_count
+                # Map (all_completed, all_failed) -> status string; default to partial_failure.
+                status_lookup: dict[tuple[bool, bool], str] = {
+                    (True, False): "completed",
+                    (False, True): "failed",
+                }
+                merged_status = status_lookup.get((all_completed, all_failed), "partial_failure")
+
+                merged_summary = TrainingSummary(
+                    session_id=request.session_id,
+                    status=merged_status,
+                    total_models=total_count,
+                    completed=completed_count,
+                    failed=failed_count,
+                    models=list(accumulated_summary_items),
+                )
+
+                self._write_training_summary_artifacts(paths, merged_summary)
+
+                merged_eval_output: dict[str, Any] = {
+                    "shap_dirs": dict(accumulated_shap_dirs),
+                    "overfitting_dirs": dict(accumulated_overfitting_dirs),
+                    "hpt_results_path": None,
+                }
+                return merged_summary, merged_eval_output
+
+            # metadata_model_selection.json uses the flat string list format required by
+            # MetadataInput (model selection agent schema). metadata_epic3.json has input_cols
+            # as dicts which fails Pydantic validation in select_models(), silently killing
+            # the multi-turn feedback loop after turn 1.
+            model_selection_metadata_path = self._resolve_model_selection_metadata_path(
+                session_dir=session_dir,
+                fallback_path=paths.metadata_path,
+            )
             decision = judge_loop.run_with_feedback(
                 eval_artifacts=EvalArtifacts(
                     shap_dirs=eval_output["shap_dirs"],
@@ -1006,9 +1147,9 @@ class TrainingService:
                 training_summary=summary,
                 session_dir=session_dir,
                 training_callback=training_callback,
-                metadata_path=paths.metadata_path,
-                feature_selection_path=session_dir / "reports" / "feature_selection.json",
-                mini_data_path=session_dir / "data" / "mini_dataset.csv",
+                metadata_path=model_selection_metadata_path,
+                feature_selection_path=self._resolve_feature_selection_path(session_dir),
+                mini_data_path=self._resolve_mini_data_path(session_dir),
                 model_library_root=self.config_loader.training_api.model_library_root,
                 max_models=10,
                 dataset_id=request.session_id,
@@ -1088,6 +1229,18 @@ class TrainingService:
             )
         finally:
             self.event_bus.close_session(request.session_id)
+
+    def _resolve_model_selection_metadata_path(self, session_dir: Path, fallback_path: Path) -> Path:
+        """Return metadata_model_selection.json if present; else fall back to fallback_path.
+
+        PipelinePrep normalizes the raw metadata into metadata_model_selection.json, which
+        has input_cols as a flat list of strings and a canonical problem_type value.
+        The model selection agent (MetadataInput schema) requires this exact format.
+        Using metadata_epic3.json (fallback_path) causes a ValidationError because its
+        input_cols entries are dicts, not strings.
+        """
+        normalized_path = session_dir / "reports" / "metadata_model_selection.json"
+        return normalized_path if normalized_path.is_file() else fallback_path
 
     def _resolve_max_judge_turns(self, session_id: str) -> int:
         """Return the judge-turn count, preferring a per-session override."""
@@ -1391,6 +1544,40 @@ class TrainingService:
                 f"{label} path must stay inside the session directory: {selected}"
             ) from exc
         return selected
+
+    def _resolve_mini_data_path(self, session_dir: Path) -> Path:
+        """Return the path to the mini dataset CSV, trying known filenames in order."""
+        mini_data_candidates = ["data/mini_data.csv", "data/mini_dataset.csv", "data/data.csv"]
+        for candidate in mini_data_candidates:
+            candidate_path = session_dir / candidate
+            if candidate_path.is_file():
+                return candidate_path
+        # Return the first candidate even if missing (select_models handles None gracefully)
+        return session_dir / "data" / "mini_data.csv"
+
+    def _resolve_feature_selection_path(self, session_dir: Path) -> Path:
+        """Return the feature_selection.json path, creating a minimal stub if missing.
+
+        feature_selection.json is normally written by PipelinePrep during the
+        feature engineering step. In fallback runs (no full pipeline), it may not
+        exist. We write a minimal valid stub so model selection can still proceed.
+        """
+        feature_selection_candidates = [
+            session_dir / "reports" / "feature_selection.json",
+            session_dir / "feature_selection.json",
+        ]
+        existing = next((path for path in feature_selection_candidates if path.is_file()), None)
+        if existing:
+            return existing
+        # Write a minimal stub that satisfies FeatureSelectionInput validation.
+        stub_path = session_dir / "reports" / "feature_selection.json"
+        stub_path.parent.mkdir(parents=True, exist_ok=True)
+        stub_path.write_text(
+            json.dumps({"keep": [], "drop": [], "engineered": [], "rationale": {}}),
+            encoding="utf-8",
+        )
+        logger.info("=> wrote minimal feature_selection.json stub: %s", stub_path)
+        return stub_path
 
     def _emit_cancelled_session(self, session_id: str, cancelled_jobs: int) -> None:
         self.event_bus.emit(

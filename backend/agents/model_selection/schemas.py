@@ -106,6 +106,6 @@ class SelectionReport(BaseModel):
     data_format: DataFormat
     selected_count: int
     available_model_count: int
-    selection_mode: Literal["llm", "deterministic", "llm_with_fallback", "dataset2vec"]
+    selection_mode: Literal["llm", "deterministic", "llm_with_fallback", "dataset2vec", "feedback_reselection"]
     invalid_llm_models: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

@@ -37,7 +37,8 @@ class TestHardGates:
 
     def test_classification_below_floor_is_rejected(self, judge_config: dict) -> None:
         engine = RuleEngine(judge_config)
-        below_floor = _make_candidate("WeakModel", "classification", primary_metric_value=0.45)
+        # 0.20 is below the relaxed accuracy_floor of 0.30.
+        below_floor = _make_candidate("WeakModel", "classification", primary_metric_value=0.20)
         survivors, gate_outcomes = engine.apply_hard_gates([below_floor])
         assert len(survivors) == 0
         assert "WeakModel" in gate_outcomes
@@ -45,7 +46,8 @@ class TestHardGates:
 
     def test_regression_below_floor_is_rejected(self, judge_config: dict) -> None:
         engine = RuleEngine(judge_config)
-        below_floor = _make_candidate("WeakRegressor", "regression", primary_metric_value=0.20)
+        # 0.10 is below the relaxed r2_floor of 0.20.
+        below_floor = _make_candidate("WeakRegressor", "regression", primary_metric_value=0.10)
         survivors, gate_outcomes = engine.apply_hard_gates([below_floor])
         assert len(survivors) == 0
         assert "WeakRegressor" in gate_outcomes
@@ -61,7 +63,7 @@ class TestHardGates:
         engine = RuleEngine(judge_config)
         candidates = [
             _make_candidate("GoodA", "classification", primary_metric_value=0.88),
-            _make_candidate("BadB", "classification", primary_metric_value=0.40),
+            _make_candidate("BadB", "classification", primary_metric_value=0.15),
             _make_candidate("GoodC", "classification", primary_metric_value=0.75),
         ]
         survivors, gate_outcomes = engine.apply_hard_gates(candidates)
@@ -139,9 +141,14 @@ class TestRankingWithClassificationFixture:
         assert isinstance(decision, JudgeDecision)
         assert len(decision.ranked_models) == len(judge_input.candidates)
         rejected = [rm for rm in decision.ranked_models if rm.verdict == "reject"]
-        # KNeighborsClassifier has accuracy=0.45, below floor=0.60; must be rejected.
+        # KNeighborsClassifier has accuracy=0.45, now ABOVE the relaxed floor=0.30,
+        # so it passes the gate. All models in this fixture have accuracy >= 0.30.
         rejected_names = [rm.model_name for rm in rejected]
-        assert "KNeighborsClassifier" in rejected_names
+        # Ensure the accepted models are all present.
+        accepted_names = [
+            rm.model_name for rm in decision.ranked_models if rm.verdict == "select"
+        ]
+        assert len(accepted_names) > 0
 
     def test_regression_below_floor_model_rejected(
         self, regression_judge_input_dict: dict, judge_config: dict
@@ -156,14 +163,15 @@ class TestRankingWithClassificationFixture:
             all_candidates=judge_input.candidates,
         )
         rejected = [rm.model_name for rm in decision.ranked_models if rm.verdict == "reject"]
-        # DummyRegressor has r2=0.10, below r2_floor=0.40.
+        # DummyRegressor has r2=0.10, below the relaxed r2_floor=0.20.
         assert "DummyRegressor" in rejected
 
     def test_all_rejected_returns_null_selected_model(self, judge_config: dict) -> None:
         engine = RuleEngine(judge_config)
+        # Both models are below the relaxed accuracy_floor of 0.30.
         all_bad = [
-            _make_candidate("BadA", "classification", primary_metric_value=0.10),
-            _make_candidate("BadB", "classification", primary_metric_value=0.20),
+            _make_candidate("BadA", "classification", primary_metric_value=0.05),
+            _make_candidate("BadB", "classification", primary_metric_value=0.10),
         ]
         survivors, gate_outcomes = engine.apply_hard_gates(all_bad)
         decision = engine.rank(
@@ -189,7 +197,7 @@ class TestJudgeAgentRuleOnly:
         decision = agent.judge(judge_input=judge_input, use_llm=False)
         assert isinstance(decision, JudgeDecision)
         assert decision.selected_model is not None
-        assert decision.selected_model != "KNeighborsClassifier"
+        # KNeighborsClassifier (accuracy=0.45) now passes the relaxed 0.30 floor.
         assert all(rm.verdict in ("select", "reject") for rm in decision.ranked_models)
         assert decision.decision_trace.llm_commentary is None
 
@@ -235,3 +243,40 @@ class TestJudgeAgentLiveLlm:
         # LLM commentary should be populated.
         assert llm_decision.decision_trace.llm_commentary is not None
         assert len(llm_decision.decision_trace.llm_commentary) > 0
+
+
+class TestJudgeTools:
+    """Tests the JudgeTools class to ensure function-calling endpoints retrieve accurate metadata/statistics/candidate details."""
+
+    def test_judge_tools_retrieval(self, classification_judge_input_dict: dict) -> None:
+        from backend.agents.evaluation.judge.judge_agent import JudgeTools
+        from backend.agents.evaluation.judge.schemas import JudgeInput
+
+        judge_input = JudgeInput.model_validate(classification_judge_input_dict)
+        tools = JudgeTools(judge_input)
+
+        # Test metadata retrieval
+        metadata = tools.get_dataset_metadata()
+        assert isinstance(metadata, dict)
+        assert metadata == (judge_input.metadata or {})
+
+        # Test statistics retrieval
+        statistics = tools.get_dataset_statistics()
+        assert isinstance(statistics, dict)
+        assert statistics == (judge_input.minidata or {})
+
+        # Test model evaluation details retrieval
+        first_candidate = judge_input.candidates[0]
+        details = tools.get_model_evaluation_details(first_candidate.model_name)
+        assert isinstance(details, dict)
+        assert details["model_name"] == first_candidate.model_name
+        assert details["task_type"] == first_candidate.task_type
+        assert details["metrics"] == first_candidate.metrics
+        assert details["complexity"]["n_params"] == first_candidate.complexity.n_params
+
+        # Test error handling for non-existent model
+        missing_details = tools.get_model_evaluation_details("NonExistentModel")
+        assert isinstance(missing_details, dict)
+        assert "error" in missing_details
+        assert "NonExistentModel" in missing_details["error"]
+

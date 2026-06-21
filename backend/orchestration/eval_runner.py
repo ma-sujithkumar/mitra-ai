@@ -116,6 +116,10 @@ class OverfittingRunner:
 
         model_results: dict[str, Optional[str]] = {}
         models = getattr(training_summary, "models", []) or []
+        total_models = len(models)
+        completed_count = 0
+        status_path = session_dir / "evaluation" / "overfitting_status.json"
+        self._write_status(status_path, completed_count, total_models, "running", "Starting overfitting analysis...")
 
         with ProcessPoolExecutor() as pool:
             futures = {}
@@ -152,15 +156,32 @@ class OverfittingRunner:
 
             for future in as_completed(futures):
                 model_name = futures[future]
+                completed_count += 1
                 try:
                     future.result()
                     model_results[model_name] = str(overfit_dir / model_name)
                     logger.info("=> overfitting done: model=%s", model_name)
+                    self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check done for {model_name}")
                 except Exception as exc:
                     logger.warning("=> overfitting failed for %s: %s", model_name, exc)
                     model_results[model_name] = None
+                    self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check failed for {model_name}: {exc}")
 
+        self._write_status(status_path, completed_count, total_models, "completed", "Overfitting analysis completed successfully.")
         return model_results
+
+    def _write_status(self, path: Path, completed: int, total: int, status: str, message: str) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({
+                "status": status,
+                "progress": int(100 * (completed / max(1, total))),
+                "message": message,
+                "completed_models": completed,
+                "total_models": total
+            }, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.debug("Failed to write overfitting status: %s", e)
 
 
 class HPTRunner:
@@ -325,6 +346,10 @@ class EvalRunner:
             total_models = len(futures)
             completed_count = 0
             heartbeat_interval_sec = 10.0
+            
+            # Initialize shap_status.json
+            self._write_shap_status(completed_count, total_models or 1, "running", "Starting SHAP analysis...")
+
             while pending_futures:
                 done, pending_futures = wait(
                     pending_futures,
@@ -344,6 +369,7 @@ class EvalRunner:
                             pct=10 + int(80 * (completed_count / max(1, total_models))),
                         )
                     )
+                    self._write_shap_status(completed_count, total_models, "running", f"Still computing SHAP values... ({completed_count}/{total_models} done)")
                 for completed_future in done:
                     model_name = futures[completed_future]
                     completed_count += 1
@@ -362,6 +388,7 @@ class EvalRunner:
                                     pct=progress_pct,
                                 )
                             )
+                        self._write_shap_status(completed_count, total_models, "running", f"Finished SHAP value computation for model: {model_name} ({completed_count}/{total_models})")
                     except Exception as exc:
                         logger.warning("=> SHAP failed for %s: %s", model_name, exc)
                         shap_dirs[model_name] = None
@@ -376,6 +403,9 @@ class EvalRunner:
                                     pct=progress_pct,
                                 )
                             )
+                        self._write_shap_status(completed_count, total_models, "running", f"SHAP analysis failed for model {model_name}: {exc}")
+
+        self._write_shap_status(completed_count, total_models or 1, "completed", "SHAP explanation analysis completed successfully.")
 
         if self.event_bus:
             self.event_bus.emit(
@@ -473,3 +503,17 @@ class EvalRunner:
             "overfitting_dirs": overfitting_dirs,
             "hpt_results_path": str(hpt_results_path) if hpt_results_path else None,
         }
+
+    def _write_shap_status(self, completed: int, total: int, status: str, message: str) -> None:
+        try:
+            status_path = self.session_dir / "evaluation" / "shap_status.json"
+            status_path.parent.mkdir(parents=True, exist_ok=True)
+            status_path.write_text(json.dumps({
+                "status": status,
+                "progress": int(100 * (completed / max(1, total))),
+                "message": message,
+                "completed_models": completed,
+                "total_models": total
+            }, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.debug("Failed to write SHAP status: %s", e)
