@@ -79,6 +79,21 @@ class LlmBaseUrlsConfig:
 
 
 @dataclass(frozen=True)
+class LlmModelOptionsConfig:
+    # Each model is {"label": <friendly name>, "value": <litellm model id>}.
+    openai_models: list[dict[str, str]]
+    anthropic_models: list[dict[str, str]]
+    gemini_models: list[dict[str, str]]
+
+    def as_provider_map(self) -> dict[str, list[dict[str, str]]]:
+        return {
+            "openai": self.openai_models,
+            "anthropic": self.anthropic_models,
+            "gemini": self.gemini_models,
+        }
+
+
+@dataclass(frozen=True)
 class MetadataAgentConfig:
     classification_unique_threshold: float
     categorical_unique_ratio: float
@@ -233,6 +248,32 @@ class ConfigLoader:
             openai_base_url=self._optional_base_url("OPENAI_BASE_URL"),
             anthropic_base_url=self._optional_base_url("ANTHROPIC_BASE_URL"),
             gemini_base_url=self._optional_base_url("GEMINI_BASE_URL"),
+        )
+        # [llm_model_options] section: optional; selectable models per provider for
+        # the Run Configuration dropdown. Fallback to each provider's base model so
+        # older configs without this section still surface a single option.
+        self.llm_model_options = LlmModelOptionsConfig(
+            openai_models=self._parse_labeled_models(
+                self.parser.get(
+                    "llm_model_options",
+                    "OPENAI",
+                    fallback=self.llm_models.openai_base_model,
+                )
+            ),
+            anthropic_models=self._parse_labeled_models(
+                self.parser.get(
+                    "llm_model_options",
+                    "ANTHROPIC",
+                    fallback=self.llm_models.anthropic_base_model,
+                )
+            ),
+            gemini_models=self._parse_labeled_models(
+                self.parser.get(
+                    "llm_model_options",
+                    "GEMINI",
+                    fallback=self.llm_models.gemini_base_model,
+                )
+            ),
         )
         self.metadata_agent = MetadataAgentConfig(
             classification_unique_threshold=self.parser.getfloat(
@@ -440,6 +481,25 @@ class ConfigLoader:
             for item in raw_value.split(",")
             if item.strip()
         ]
+
+    @staticmethod
+    def _parse_labeled_models(raw_value: str) -> list[dict[str, str]]:
+        # Format: "Display Name:model-id,Other Name:other-id". Commas separate
+        # entries; the first colon splits the friendly label from the model id.
+        # An entry without a colon uses the id as both label and value.
+        models: list[dict[str, str]] = []
+        for entry in raw_value.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if ":" in entry:
+                label, value = entry.split(":", 1)
+                label, value = label.strip(), value.strip()
+            else:
+                label = value = entry
+            if value:
+                models.append({"label": label or value, "value": value})
+        return models
 
     @staticmethod
     def _parse_phase_artifacts(raw_value: str) -> dict[str, list[str]]:

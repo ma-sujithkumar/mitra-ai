@@ -295,6 +295,7 @@ def public_config(
             "providers": ["openai", "anthropic", "gemini"],
             "base_models": config_loader.llm_models.as_provider_map(),
             "base_urls": config_loader.llm_base_urls.as_provider_map(),
+            "model_options": config_loader.llm_model_options.as_provider_map(),
         },
         "metadata_agent": {
             "metadata_context_char_limit": (

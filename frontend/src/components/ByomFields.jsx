@@ -1,7 +1,13 @@
+import { useState } from 'react';
+
 import FormField from './FormField.jsx';
 import Segmented from './Segmented.jsx';
 import { PROVIDERS } from '../data.js';
 import { Icons } from '../icons.jsx';
+
+// Sentinel value for the dropdown's "Custom..." entry so users can still type a
+// model name for self-hosted / BYOM endpoints.
+const CUSTOM_MODEL_OPTION = '__custom__';
 
 function ByomFields({ settings, setSettings, publicConfig }) {
   const Cpu = Icons.cpu;
@@ -10,6 +16,7 @@ function ByomFields({ settings, setSettings, publicConfig }) {
   const baseModel = baseModels[selectedProvider] || '';
   const baseUrls = publicConfig?.llm?.base_urls || {};
   const baseUrl = baseUrls[selectedProvider] || '';
+  const modelOptions = publicConfig?.llm?.model_options?.[selectedProvider] || [];
 
   function updateSetting(key, value) {
     setSettings((currentSettings) => ({
@@ -18,12 +25,44 @@ function ByomFields({ settings, setSettings, publicConfig }) {
     }));
   }
 
+  const optionValues = modelOptions.map((option) => option.value);
+  const defaultModel = modelOptions[0]?.value || '';
+  const currentModel = settings.model || '';
+  // A typed model that is not one of the provider's listed options is "custom".
+  const isCustomModel = currentModel !== '' && !optionValues.includes(currentModel);
+  const [customMode, setCustomMode] = useState(false);
+  const showCustomInput = customMode || isCustomModel;
+  // Blank model means "use the first listed model" (the provider default), so
+  // the dropdown shows that entry selected rather than an extra base option.
+  const selectValue = showCustomInput ? CUSTOM_MODEL_OPTION : (currentModel || defaultModel);
+
+  function handleProviderChange(provider) {
+    // Switching provider invalidates the previously selected model; reset to the
+    // new provider's base model (blank) so the dropdown shows valid choices.
+    setCustomMode(false);
+    setSettings((currentSettings) => ({
+      ...currentSettings,
+      provider,
+      model: '',
+    }));
+  }
+
+  function handleModelSelect(value) {
+    if (value === CUSTOM_MODEL_OPTION) {
+      setCustomMode(true);
+      updateSetting('model', '');
+      return;
+    }
+    setCustomMode(false);
+    updateSetting('model', value);
+  }
+
   return (
     <div className="byom-panel">
       <FormField label="Provider">
         <Segmented
           label="LLM provider"
-          onChange={(value) => updateSetting('provider', value)}
+          onChange={handleProviderChange}
           options={PROVIDERS.map((provider) => ({
             value: provider.value,
             label: provider.label,
@@ -33,14 +72,27 @@ function ByomFields({ settings, setSettings, publicConfig }) {
       </FormField>
 
       <div className="byom-grid">
-        <FormField label="Model" hint="blank uses provider base">
-          <input
+        <FormField label="Model" hint="pick a model or choose Custom">
+          <select
             className="input"
-            onChange={(event) => updateSetting('model', event.target.value)}
-            placeholder={baseModel || 'base model'}
-            type="text"
-            value={settings.model || ''}
-          />
+            onChange={(event) => handleModelSelect(event.target.value)}
+            value={selectValue}
+          >
+            {modelOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+            <option value={CUSTOM_MODEL_OPTION}>Custom...</option>
+          </select>
+          {showCustomInput ? (
+            <input
+              className="input"
+              onChange={(event) => updateSetting('model', event.target.value)}
+              placeholder={baseModel || 'provider/model-name'}
+              style={{ marginTop: 8 }}
+              type="text"
+              value={currentModel}
+            />
+          ) : null}
         </FormField>
 
         <FormField label="API Key" hint="kept in memory for this session">
