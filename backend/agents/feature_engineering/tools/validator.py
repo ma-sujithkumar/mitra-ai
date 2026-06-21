@@ -30,7 +30,9 @@ class FeatureValidator(BaseTool):
             state.warnings.append("Residual NaNs in selected columns filled with 0.0")
 
         state.df = df[keep_cols].copy()
-        state.df[state.target_column] = state.target.to_numpy()
+        # Unsupervised runs have no target column to re-attach.
+        if state.target is not None and state.target_column is not None:
+            state.df[state.target_column] = state.target.to_numpy()
         state.selected_columns = keep_cols
 
     @staticmethod
@@ -54,10 +56,12 @@ class FeatureValidator(BaseTool):
             return False
 
     def postcondition(self, state: PipelineState) -> None:
-        if state.target_column not in state.df.columns:
-            raise PostconditionError("FeatureValidator: target column missing from output df")
-        if state.df.columns[-1] != state.target_column:
-            raise PostconditionError("FeatureValidator: target must be last column")
+        # Target-column placement checks only apply to supervised runs.
+        if state.target is not None and state.target_column is not None:
+            if state.target_column not in state.df.columns:
+                raise PostconditionError("FeatureValidator: target column missing from output df")
+            if state.df.columns[-1] != state.target_column:
+                raise PostconditionError("FeatureValidator: target must be last column")
         if state.df.isna().sum().sum() > 0:
             raise PostconditionError("FeatureValidator: NaNs remain in output")
         if state.row_count_after_outlier is not None and len(state.df) != state.row_count_after_outlier:

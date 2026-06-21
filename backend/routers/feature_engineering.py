@@ -119,12 +119,19 @@ def start_feature_engineering(
         requested=feature_request.target_col,
         metadata_path=metadata_path,
     )
-    if not target_column:
+    # Unsupervised runs (problem_type=unsupervised) legitimately have no target;
+    # feature engineering still runs, skipping the target-dependent steps.
+    is_unsupervised = _read_problem_type(metadata_path) == "unsupervised"
+    if not target_column and not is_unsupervised:
         raise HTTPException(
             status_code=422,
             detail={
                 "error": "TARGET_REQUIRED",
-                "message": "A target column is required for feature engineering.",
+                "message": (
+                    "A target column is required for feature engineering. This run "
+                    "has no target and was not marked unsupervised - set a target "
+                    "column (and Classify/Regress problem type) and re-run metadata."
+                ),
             },
         )
 
@@ -222,7 +229,7 @@ def _run_pipeline_prep(
     session_id: str,
     raw_data_path: Path,
     metadata_path: Path,
-    target_column: str,
+    target_column: str | None,
     llm_settings: LlmSettings,
     job_registry: JobRegistry,
     event_bus: TrainingEventBus | None = None,
@@ -295,6 +302,12 @@ def _resolve_target_column(requested: str | None, metadata_path: Path) -> str | 
     if isinstance(output_cols, list) and output_cols:
         return str(output_cols[0])
     return None
+
+
+def _read_problem_type(metadata_path: Path) -> str | None:
+    metadata = _read_json_or_none(metadata_path) or {}
+    value = metadata.get("problem_type")
+    return value if isinstance(value, str) else None
 
 
 def _get_existing_session_path(

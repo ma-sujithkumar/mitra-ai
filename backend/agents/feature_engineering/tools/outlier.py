@@ -194,7 +194,9 @@ class OutlierHandler(BaseTool):
         if drop_indices:
             keep_mask = ~df.index.isin(drop_indices)
             state.df = df[keep_mask].reset_index(drop=True)
-            state.target = state.target[keep_mask].reset_index(drop=True)
+            # No target to subset for unsupervised runs.
+            if state.target is not None:
+                state.target = state.target[keep_mask].reset_index(drop=True)
 
         state.row_count_after_outlier = len(state.df)
 

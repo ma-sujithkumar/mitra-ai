@@ -13,8 +13,8 @@ class DataProfiler(BaseTool):
     def precondition(self, state: PipelineState) -> None:
         if state.df is None:
             raise PreconditionError("DataProfiler: state.df is None")
-        if state.target is None:
-            raise PreconditionError("DataProfiler: state.target is None")
+        # Unsupervised runs have no target; mutual-information-with-target is
+        # simply skipped below.
 
     def run(self, state: PipelineState) -> None:
         df = state.df
@@ -24,8 +24,13 @@ class DataProfiler(BaseTool):
         results = run_parallel(_univariate_stats, items)
         profile: dict = {name: stats for name, stats in results}
 
-        target_arr = state.target.to_numpy()
+        # mutual-information-with-target is target-dependent; skip it (set to 0.0)
+        # for unsupervised runs where there is no target.
+        target_arr = state.target.to_numpy() if state.target is not None else None
         for col in df.columns:
+            if target_arr is None:
+                profile[col]["mi_with_target"] = 0.0
+                continue
             col_data = pd.to_numeric(df[col], errors="coerce")
             mask = ~col_data.isna()
             if mask.sum() < 5:

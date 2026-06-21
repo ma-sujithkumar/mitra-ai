@@ -69,7 +69,9 @@ class SemanticTypeInfer(BaseTool):
         for col in df.columns:
             column_types[col] = _infer_type(df[col])
 
-        column_types[state.target_column] = "target"
+        # Unsupervised runs have no target column to tag.
+        if state.target_column is not None:
+            column_types[state.target_column] = "target"
 
         new_datetime_cols: list[str] = []
         for col in list(column_types.keys()):

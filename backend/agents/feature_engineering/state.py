@@ -10,9 +10,10 @@ from backend.agents.feature_engineering.config import ConfigSchema
 @dataclass
 class PipelineState:
     df: pd.DataFrame
-    target: pd.Series
+    # target / target_column are None for unsupervised runs (no target column).
+    target: pd.Series | None
     task: str
-    target_column: str
+    target_column: str | None
     run_id: str
     config: ConfigSchema
 

@@ -92,7 +92,7 @@ class PipelinePrep:
     def run(
         self,
         raw_data_path: Path,
-        target_column: str,
+        target_column: str | None,
         metadata_path: Path,
         mini_data_path: Optional[Path] = None,
         max_models: Optional[int] = None,
@@ -141,6 +141,13 @@ class PipelinePrep:
         self._adapt_feature_selection(feature_artifact_path, feature_selection_path)
         logger.info("=> feature_selection.json written: %s", feature_selection_path)
 
+        # Unsupervised runs have no target, so train/test split and supervised
+        # model selection do not apply. Feature engineering is complete here; stop
+        # and return the feature artifact (no model_config.json is produced).
+        if resolved_task == "unsupervised" or target_column is None:
+            logger.info("=> unsupervised run: feature engineering complete, skipping split + model selection")
+            return feature_artifact_path
+
         # Step 3: train / test split on the engineered dataset
         self._split_dataset(
             engineered_csv=engineered_csv,
@@ -176,9 +183,13 @@ class PipelinePrep:
     def _run_feature_engineering(
         self,
         raw_data_path: Path,
-        target_column: str,
+        target_column: str | None,
     ) -> tuple[Path, str, str]:
-        """Run FE orchestrator and return (output_dir, run_id, task_type)."""
+        """Run FE orchestrator and return (output_dir, run_id, task_type).
+
+        target_column is None for unsupervised runs; the orchestrator then keeps
+        all columns and skips the target-dependent steps.
+        """
         if self.llm_settings is None or not (self.llm_settings.api_key or self.llm_settings.gateway_url):
             raise RuntimeError(
                 "Feature engineering requires resolved LLM credentials "
@@ -188,6 +199,7 @@ class PipelinePrep:
         orchestrator = FeatureEngineerOrchestrator(
             data_path=raw_data_path,
             target_column=target_column,
+            task="unsupervised" if target_column is None else None,
             model_string=self.llm_settings.model,
             output_dir=fe_output_dir,
             llm_settings=self.llm_settings,

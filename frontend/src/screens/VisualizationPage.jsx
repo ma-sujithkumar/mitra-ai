@@ -153,7 +153,7 @@ function VisualizationPage({ activeSessionId }) {
             className="btn btn-primary"
             onClick={handleGenerate}
             disabled={isGenerating}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--color-primary)', borderColor: 'var(--color-primary)' }}
+            style={{ display: 'flex', alignItems: 'center', gap: 8 }}
             type="button"
           >
             {isGenerating ? <div className="spinner small" /> : <Icons.spark size={15} />}

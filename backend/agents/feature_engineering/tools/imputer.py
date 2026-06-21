@@ -114,8 +114,9 @@ class MissingValueHandler(BaseTool):
         cfg = state.config
         drop_threshold = cfg.imputation.null_drop_threshold
 
-        # Target imputation first (code only; not a model decision).
-        if state.target.isna().any():
+        # Target imputation first (code only; not a model decision). Skipped for
+        # unsupervised runs that have no target.
+        if state.target is not None and state.target.isna().any():
             if state.task == "classification":
                 fill = state.target.mode().iloc[0]
             else:

@@ -83,7 +83,6 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, resumeSession, ro
     targetCol: '',
     validationSplit: 0.8,
     description: '',
-    dataType: 'tabular',
   });
 
   // Reusable so the recent-uploads list can refresh on navigation and after a
@@ -586,18 +585,6 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, resumeSession, ro
               rows={4}
               value={form.description}
             />
-          </FormField>
-
-          <FormField label="Data type">
-            <select
-              className="input"
-              onChange={(event) => updateForm('dataType', event.target.value)}
-              value={form.dataType}
-            >
-              <option value="tabular">Tabular</option>
-              <option value="time_series">Time series</option>
-              <option value="text">Text</option>
-            </select>
           </FormField>
 
           <div className="llm-ref">
