@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
 import AgentAvatar from '../components/AgentAvatar.jsx';
 import HBars from '../components/HBars.jsx';
+import StatusPill from '../components/StatusPill.jsx';
+import Stepper from '../components/Stepper.jsx';
+import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import ModelTrainingCard from '../components/training/ModelTrainingCard.jsx';
 import TrainingLogs from '../components/training/TrainingLogs.jsx';
 import TrainingProgress from '../components/training/TrainingProgress.jsx';
@@ -9,6 +12,7 @@ import TrainingSummary from '../components/training/TrainingSummary.jsx';
 import { fetchHpt, fetchModelConfig, fetchPlots, fetchShap, fetchVerdict, plotUrl, fetchFeatureEngineering } from '../api/client.js';
 import { streamTrainingEvents } from '../api/events.js';
 import { cancelTraining, fetchTrainingStatus, startTraining, resetTraining } from '../api/training.js';
+import { useBoundedPoll } from '../hooks/useBoundedPoll.js';
 import { AGENTS } from '../data.js';
 import { Icons } from '../icons.jsx';
 import {
@@ -23,6 +27,18 @@ import {
 const judgeAgent = AGENTS.find((agent) => agent.id === 'judge');
 const hptAgent = AGENTS.find((agent) => agent.id === 'hpt');
 const featureAgent = AGENTS.find((agent) => agent.id === 'feature');
+
+// The pipeline stages this page renders a card for. SSE events for any other
+// stage (feature_engineering / metadata / validate / upload) are ignored here
+// so they aren't silently written into state with no matching card.
+const PIPELINE_STAGES = ['d2v', 'model_selection', 'training', 'shap', 'overfitting', 'evaluation', 'judge', 'hpt'];
+
+function createStageStatuses() {
+  return PIPELINE_STAGES.reduce((statuses, stage) => {
+    statuses[stage] = { status: 'pending', progress: 0, message: '' };
+    return statuses;
+  }, {});
+}
 
 function getEvalStepStatus(stepKey, stageStatuses) {
   const stage = stageStatuses?.[stepKey];
@@ -82,6 +98,7 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
   const [shapData, setShapData] = useState(null);
   const [modelConfigData, setModelConfigData] = useState(null);
   const [plots, setPlots] = useState([]);
+  const [analyticsError, setAnalyticsError] = useState(null);
 
   useEffect(() => {
     if (!sessionId) return undefined;
@@ -93,6 +110,7 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
       fetchPlots(sessionId),
     ]).then(([shap, config, plotsResp]) => {
       if (cancelled) return;
+      setAnalyticsError(null);
       const shapFeatures = (shap?.features || []).map((item) => ({
         feature: item.feature,
         value: item.importance,
@@ -100,7 +118,14 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
       setShapData(shapFeatures.length ? shapFeatures : null);
       setModelConfigData(config?.status === 'complete' ? config : null);
       setPlots(plotsResp?.plots || []);
-    }).catch(() => {});
+    }).catch((analyticsFetchError) => {
+      // Surface the failure instead of silently rendering empty panels.
+      if (!cancelled) {
+        setAnalyticsError(
+          analyticsFetchError?.message || 'Could not load SHAP / model-config / plots for this run.',
+        );
+      }
+    });
 
     return () => { cancelled = true; };
   }, [sessionId]);
@@ -136,6 +161,12 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
 
   return (
     <section className="screen-stack">
+      {analyticsError ? (
+        <div className="inline-banner inline-banner-error" role="alert" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Icons.alert size={16} />
+          <span>{analyticsError}</span>
+        </div>
+      ) : null}
       {/* Model config chip list */}
       {modelFamilies.length > 0 ? (
         <section className="card panel-section">
@@ -272,12 +303,13 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
                     onClick={onRestartTraining}
                     type="button"
                   >
-                    <Icons.play size={16} />
+                    {isRestarting ? <span className="spinner small" style={{ marginRight: 8 }} /> : <Icons.play size={16} />}
                     {isRestarting ? 'Restarting Training...' : 'Re-run Training with Judge Feedback'}
                   </button>
                   {restartError ? (
-                    <p className="error-text" style={{ marginTop: 8, color: 'var(--color-warn, #ef4444)', fontSize: '0.85rem' }}>
-                      {restartError}
+                    <p className="inline-banner inline-banner-error" role="alert" style={{ marginTop: 8 }}>
+                      <Icons.alert size={15} />
+                      <span>{restartError}</span>
                     </p>
                   ) : null}
                 </div>
@@ -338,16 +370,14 @@ function EvaluationLogs({ logs }) {
     }
   }, [evaluationLogs.length]);
 
+  // Derive panel status from structured event fields only -- not by substring
+  // matching the message text (which misclassified e.g. "incomplete").
   let status = 'pending';
   if (evaluationLogs.length > 0) {
     const lastLog = evaluationLogs[evaluationLogs.length - 1];
     if (lastLog.level === 'error' || lastLog.status === 'failed') {
       status = 'failed';
-    } else if (
-      lastLog.status === 'completed' ||
-      lastLog.message.toLowerCase().includes('completed') ||
-      lastLog.message.toLowerCase().includes('complete')
-    ) {
+    } else if (['completed', 'all_completed'].includes(lastLog.status)) {
       status = 'complete';
     } else {
       status = 'running';
@@ -357,24 +387,9 @@ function EvaluationLogs({ logs }) {
   return (
     <section className="card terminal-panel evaluation-log-panel" style={{ marginTop: 15 }}>
       <div className="terminal-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span>SSE evaluation event stream</span>
+        <span>Evaluation event stream</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {status === 'running' && (
-            <span className="pill pill-running" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#3b82f6', border: '1px solid rgba(59, 130, 246, 0.3)', fontWeight: 600 }}>
-              Running
-            </span>
-          )}
-          {status === 'complete' && (
-            <span className="pill pill-done" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.3)', fontWeight: 600 }}>
-              Completed
-            </span>
-          )}
-          {status === 'failed' && (
-            <span className="pill pill-failed" style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.3)', fontWeight: 600 }}>
-              Failed
-            </span>
-          )}
-          {status === 'pending' && <span className="pill pill-queued">Pending</span>}
+          <StatusPill status={status} spin={status === 'running'} />
         </div>
       </div>
       <div className="terminal-body evaluation-log-body" ref={logRef} style={{ height: 180, overflowY: 'auto' }}>
@@ -423,16 +438,9 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
   const [verdictData, setVerdictData] = useState(null);
   const [isRestarting, setIsRestarting] = useState(false);
   const [restartError, setRestartError] = useState(null);
-  const [stageStatuses, setStageStatuses] = useState({
-    d2v: { status: 'pending', progress: 0, message: '' },
-    model_selection: { status: 'pending', progress: 0, message: '' },
-    training: { status: 'pending', progress: 0, message: '' },
-    shap: { status: 'pending', progress: 0, message: '' },
-    overfitting: { status: 'pending', progress: 0, message: '' },
-    evaluation: { status: 'pending', progress: 0, message: '' },
-    judge: { status: 'pending', progress: 0, message: '' },
-    hpt: { status: 'pending', progress: 0, message: '' },
-  });
+  const [pendingConfirm, setPendingConfirm] = useState(null); // 'cancel' | 'restart' | null
+  const [sessionInputError, setSessionInputError] = useState(null);
+  const [stageStatuses, setStageStatuses] = useState(createStageStatuses);
 
   const sourceRef = useRef(null);
 
@@ -464,16 +472,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     setRunState('running');
     setActiveSessionId(normalized);
     window.localStorage.setItem(SESSION_STORAGE_KEY, normalized);
-    setStageStatuses({
-      d2v: { status: 'pending', progress: 0, message: '' },
-      model_selection: { status: 'pending', progress: 0, message: '' },
-      training: { status: 'pending', progress: 0, message: '' },
-      shap: { status: 'pending', progress: 0, message: '' },
-      overfitting: { status: 'pending', progress: 0, message: '' },
-      evaluation: { status: 'pending', progress: 0, message: '' },
-      judge: { status: 'pending', progress: 0, message: '' },
-      hpt: { status: 'pending', progress: 0, message: '' },
-    });
+    setStageStatuses(createStageStatuses());
 
     sourceRef.current = streamTrainingEvents(normalized, {
       onOpen: () => {
@@ -482,17 +481,22 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
       },
       onEvent: (event) => {
         dispatch({ type: 'event', payload: event });
-        if (event && event.stage) {
+        // Only track stages this page renders a card for; ignore upstream
+        // stages (feature_engineering/metadata/validate) that share the bus.
+        if (event && PIPELINE_STAGES.includes(event.stage)) {
           setStageStatuses((prev) => {
             const next = { ...prev };
             let statusVal = 'pending';
             if (event.status === 'running') statusVal = 'running';
             else if (event.status === 'completed' || event.status === 'all_completed') statusVal = 'complete';
             else if (event.status === 'failed') statusVal = 'failed';
-            
+
+            const previousStage = prev[event.stage] || { progress: 0 };
             next[event.stage] = {
               status: statusVal,
-              progress: event.pct ?? 0,
+              // Keep the last known progress when an event omits pct so the bar
+              // doesn't flicker back to 0.
+              progress: event.pct ?? previousStage.progress ?? 0,
               message: event.msg ?? '',
             };
             return next;
@@ -531,70 +535,62 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     }
   }, [runState, setRunState, state.complete]);
 
-  useEffect(() => {
-    if (!connectedSessionId || state.complete) {
-      return undefined;
-    }
-
-    let stopped = false;
-    async function pollStatus() {
-      try {
-        const statusPayload = await fetchTrainingStatus(connectedSessionId);
-        if (!stopped) {
-          setBackendStatus(statusPayload);
-          dispatch({ type: 'status', payload: statusPayload });
-          if (['completed', 'partial_failure', 'failed', 'cancelled'].includes(statusPayload.status)) {
-            setRunState('done');
-          }
-        }
-      } catch (statusError) {
-        if (!stopped && statusError.status !== 404) {
-          setConnectionMessage(statusError.message);
-        }
+  // Backend status poll (bounded): stops on terminal status, on completion, on
+  // manual Disconnect, and gives up after repeated non-404 errors instead of
+  // looping forever. A 404 means the session is not registered yet -> keep
+  // polling without counting it as an error.
+  const pollStatus = useCallback(async () => {
+    try {
+      const statusPayload = await fetchTrainingStatus(connectedSessionId);
+      setBackendStatus(statusPayload);
+      dispatch({ type: 'status', payload: statusPayload });
+      if (['completed', 'partial_failure', 'failed', 'cancelled'].includes(statusPayload.status)) {
+        setRunState('done');
       }
+      return statusPayload;
+    } catch (statusError) {
+      if (statusError.status === 404) {
+        return { status: 'pending' };
+      }
+      setConnectionMessage(statusError.message);
+      throw statusError;
     }
+  }, [connectedSessionId, setRunState]);
 
-    pollStatus();
-    const intervalId = window.setInterval(pollStatus, 1500);
-    return () => {
-      stopped = true;
-      window.clearInterval(intervalId);
-    };
-  }, [connectedSessionId, setRunState, state.complete]);
+  useBoundedPoll(pollStatus, {
+    enabled: Boolean(connectedSessionId) && !state.complete && connectionStatus !== 'closed',
+    intervalMs: 1500,
+    maxErrorAttempts: 8,
+    stopWhen: (statusPayload) =>
+      ['completed', 'partial_failure', 'failed', 'cancelled'].includes(statusPayload?.status),
+    resetKey: connectedSessionId,
+  });
 
-
-
-
+  // Clear the verdict when the connected session changes (mirrors the old
+  // effect's reset-on-disconnect behaviour).
   useEffect(() => {
     if (!connectedSessionId) {
       setVerdictData(null);
-      return undefined;
     }
-    let stopped = false;
-    let timerId = null;
-
-    async function pollVerdict() {
-      try {
-        const data = await fetchVerdict(connectedSessionId);
-        if (stopped) return;
-        setVerdictData(data);
-        if (data?.status !== 'complete') {
-          timerId = window.setTimeout(pollVerdict, 2000);
-        }
-      } catch (err) {
-        if (!stopped) {
-          timerId = window.setTimeout(pollVerdict, 5000);
-        }
-      }
-    }
-
-    pollVerdict();
-
-    return () => {
-      stopped = true;
-      if (timerId) window.clearTimeout(timerId);
-    };
   }, [connectedSessionId]);
+
+  // Judge verdict poll (bounded): stops once the judge converges, caps total
+  // attempts (~5 min) so it never polls forever if a verdict never lands, and
+  // gives up after repeated errors. `verdictPollState` drives the retry UI.
+  const pollVerdict = useCallback(async () => {
+    const data = await fetchVerdict(connectedSessionId);
+    setVerdictData(data);
+    return data;
+  }, [connectedSessionId]);
+
+  const { pollState: verdictPollState, restart: restartVerdictPoll } = useBoundedPoll(pollVerdict, {
+    enabled: Boolean(connectedSessionId) && connectionStatus !== 'closed',
+    intervalMs: 2000,
+    maxAttempts: 150,
+    maxErrorAttempts: 6,
+    stopWhen: (data) => data?.status === 'complete',
+    resetKey: connectedSessionId,
+  });
 
   useEffect(() => {
     if (verdictData?.status === 'complete') {
@@ -637,6 +633,17 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
       const feData = await fetchFeatureEngineering(connectedSessionId);
       const summary = feData?.summary || {};
 
+      // Validate required inputs before the destructive reset so we don't wipe
+      // results and then fail the re-train with a null target.
+      const targetColumn = summary.target_column || null;
+      const problemType = summary.task || null;
+      if (!targetColumn) {
+        setRestartError(
+          'Cannot restart: the target column for this run is unavailable (feature-engineering summary missing). Start a fresh run from New Run instead.',
+        );
+        return;
+      }
+
       await resetTraining(connectedSessionId);
 
       setVerdictData(null);
@@ -645,8 +652,8 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
 
       await startTraining({
         sessionId: connectedSessionId,
-        targetColumn: summary.target_column || null,
-        problemType: summary.task || null,
+        targetColumn,
+        problemType,
         executionMode: 'ray',
         allowFallbackArtifacts: false,
       });
@@ -678,6 +685,47 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     }
   }
 
+  // Confirmation gating for destructive actions (cancel a run / wipe + re-run).
+  const CONFIRM_DETAILS = {
+    cancel: {
+      title: 'Cancel this training run?',
+      body: 'The run will stop and partial results may be lost. This cannot be undone.',
+      confirmLabel: 'Cancel run',
+      tone: 'danger',
+      run: handleCancel,
+    },
+    restart: {
+      title: 'Re-run training with judge feedback?',
+      body: 'This resets the current run and retrains from scratch. Existing leaderboard and judge results for this run will be discarded.',
+      confirmLabel: 'Reset and re-run',
+      tone: 'danger',
+      run: handleRestartTraining,
+    },
+  };
+  const activeConfirm = pendingConfirm ? CONFIRM_DETAILS[pendingConfirm] : null;
+
+  function handleConfirm() {
+    const action = activeConfirm;
+    setPendingConfirm(null);
+    action?.run?.();
+  }
+
+  // Validate the manual session id before attempting to connect, so a bad value
+  // gives immediate, actionable feedback instead of a silent no-op.
+  function handleManualConnect() {
+    const trimmed = String(sessionInput || '').trim();
+    if (!trimmed) {
+      setSessionInputError('Enter a session ID to connect.');
+      return;
+    }
+    if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
+      setSessionInputError('Session IDs contain only letters, numbers, dots, dashes, and underscores.');
+      return;
+    }
+    setSessionInputError(null);
+    connect(trimmed);
+  }
+
   const d2vStatus = stageStatuses.d2v.status;
   const d2vProgress = stageStatuses.d2v.progress;
 
@@ -704,6 +752,25 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
 
   const isModelSelectionComplete = modelSelectionStatus === 'complete' || models.length > 0;
 
+  // Cancel should be available whenever a run is still active -- not only when
+  // the last polled backend status happens to be created/running (which goes
+  // stale if the SSE stream drops).
+  const runIsTerminal =
+    state.complete ||
+    ['completed', 'partial_failure', 'failed', 'cancelled'].includes(backendStatus?.status);
+  const canCancel = Boolean(connectedSessionId) && !runIsTerminal;
+  // Offer a manual reconnect when the live stream dropped and the run is not
+  // yet finished (instead of an indefinite silent "reconnecting" state).
+  const showReconnect =
+    Boolean(connectedSessionId) &&
+    !runIsTerminal &&
+    ['reconnecting', 'closed', 'error'].includes(connectionStatus);
+  // The judge verdict never landed within the polling budget.
+  const verdictStalled =
+    state.complete &&
+    verdictData?.status !== 'complete' &&
+    ['gave_up', 'capped'].includes(verdictPollState);
+
   const stagesList = [
     { id: 'd2v', label: 'Dataset2Vec Matcher', status: d2vStatus, progress: d2vProgress, icon: <Icons.layers size={18} />, desc: 'Query database for recommended models' },
     { id: 'model_selection', label: 'Model Selection Agent', status: modelSelectionStatus, progress: modelSelectionProgress, icon: <Icons.spark size={18} />, desc: 'Identify and rank candidate model types' },
@@ -715,8 +782,26 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     { id: 'hpt', label: 'HPT Optimization', status: stageStatuses.hpt.status, progress: stageStatuses.hpt.progress, icon: <Icons.spark size={18} />, desc: 'Optuna hyperparameter optimization for top-1 model' },
   ];
 
+  // Workflow breadcrumb: lets the user move between run stages instead of being
+  // trapped on this page with only the sidebar as an escape.
+  const runSteps = [
+    { key: 'upload', label: 'New Run', route: 'upload', status: 'done', enabled: true },
+    { key: 'features', label: 'Features', route: 'features', status: 'done', enabled: true },
+    { key: 'pipeline', label: 'Training', route: 'pipeline', status: 'active', enabled: true },
+    {
+      key: 'leaderboard',
+      label: 'Leaderboard',
+      route: 'leaderboard',
+      status: 'queued',
+      enabled: state.complete,
+    },
+  ];
+
   return (
     <div className="screen-stack">
+      <div className="card panel-section" style={{ padding: '10px 14px' }}>
+        <Stepper steps={runSteps} onNavigate={(step) => go(step.route)} />
+      </div>
       <section className="card training-session-bar">
         <div>
           <p className="section-kicker">Training run</p>
@@ -731,11 +816,21 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
           ) : null}
         </div>
         <div className="training-session-controls">
-          {['created', 'running'].includes(backendStatus?.status) ? (
+          {showReconnect ? (
+            <button
+              className="btn btn-secondary"
+              onClick={() => connect(connectedSessionId)}
+              type="button"
+            >
+              <Icons.play size={16} />
+              Reconnect
+            </button>
+          ) : null}
+          {canCancel ? (
             <button
               className="btn btn-secondary"
               disabled={isCancelling}
-              onClick={handleCancel}
+              onClick={() => setPendingConfirm('cancel')}
               type="button"
             >
               <Icons.pause size={16} />
@@ -753,12 +848,19 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
         <div className="training-session-controls advanced-disclosure-body">
           <input
             aria-label="Training session ID"
+            aria-invalid={sessionInputError ? 'true' : undefined}
             className="input mono"
-            onChange={(event) => setSessionInput(event.target.value)}
-            placeholder="session-id"
+            onChange={(event) => {
+              setSessionInput(event.target.value);
+              if (sessionInputError) setSessionInputError(null);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') handleManualConnect();
+            }}
+            placeholder="e.g. 20260621_014807_matches_9747960c"
             value={sessionInput}
           />
-          <button className="btn btn-primary" onClick={() => connect(sessionInput)} type="button">
+          <button className="btn btn-primary" onClick={handleManualConnect} type="button">
             <Icons.play size={16} />
             {connectedSessionId ? 'Reconnect' : 'Connect'}
           </button>
@@ -769,6 +871,12 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
             </button>
           ) : null}
         </div>
+        {sessionInputError ? (
+          <p className="inline-banner inline-banner-error" role="alert" style={{ marginTop: 8 }}>
+            <Icons.alert size={14} />
+            <span>{sessionInputError}</span>
+          </p>
+        ) : null}
       </details>
 
       <TrainingProgress
@@ -793,31 +901,42 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
               const isFailed = stage.status === 'failed';
               
               return (
-                <div 
-                  className={`pipeline-stage-card ${stage.status}`} 
+                <div
+                  className={`pipeline-stage-card ${stage.status}`}
                   key={stage.id}
                   title={stage.desc}
+                  role="group"
+                  aria-label={`${stage.label}: ${stage.status}`}
+                  aria-live={isRunning ? 'polite' : undefined}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div className="stage-card-icon">
+                    <div className="stage-card-icon" aria-hidden="true">
                       {stage.icon}
                     </div>
-                    <div>
+                    <div aria-hidden="true">
                       {isRunning && <span className="pulse-indicator" />}
                       {isComplete && <Icons.checkCircle size={16} style={{ color: 'var(--ok)' }} />}
                       {isFailed && <Icons.alert size={16} style={{ color: 'var(--err)' }} />}
-                      {stage.status === 'pending' && <Icons.dot size={10} style={{ color: 'rgba(255,255,255,0.2)' }} />}
+                      {stage.status === 'pending' && <Icons.dot size={10} style={{ color: 'var(--ink-faint)' }} />}
                     </div>
                   </div>
                   <div style={{ marginTop: 4 }}>
                     <strong style={{ fontSize: '0.95rem', display: 'block', color: 'var(--ink)' }}>{stage.label}</strong>
-                    <span className="muted" style={{ fontSize: '0.75rem', display: 'block', marginTop: 2, height: 32, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {/* Visually-hidden status text so screen readers convey state
+                        that is otherwise only shown via colour/icon. */}
+                    <span className="sr-only">Status: {stage.status}</span>
+                    <span className="muted stage-card-message" style={{ fontSize: '0.75rem', display: 'block', marginTop: 2 }}>
                       {stageStatuses[stage.id]?.message || stage.desc}
                     </span>
                   </div>
-                  <div 
-                    className="stage-micro-progress" 
-                    style={{ width: `${stage.progress}%` }} 
+                  <div
+                    className="stage-micro-progress"
+                    style={{ width: `${stage.progress}%` }}
+                    role="progressbar"
+                    aria-valuenow={Math.round(stage.progress)}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-label={`${stage.label} progress`}
                   />
                 </div>
               );
@@ -870,7 +989,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
           <Icons.cpu size={34} />
           <h2>No session connected</h2>
           <p className="muted">
-            Complete New Run and open Page 2, or connect with a known session ID.
+            Start a run from New Run, or connect to an existing run with its session ID.
           </p>
           <button className="btn btn-secondary" onClick={() => go('upload')} type="button">
             <Icons.upload size={16} />
@@ -878,6 +997,23 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
           </button>
         </section>
       ) : !isModelSelectionComplete ? (
+        runIsTerminal ? (
+          /* The run ended before any models were selected -> failure, not progress. */
+          <section className="card empty-card training-empty" style={{ marginTop: 20 }}>
+            <Icons.alert size={34} style={{ color: 'var(--err)' }} />
+            <h2>Run ended before models were selected</h2>
+            <p className="muted">
+              {backendStatus?.status === 'cancelled'
+                ? 'This run was cancelled before model selection completed.'
+                : 'The run failed before any candidate models were produced.'}
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap', marginTop: 12 }}>
+              <button className="btn btn-secondary" onClick={() => go('upload')} type="button">
+                <Icons.upload size={16} /> Back to New Run
+              </button>
+            </div>
+          </section>
+        ) : (
         <section className="card empty-card training-empty" style={{ marginTop: 20 }}>
           <Icons.spark size={34} style={{ color: 'var(--accent)' }} />
           <h2>Model Selection running</h2>
@@ -889,14 +1025,23 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
               <span className="muted">Model selection progress</span>
               <strong className="mono">{modelSelectionProgress}%</strong>
             </div>
-            <div className="bar" style={{ height: 6, background: 'rgba(255, 255, 255, 0.05)', borderRadius: 3, overflow: 'hidden' }}>
-              <div style={{ width: `${modelSelectionProgress}%`, height: '100%', background: 'linear-gradient(90deg, #3b82f6 0%, #ec4899 100%)', borderRadius: 3 }} />
+            <div
+              className="bar"
+              style={{ height: 6, background: 'var(--line-soft)', borderRadius: 3, overflow: 'hidden' }}
+              role="progressbar"
+              aria-valuenow={Math.round(modelSelectionProgress)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label="Model selection progress"
+            >
+              <div style={{ width: `${modelSelectionProgress}%`, height: '100%', background: 'linear-gradient(90deg, var(--info) 0%, #ec4899 100%)', borderRadius: 3 }} />
             </div>
           </div>
           <p className="mono muted" style={{ fontSize: '0.8rem', marginTop: 10, textAlign: 'center', maxWidth: 500 }}>
             {stageStatuses.model_selection.message || 'Selecting candidate models...'}
           </p>
         </section>
+        )
       ) : models.length ? (
         <div className="training-layout" style={{ marginTop: 20 }}>
           <section className="card panel-section">
@@ -946,6 +1091,23 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
               summary={state.summary}
               judgePending={state.summary != null && verdictData?.status !== 'complete'}
             />
+            {/* Judge verdict never landed within the polling budget: offer a
+                retry and a non-blocking path to the leaderboard so the user
+                isn't stuck behind a spinner forever. */}
+            {verdictStalled ? (
+              <div className="inline-banner inline-banner-warn" role="alert">
+                <Icons.alert size={16} />
+                <span>The judge verdict did not arrive in time.</span>
+                <span className="inline-banner-actions">
+                  <button className="btn btn-secondary" onClick={restartVerdictPoll} type="button">
+                    Retry verdict
+                  </button>
+                  <button className="btn btn-secondary" onClick={() => go('leaderboard')} type="button">
+                    View leaderboard
+                  </button>
+                </span>
+              </div>
+            ) : null}
           </aside>
 
         </div>
@@ -955,24 +1117,42 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
           <h2>Waiting for training jobs</h2>
           <p className="muted">
             Queued model events will appear here as soon as the orchestrator starts.
+            If nothing appears, the run may have failed to start.
           </p>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap', marginTop: 12 }}>
+            {showReconnect ? (
+              <button className="btn btn-secondary" onClick={() => connect(connectedSessionId)} type="button">
+                <Icons.play size={16} /> Reconnect
+              </button>
+            ) : null}
+            <button className="btn btn-secondary" onClick={() => go('upload')} type="button">
+              <Icons.upload size={16} /> Back to New Run
+            </button>
+          </div>
         </section>
       )}
-
-
-
 
       {/* Analytics section: SHAP + Judge Reasoning + plots -- shown after training completes */}
       {state.complete && connectedSessionId ? (
         <TrainingAnalyticsSection
           sessionId={connectedSessionId}
           verdictData={verdictData}
-          onRestartTraining={handleRestartTraining}
+          onRestartTraining={() => setPendingConfirm('restart')}
           isRestarting={isRestarting}
           restartError={restartError}
           stageStatuses={stageStatuses}
         />
       ) : null}
+
+      <ConfirmDialog
+        open={Boolean(activeConfirm)}
+        title={activeConfirm?.title}
+        body={activeConfirm?.body}
+        confirmLabel={activeConfirm?.confirmLabel}
+        tone={activeConfirm?.tone}
+        onConfirm={handleConfirm}
+        onCancel={() => setPendingConfirm(null)}
+      />
     </div>
   );
 }

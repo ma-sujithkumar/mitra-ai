@@ -7,10 +7,10 @@ function TrainingProgress({ counts, progress, connectionStatus }) {
   return (
     <section className="card training-overview">
       <div>
-        <p className="section-kicker">Page 2 · Ray Training</p>
+        <p className="section-kicker">Model Training</p>
         <h2>Parallel model training</h2>
         <p className="muted">
-          Live lifecycle updates from the Epic-3 SSE stream.
+          Live lifecycle updates streamed as each model trains.
         </p>
       </div>
       <div className="training-overview-actions">

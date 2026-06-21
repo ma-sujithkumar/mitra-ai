@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import AgentAvatar from '../components/AgentAvatar.jsx';
 import HBars from '../components/HBars.jsx';
 import StatusPill from '../components/StatusPill.jsx';
+import Stepper from '../components/Stepper.jsx';
 import {
   fetchLeaderboard,
   fetchShap,
@@ -13,8 +14,8 @@ import {
   modelDownloadUrl,
   modelsDownloadAllUrl,
 } from '../api/client.js';
-import { streamTrainingEvents } from '../api/events.js';
 import { streamEvaluationEvents } from '../api/events.js';
+import { useBoundedPoll } from '../hooks/useBoundedPoll.js';
 import { AGENTS, LEADERBOARD, SHAP } from '../data.js';
 import { Icons } from '../icons.jsx';
 
@@ -48,12 +49,98 @@ function formatNumber(value, digits = 3) {
   return Number(value).toFixed(digits);
 }
 
+// Map a Judge finding status to its marker icon + colour. Keeps unicode glyphs
+// out of the data layer (backend emits 'pass'/'fail'/'info' only).
+const FINDING_STATUS_MARKERS = {
+  pass: { Icon: Icons.checkCircle, color: 'var(--ok)' },
+  fail: { Icon: Icons.x, color: 'var(--err)' },
+  info: { Icon: Icons.info, color: 'var(--muted, #888)' },
+};
+
+// Map a model decision to a pill style.
+const DECISION_PILL_STYLES = {
+  APPROVED: { background: 'rgba(34,197,94,0.14)', color: 'var(--ok)', border: '1px solid rgba(34,197,94,0.3)' },
+  REJECTED: { background: 'rgba(239,68,68,0.14)', color: 'var(--err)', border: '1px solid rgba(239,68,68,0.3)' },
+  PENDING:  { background: 'rgba(148,163,184,0.14)', color: 'var(--muted, #888)', border: '1px solid rgba(148,163,184,0.3)' },
+};
+
+// One model governance card: decision pill + per-dimension findings + optional
+// ranking explanation. Renders the SPEC's "Model Decision Card".
+function ModelDecisionCard({ row }) {
+  const findings = row.findings || [];
+  if (findings.length === 0) return null;
+  const decision = row.decision || (row.winner ? 'APPROVED' : 'PENDING');
+  const pillStyle = DECISION_PILL_STYLES[decision] || DECISION_PILL_STYLES.PENDING;
+
+  return (
+    <div
+      className="decision-card"
+      style={{
+        background: 'rgba(255,255,255,0.02)',
+        border: row.winner ? '1px solid rgba(34,197,94,0.35)' : '1px solid rgba(255,255,255,0.06)',
+        borderRadius: 8,
+        padding: 16,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {row.winner ? <Icons.trophy size={16} /> : null}
+          <strong style={{ fontSize: '1rem' }}>{row.model_name || row.model}</strong>
+          <span className="mono muted" style={{ fontSize: '0.75rem' }}>rank #{row.rank}</span>
+        </div>
+        <span className="pill" style={{ ...pillStyle, fontWeight: 700, fontSize: '0.72rem', padding: '2px 10px', borderRadius: 5 }}>
+          {decision}
+        </span>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <p className="section-kicker" style={{ margin: 0, fontSize: '0.65rem' }}>Judge Findings</p>
+        {findings.map((finding) => {
+          const marker = FINDING_STATUS_MARKERS[finding.status] || FINDING_STATUS_MARKERS.info;
+          const MarkerIcon = marker.Icon;
+          return (
+            <div key={finding.dimension} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: '0.82rem' }}>
+              <span style={{ color: marker.color, flexShrink: 0, marginTop: 1 }} aria-hidden="true">
+                {MarkerIcon ? <MarkerIcon size={15} /> : null}
+              </span>
+              {/* Status is otherwise conveyed only by icon + colour. */}
+              <span className="sr-only">{finding.status}: </span>
+              <span>
+                <strong style={{ color: marker.color }}>{finding.label}:</strong>{' '}
+                <span style={{ color: 'var(--ink)' }}>{finding.message}</span>
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {row.ranking_explanation ? (
+        <details style={{ cursor: 'pointer', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 8 }}>
+          <summary style={{ outline: 'none', fontWeight: 600, fontSize: '0.78rem', color: 'var(--ink)' }}>
+            Ranking justification
+          </summary>
+          <pre className="reasoning-block" style={{ marginTop: 8, background: 'rgba(0,0,0,0.2)', border: 'none', whiteSpace: 'pre-wrap' }}>
+            {row.ranking_explanation}
+          </pre>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
 // Detect whether the session uses classification or regression metrics by
 // probing the first model's metrics dict. Falls back to a minimal schema
 // for prototype data that stores metrics directly on the row object.
 function detectMetricSchema(models) {
-  const firstRow = models[0] || {};
-  const firstMetrics = firstRow.metrics || {};
+  // Probe the first row that actually has a populated metrics dict. The rank-1
+  // row can be a gate-rejected model with empty metrics, which previously caused
+  // a real run to fall back to the prototype acc/f1/auc columns.
+  const rowWithMetrics =
+    models.find((row) => row?.metrics && Object.keys(row.metrics).length > 0) || models[0] || {};
+  const firstMetrics = rowWithMetrics.metrics || {};
 
   if (CLASSIFICATION_METRIC_KEYS.some(({ key }) => key in firstMetrics)) {
     return CLASSIFICATION_METRIC_KEYS;
@@ -69,7 +156,14 @@ function detectMetricSchema(models) {
   ];
 }
 
-function LeaderboardScreen({ activeSessionId, startRun }) {
+function formatTime(timestamp) {
+  if (!timestamp) return '--:--:--';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '--:--:--';
+  return date.toLocaleTimeString([], { hour12: false });
+}
+
+function LeaderboardScreen({ activeSessionId, go, startRun }) {
   const [leaderboardData, setLeaderboardData] = useState(null);
   const [shapData, setShapData] = useState(null);
   const [verdictData, setVerdictData] = useState(null);
@@ -79,79 +173,97 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
   const [hptStatus, setHptStatus] = useState('idle'); // 'idle' | 'running' | 'complete' | 'failed'
   const [hptProgress, setHptProgress] = useState(0);
   const [hptMessage, setHptMessage] = useState('');
+  const [hptLogs, setHptLogs] = useState([]);
+  const [hptTrialNum, setHptTrialNum] = useState(0);
+  const [hptTotalTrials, setHptTotalTrials] = useState(5);
+  const [hptBestScore, setHptBestScore] = useState(null);
+  const [hptError, setHptError] = useState(null);
 
+
+  // Main page poll (bounded): fetches leaderboard + SHAP + verdict + tokens as
+  // post-training artifacts land. `fetchLeaderboard` throwing is a real error
+  // (counted toward give-up); the secondary reads degrade gracefully. HPT status
+  // is NOT forced here -- it is owned by handleRunHpt + the SSE/checkHpt loop, so
+  // the background poll can't reset a user-initiated 'running' (was a bug).
+  const pollLeaderboard = useCallback(async () => {
+    const leaderboard = await fetchLeaderboard(activeSessionId);
+    const shap = await fetchShap(activeSessionId).catch(() => null);
+    const verdict = await fetchVerdict(activeSessionId).catch(() => null);
+    const tokens = await fetchTokens(activeSessionId).catch(() => null);
+    const hpt = await fetchHpt(activeSessionId).catch(() => null);
+
+    setLeaderboardData(leaderboard);
+    const features = (shap?.features || []).map((item) => ({
+      feature: item.feature,
+      value: item.importance,
+    }));
+    setShapData(features.length ? features : null);
+    setVerdictData(verdict?.status && verdict.status !== 'pending' ? verdict : null);
+    setTokenData(tokens?.status === 'complete' ? tokens : null);
+
+    // Restore a previously-completed HPT result on (re)load without overriding a
+    // tuning run the user just started.
+    if (hpt?.status === 'complete' && hpt?.hpt_results?.length) {
+      setHptData(hpt.hpt_results);
+      setHptStatus((prev) => (prev === 'running' ? prev : 'complete'));
+    }
+
+    setLoadState('done');
+    return leaderboard;
+  }, [activeSessionId]);
+
+  const { pollState: leaderboardPollState, restart: restartLeaderboardPoll } = useBoundedPoll(
+    pollLeaderboard,
+    {
+      enabled: Boolean(activeSessionId),
+      intervalMs: LEADERBOARD_POLL_MS,
+      maxAttempts: LEADERBOARD_MAX_POLLS,
+      maxErrorAttempts: 6,
+      stopWhen: (leaderboard) => leaderboard?.status === 'complete',
+      resetKey: activeSessionId,
+    },
+  );
+
+  // Surface load/error state from the bounded poll for the UI.
   useEffect(() => {
     if (!activeSessionId) {
       setLoadState('idle');
-      return undefined;
+      return;
     }
-    let cancelled = false;
-    let timeoutId = null;
-    let attempts = 0;
-    setLoadState('loading');
-
-    // Bounded poll so the page syncs as the pipeline produces artifacts
-    // (judge/SHAP/tokens land after training). Stop when the judge has
-    // converged (status === 'complete') or after the attempt cap.
-    async function pollOnce() {
-      attempts += 1;
-      try {
-        // Sequential reads (parallelization = 1).
-        const leaderboard = await fetchLeaderboard(activeSessionId);
-        const shap = await fetchShap(activeSessionId).catch(() => null);
-        const verdict = await fetchVerdict(activeSessionId).catch(() => null);
-        const tokens = await fetchTokens(activeSessionId).catch(() => null);
-        const hpt = await fetchHpt(activeSessionId).catch(() => null);
-        
-        if (cancelled) return;
-
-        setLeaderboardData(leaderboard);
-        const features = (shap?.features || []).map((item) => ({
-          feature: item.feature,
-          value: item.importance,
-        }));
-        setShapData(features.length ? features : null);
-        setVerdictData(verdict?.status && verdict.status !== 'pending' ? verdict : null);
-        setTokenData(tokens?.status === 'complete' ? tokens : null);
-        
-        if (hpt?.status === 'complete' && hpt?.hpt_results?.length) {
-          setHptData(hpt.hpt_results);
-          setHptStatus('complete');
-        } else if (hpt?.status === 'running') {
-          setHptStatus('running');
-        } else {
-          setHptStatus('idle');
-          setHptData(null);
-        }
-
-        setLoadState('done');
-
-        const terminal = leaderboard?.status === 'complete';
-        if (!terminal && attempts < LEADERBOARD_MAX_POLLS) {
-          timeoutId = setTimeout(pollOnce, LEADERBOARD_POLL_MS);
-        }
-      } catch (pollError) {
-        if (!cancelled) setLoadState('error');
-      }
+    if (leaderboardPollState === 'gave_up') {
+      setLoadState('error');
+    } else if (leaderboardPollState === 'polling') {
+      setLoadState((prev) => (prev === 'done' ? prev : 'loading'));
     }
+  }, [activeSessionId, leaderboardPollState]);
 
-    pollOnce();
-
-    return () => {
-      cancelled = true;
-      if (timeoutId) clearTimeout(timeoutId);
-    };
-  }, [activeSessionId]);
-
-  // Subscribe to SSE for real-time HPT stage progress updates.
-  // This gives us live pct + message during tuning without polling.
+  // Subscribe to SSE for real-time HPT stage progress updates ONLY while a tuning
+  // run is active. The session is closed at the end of training, so subscribing
+  // outside an HPT run yields an immediate end-of-stream and a native
+  // EventSource reconnect storm. Gating on hptStatus==='running' opens the
+  // stream when the user starts HPT and closes it (cleanup) when tuning ends.
   useEffect(() => {
-    if (!activeSessionId) return undefined;
+    if (!activeSessionId || hptStatus !== 'running') return undefined;
     const source = streamEvaluationEvents(activeSessionId, {
       onEvent: (event) => {
         if (event?.stage !== 'hpt') return;
         setHptProgress(event.pct ?? 0);
         setHptMessage(event.msg ?? '');
+        
+        if (event.msg) {
+          setHptLogs((prev) => {
+            const exists = prev.some((log) => log.ts === event.ts && log.message === event.msg);
+            if (exists) return prev;
+            return [...prev, { ts: event.ts || new Date().toISOString(), message: event.msg }];
+          });
+        }
+
+        if (event.details) {
+          if (event.details.trial_number) setHptTrialNum(event.details.trial_number);
+          if (event.details.total_trials) setHptTotalTrials(event.details.total_trials);
+          if (event.details.best_score != null) setHptBestScore(event.details.best_score);
+        }
+
         if (event.status === 'running') {
           setHptStatus('running');
         } else if (event.status === 'all_completed') {
@@ -174,53 +286,89 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
       },
     });
     return () => source?.close?.();
+  }, [activeSessionId, hptStatus]);
+
+
+  // HPT completion poll (bounded): a fallback to the SSE stream that resolves the
+  // running -> complete/failed transition. Bounded so it never loops forever on
+  // a persistently failing /hpt endpoint.
+  const pollHpt = useCallback(async () => {
+    const data = await fetchHpt(activeSessionId);
+    if (data?.status === 'complete' && data?.hpt_results) {
+      setHptData(data.hpt_results);
+      setHptStatus('complete');
+    } else if (data?.status === 'failed') {
+      setHptStatus('failed');
+    }
+    return data;
   }, [activeSessionId]);
 
-  useEffect(() => {
-    if (!activeSessionId || hptStatus !== 'running') return undefined;
-    let timerId = null;
-    let stopped = false;
-    async function checkHpt() {
-      try {
-        const data = await fetchHpt(activeSessionId);
-        if (stopped) return;
-        if (data?.status === 'complete' && data?.hpt_results) {
-          setHptData(data.hpt_results);
-          setHptStatus('complete');
-        } else if (data?.status === 'failed') {
-          setHptStatus('failed');
-        } else {
-          timerId = setTimeout(checkHpt, 2000);
-        }
-      } catch (err) {
-        if (!stopped) {
-          timerId = setTimeout(checkHpt, 5000);
-        }
-      }
-    }
-    checkHpt();
-    return () => {
-      stopped = true;
-      if (timerId) clearTimeout(timerId);
-    };
-  }, [activeSessionId, hptStatus]);
+  useBoundedPoll(pollHpt, {
+    enabled: Boolean(activeSessionId) && hptStatus === 'running',
+    intervalMs: 2000,
+    maxErrorAttempts: 6,
+    stopWhen: (data) => ['complete', 'failed'].includes(data?.status),
+    resetKey: activeSessionId,
+  });
 
   const handleRunHpt = async () => {
     try {
+      setHptError(null);
       setHptStatus('running');
+      setHptProgress(0);
+      setHptMessage('Starting Optuna hyperparameter tuning...');
+      setHptLogs([]);
+      setHptTrialNum(0);
+      setHptBestScore(null);
       await runHpt(activeSessionId);
     } catch (err) {
       console.error(err);
       setHptStatus('failed');
+      setHptProgress(0);
+      setHptMessage('Failed to start tuning process.');
+      // Surface the real backend error so the user can act on it.
+      setHptError(err?.message || 'Failed to start hyperparameter tuning.');
     }
   };
 
+
   const models = leaderboardData?.models || [];
-  const usingLive = models.length > 0;
-  const displayRows = usingLive ? models : LEADERBOARD;
+  // Distinguish a real session that simply has no models yet from the demo:
+  // prototype data is shown ONLY when there is no active session at all. A real
+  // session with zero models renders an explicit empty state instead of fake
+  // XGBoost/LightGBM rows.
+  const hasLiveModels = models.length > 0;
+  const isRealSession = Boolean(activeSessionId);
+  const usingLive = hasLiveModels;
+  const showPrototype = !isRealSession && !hasLiveModels;
+  const showEmptyState = isRealSession && !hasLiveModels;
+  const displayRows = hasLiveModels ? models : showPrototype ? LEADERBOARD : [];
   const selectedModel = leaderboardData?.selected_model || null;
   const decisionTrace = leaderboardData?.decision_trace || verdictData?.decision_trace || null;
+  const comparisonExplanation =
+    leaderboardData?.comparison_explanation || verdictData?.comparison_explanation || null;
+  // Rows that carry structured Judge findings (governance dashboard cards).
+  const decisionCardRows = useMemo(
+    () => displayRows.filter((row) => (row.findings || []).length > 0),
+    [displayRows],
+  );
   const metricSchema = useMemo(() => detectMetricSchema(displayRows), [displayRows]);
+  // Build the grid column template so header + rows always have the same number
+  // of columns as the dynamically rendered cells (Rank + Model + N metrics +
+  // Overfit + Judge + optional Download). Supplied to the table via a CSS var.
+  const leaderboardGridColumns = useMemo(() => {
+    const columns = [
+      '60px', // Rank
+      'minmax(0, 1.4fr)', // Model
+      ...metricSchema.map(() => 'minmax(64px, 0.6fr)'), // one per metric
+      'minmax(80px, 0.7fr)', // Overfit
+      'minmax(56px, 0.5fr)', // Judge
+    ];
+    if (usingLive) {
+      columns.push('52px'); // Download
+    }
+    return columns.join(' ');
+  }, [metricSchema, usingLive]);
   const winnerRow = displayRows.find((row) => row.winner) || displayRows[0];
   const winnerLabel = usingLive ? (selectedModel || winnerRow?.model_name || winnerRow?.model) : winnerRow?.model;
 
@@ -242,20 +390,48 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
     }));
   }, [tokenData]);
 
+  // Hero status pill reflects the real state instead of always claiming the
+  // judge converged.
+  const judgeConverged =
+    verdictData?.status === 'complete' || leaderboardData?.status === 'complete';
+  let heroPill;
+  if (showPrototype) {
+    heroPill = { status: 'idle', label: 'Demo data' };
+  } else if (judgeConverged && hasLiveModels) {
+    heroPill = { status: 'done', label: 'Judge converged' };
+  } else if (loadState === 'error') {
+    heroPill = { status: 'failed', label: 'Could not load results' };
+  } else {
+    heroPill = { status: 'running', label: 'Awaiting judge' };
+  }
+
+  // Workflow breadcrumb for moving back through the run lifecycle.
+  const runSteps = [
+    { key: 'upload', label: 'New Run', route: 'upload', status: 'done', enabled: true },
+    { key: 'features', label: 'Features', route: 'features', status: 'done', enabled: true },
+    { key: 'pipeline', label: 'Training', route: 'pipeline', status: 'done', enabled: true },
+    { key: 'leaderboard', label: 'Leaderboard', route: 'leaderboard', status: 'active', enabled: true },
+  ];
+
   return (
     <div className="screen-stack">
+      <div className="card panel-section" style={{ padding: '10px 14px' }}>
+        <Stepper steps={runSteps} onNavigate={(step) => go?.(step.route)} />
+      </div>
       {/* Hero banner */}
       <section className="card hero-panel leaderboard-hero">
         <div className="winner-mark">
           <Icons.trophy size={28} />
         </div>
         <div>
-          <StatusPill status="done" label={usingLive ? 'Judge converged' : 'Prototype data'} />
-          <h2>{winnerLabel ? `${winnerLabel} is the recommended model` : 'Awaiting judge'}</h2>
+          <StatusPill status={heroPill.status} label={heroPill.label} spin={heroPill.status === 'running'} />
+          <h2>{winnerLabel ? `${winnerLabel} is the recommended model` : 'Awaiting judge verdict'}</h2>
           <p className="muted">
-            {usingLive
-              ? `Live results for session ${activeSessionId}.`
-              : 'Prototype leaderboard using the Claude handoff model results.'}
+            {showPrototype
+              ? 'Sample leaderboard shown because no training run is active.'
+              : hasLiveModels
+                ? 'Live results for the current training run.'
+                : 'No model results for this run yet.'}
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -269,14 +445,40 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
               Download all models
             </a>
           ) : null}
-          <button className="btn btn-primary" onClick={() => startRun()} type="button">
-            <Icons.play size={16} />
-            Back to training
+          <button className="btn btn-secondary" onClick={() => go?.('dashboard')} type="button">
+            <Icons.grid size={16} />
+            Dashboard
+          </button>
+          {/* Navigate back to the training view WITHOUT re-marking a finished run
+              as running (the old bare startRun() did exactly that). */}
+          <button className="btn btn-primary" onClick={() => go?.('pipeline')} type="button">
+            <Icons.arrowLeft size={16} />
+            View training
           </button>
         </div>
       </section>
 
+      {/* Empty state: a real run that has produced no ranked models yet. Shown
+          instead of fabricated prototype rows so users aren't misled. */}
+      {showEmptyState ? (
+        <section className="card empty-card" style={{ textAlign: 'center' }}>
+          <Icons.trophy size={30} />
+          <h2>No model results yet</h2>
+          <p className="muted">
+            {leaderboardPollState === 'gave_up'
+              ? 'We could not load results for this run. Check that the run completed, then refresh.'
+              : leaderboardPollState === 'capped'
+                ? 'Still waiting on results. Training and the judge may still be running.'
+                : 'This run has not produced ranked models yet. Results appear here once training and the judge finish.'}
+          </p>
+          <button className="btn btn-secondary" onClick={restartLeaderboardPoll} type="button">
+            <Icons.activity size={15} /> Refresh
+          </button>
+        </section>
+      ) : null}
+
       {/* Main leaderboard table */}
+      {showEmptyState ? null : (
       <section className="card panel-section">
         <div className="section-head">
           <div>
@@ -286,16 +488,39 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
           {loadState === 'loading' ? <StatusPill status="running" spin /> : null}
         </div>
 
-        <div className="leaderboard-table leaderboard-scroll">
-          <div className="leaderboard-head">
-            <span>Rank</span>
-            <span>Model</span>
+        {/* Sync stopped before the run reached a terminal state -- let the user
+            re-sync instead of leaving stale data with no recourse. */}
+        {hasLiveModels && ['gave_up', 'capped'].includes(leaderboardPollState) ? (
+          <div className="inline-banner inline-banner-warn" role="alert" style={{ marginBottom: 12 }}>
+            <Icons.alert size={15} />
+            <span>
+              {leaderboardPollState === 'gave_up'
+                ? 'Live sync stopped after repeated errors.'
+                : 'Live sync paused (results may still be updating).'}
+            </span>
+            <span className="inline-banner-actions">
+              <button className="btn btn-secondary" onClick={restartLeaderboardPoll} type="button">
+                Refresh
+              </button>
+            </span>
+          </div>
+        ) : null}
+
+        <div
+          className="leaderboard-table leaderboard-scroll"
+          style={{ '--lb-grid-cols': leaderboardGridColumns }}
+          role="table"
+          aria-label="Model leaderboard"
+        >
+          <div className="leaderboard-head" role="row">
+            <span role="columnheader">Rank</span>
+            <span role="columnheader">Model</span>
             {metricSchema.map(({ key, label }) => (
-              <span key={key}>{label}</span>
+              <span role="columnheader" key={key}>{label}</span>
             ))}
-            <span>Overfit</span>
-            <span>Judge</span>
-            {usingLive ? <span>Download</span> : null}
+            <span role="columnheader">Overfit</span>
+            <span role="columnheader">Judge</span>
+            {usingLive ? <span role="columnheader">Download</span> : null}
           </div>
 
           {displayRows.map((row) => {
@@ -309,9 +534,10 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
               <div
                 className={row.winner ? 'leaderboard-row winner' : 'leaderboard-row'}
                 key={modelName}
+                role="row"
               >
-                <span className="rank mono">{row.rank}</span>
-                <span>
+                <span className="rank mono" role="cell">{row.rank}</span>
+                <span role="cell">
                   <strong>{modelName}</strong>
                   {(row.reasons || []).length > 0 ? (
                     <small className="muted">
@@ -320,27 +546,28 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
                   ) : null}
                   {/* HPT best score badge shown inline on winner row */}
                   {row.winner && row.hpt_best_score != null && (
-                    <small style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8, background: 'rgba(236,72,153,0.12)', color: '#ec4899', borderRadius: 4, padding: '1px 6px', fontSize: '0.7rem', fontWeight: 700 }}>
+                    <small className="hpt-score-badge">
                       HPT {row.hpt_primary_metric ?? 'score'}: {typeof row.hpt_best_score === 'number' ? row.hpt_best_score.toFixed(4) : row.hpt_best_score}
                     </small>
                   )}
                 </span>
                 {metricSchema.map(({ key }) => (
-                  <span className="mono" key={key}>
+                  <span className="mono" role="cell" key={key}>
                     {formatNumber(row.metrics?.[key] ?? row[key])}
                   </span>
                 ))}
                 <span
                   className="mono"
+                  role="cell"
                   style={{ color: isOverfitted ? 'var(--err)' : isOverfitted === false ? 'var(--ok)' : undefined }}
                 >
                   {overfitGap !== null && overfitGap !== undefined
                     ? `${isOverfitted ? 'HIGH' : 'OK'} ${formatNumber(overfitGap, 3)}`
                     : '--'}
                 </span>
-                <span className="mono">{formatNumber(row.score ?? row.judge, 1)}</span>
+                <span className="mono" role="cell">{formatNumber(row.score ?? row.judge, 2)}</span>
                 {usingLive && activeSessionId ? (
-                  <span>
+                  <span role="cell">
                     <a
                       className="btn-icon"
                       download
@@ -365,23 +592,55 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
                 background: 'rgba(236,72,153,0.04)',
               }}
             >
-              <p className="section-kicker" style={{ margin: '0 0 6px 0', fontSize: '0.65rem', color: '#ec4899' }}>
+              <p className="section-kicker" style={{ margin: '0 0 6px 0', fontSize: '0.65rem', color: 'var(--hpt)' }}>
                 BEST HYPERPARAMETERS ({row.model_name || row.model}) &mdash; {row.hpt_n_trials ?? '?'} Optuna trials
               </p>
-              <pre className="mono" style={{ margin: 0, fontSize: '0.75rem', color: '#ccc', whiteSpace: 'pre-wrap', maxHeight: 120, overflowY: 'auto' }}>
+              <pre className="mono" style={{ margin: 0, fontSize: '0.75rem', color: 'var(--ink-muted)', whiteSpace: 'pre-wrap', maxHeight: 120, overflowY: 'auto' }}>
                 {JSON.stringify(row.hpt_best_params, null, 2)}
               </pre>
             </div>
           ))}
         </div>
       </section>
+      )}
+
+      {/* Model Decision Cards — per-model Judge governance dashboard (SPEC) */}
+      {decisionCardRows.length > 0 ? (
+        <section className="card panel-section">
+          <div className="agent-reasoning-header">
+            {judgeAgent ? <AgentAvatar agent={judgeAgent} size={30} state="done" /> : null}
+            <div>
+              <p className="section-kicker">Model Governance</p>
+              <h2>Judge Decision Cards</h2>
+            </div>
+            <StatusPill status="done" label={`${decisionCardRows.length} models judged`} />
+          </div>
+
+          {/* Why one model beat another (top-two comparison) */}
+          {comparisonExplanation ? (
+            <div style={{ marginBottom: 14 }}>
+              <p className="section-kicker" style={{ marginBottom: 6 }}>Comparison</p>
+              <pre className="reasoning-block" style={{ whiteSpace: 'pre-wrap' }}>{comparisonExplanation}</pre>
+            </div>
+          ) : null}
+
+          <div
+            className="decision-card-grid"
+            style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14 }}
+          >
+            {decisionCardRows.map((row) => (
+              <ModelDecisionCard key={row.model_name || row.model} row={row} />
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {/* Hyperparameter Tuning Section */}
       {usingLive && activeSessionId && (
         <section className="card panel-section" style={{ borderLeft: '4px solid #ec4899', display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
             <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-              <div className="stage-card-icon" style={{ background: 'rgba(236, 72, 153, 0.15)', color: '#ec4899', width: 36, height: 36, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div className="stage-card-icon" style={{ background: 'rgba(236, 72, 153, 0.15)', color: 'var(--hpt)', width: 36, height: 36, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <Icons.cpu size={20} />
               </div>
               <div>
@@ -390,7 +649,7 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
                   {hptStatus === 'idle' && "Run Optuna HPT on the top-1 Judge-selected model (5 trials). Results appear in leaderboard."}
                   {hptStatus === 'running' && (hptMessage || "Tuning the top-1 model (5 Optuna trials)...")}
                   {hptStatus === 'complete' && "HPT completed. Best hyperparameters and score are now in the leaderboard winner row."}
-                  {hptStatus === 'failed' && "Hyperparameter tuning execution failed."}
+                  {hptStatus === 'failed' && (hptError || "Hyperparameter tuning execution failed.")}
                 </p>
               </div>
             </div>
@@ -403,11 +662,11 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
               {hptStatus === 'running' && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <div className="spinner small" />
-                  <span className="mono" style={{ fontSize: '0.85rem', color: '#ec4899', fontWeight: 600 }}>{hptProgress}%</span>
+                  <span className="mono" style={{ fontSize: '0.85rem', color: 'var(--hpt)', fontWeight: 600 }}>{hptProgress}%</span>
                 </div>
               )}
               {hptStatus === 'complete' && (
-                <span className="pill pill-done" style={{ background: 'rgba(236, 72, 153, 0.15)', color: '#ec4899', border: '1px solid rgba(236, 72, 153, 0.3)', fontWeight: 600 }}>
+                <span className="pill pill-done" style={{ background: 'rgba(236, 72, 153, 0.15)', color: 'var(--hpt)', border: '1px solid rgba(236, 72, 153, 0.3)', fontWeight: 600 }}>
                   Tuned
                 </span>
               )}
@@ -419,21 +678,71 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
             </div>
           </div>
 
-          {/* Live progress bar - visible while HPT is running */}
+          {/* Live progress bar & trial stats - visible while HPT is running */}
           {hptStatus === 'running' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', color: 'var(--ink-muted)', fontWeight: 500 }}>
+                <div>
+                  Trial <span className="mono" style={{ color: 'var(--hpt)', fontWeight: 700 }}>{hptTrialNum}</span> / {hptTotalTrials}
+                </div>
+                {hptBestScore !== null && (
+                  <div>
+                    Best Score: <span className="mono" style={{ color: '#be185d', fontWeight: 700 }}>{formatNumber(hptBestScore, 4)}</span>
+                  </div>
+                )}
+              </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
                 <span className="muted mono" style={{ maxWidth: '80%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {hptMessage || 'Initialising Optuna study...'}
                 </span>
-                <strong className="mono" style={{ color: '#ec4899' }}>{hptProgress}%</strong>
+                <strong className="mono" style={{ color: 'var(--hpt)' }}>{hptProgress}%</strong>
               </div>
-              <div style={{ height: 5, background: 'rgba(255,255,255,0.06)', borderRadius: 3, overflow: 'hidden' }}>
-                <div style={{ width: `${hptProgress}%`, height: '100%', background: 'linear-gradient(90deg, #be185d 0%, #ec4899 100%)', borderRadius: 3, transition: 'width 0.4s ease' }} />
+              <div
+                style={{ height: 6, background: 'var(--line-soft)', borderRadius: 3, overflow: 'hidden' }}
+                role="progressbar"
+                aria-valuenow={Math.round(hptProgress)}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label="Hyperparameter tuning progress"
+              >
+                <div style={{ width: `${hptProgress}%`, height: '100%', background: 'linear-gradient(90deg, var(--hpt) 0%, #ec4899 100%)', borderRadius: 3, transition: 'width 0.4s ease' }} />
               </div>
             </div>
           )}
 
+          {/* Scrollable event log viewer */}
+          {hptLogs && hptLogs.length > 0 && (
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <p className="section-kicker" style={{ marginBottom: 0, fontSize: '0.75rem' }}>Optuna Trial Events Stream</p>
+              <div 
+                className="terminal-body" 
+                style={{ 
+                  height: 140, 
+                  overflowY: 'auto', 
+                  background: 'rgba(0,0,0,0.3)', 
+                  border: '1px solid rgba(255,255,255,0.05)', 
+                  borderRadius: 6, 
+                  padding: 10,
+                  fontSize: '0.75rem',
+                  lineHeight: '1.4',
+                  fontFamily: 'monospace'
+                }}
+                ref={(el) => {
+                  if (el) {
+                    el.scrollTop = el.scrollHeight;
+                  }
+                }}
+              >
+                {hptLogs.map((log, index) => (
+                  <div key={index} style={{ color: 'var(--ink-muted)', marginBottom: 4, display: 'flex', gap: 8 }}>
+                    <span style={{ color: 'var(--ink-faint)' }}>{formatTime(log.ts)}</span>
+                    <span style={{ color: 'var(--hpt)', fontWeight: 600 }}>[HPT]</span>
+                    <span style={{ whiteSpace: 'pre-wrap' }}>{log.message}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {hptData && hptData.length > 0 && (
             <div className="hpt-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 15 }}>
@@ -451,7 +760,7 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
                     <h4 style={{ margin: 0, fontSize: '0.975rem' }}>{model.name}</h4>
                     <span className="mono text-xs muted">{model.n_trials} trials</span>
                   </div>
-                  <div style={{ display: 'flex', gap: 12, fontSize: '0.8rem', color: '#aaa' }}>
+                  <div style={{ display: 'flex', gap: 12, fontSize: '0.8rem', color: 'var(--ink-muted)' }}>
                     <div>Tuning time: <span className="mono">{model.tuning_time_seconds ? model.tuning_time_seconds.toFixed(1) : 'N/A'}s</span></div>
                     <div>Best trial: <span className="mono">#{model.best_trial_number}</span></div>
                   </div>
@@ -464,7 +773,7 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
                       maxHeight: 100,
                       overflowY: 'auto'
                     }}>
-                      <pre className="mono" style={{ margin: 0, fontSize: '0.75rem', whiteSpace: 'pre-wrap', color: '#ccc' }}>
+                      <pre className="mono" style={{ margin: 0, fontSize: '0.75rem', whiteSpace: 'pre-wrap', color: 'var(--ink-muted)' }}>
                         {JSON.stringify(model.best_hyperparameters, null, 2)}
                       </pre>
                     </div>
@@ -472,7 +781,7 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
                   {model.val_metrics ? (
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: '0.8rem' }}>
                       <span>Validation Score:</span>
-                      <strong className="mono" style={{ color: '#ec4899' }}>
+                      <strong className="mono" style={{ color: 'var(--hpt)' }}>
                         {Object.entries(model.val_metrics).map(([metric, val]) => `${metric}=${val.toFixed(4)}`).join(', ')}
                       </strong>
                     </div>
@@ -485,7 +794,7 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
       )}
 
       {/* Bottom row: SHAP + Judge Reasoning + Token Usage */}
-      <div className="leaderboard-grid">
+      <div className="leaderboard-bottom-grid">
         {/* SHAP panel */}
         <section className="card panel-section">
           <div className="agent-reasoning-header">
@@ -550,8 +859,9 @@ function LeaderboardScreen({ activeSessionId, startRun }) {
             </div>
           ) : null}
 
-          {/* Winner model reasons */}
-          {winnerReasons.length > 0 ? (
+          {/* Winner model reasons -- only when the per-model decision cards are
+              not rendered, to avoid showing the same reasoning twice. */}
+          {winnerReasons.length > 0 && decisionCardRows.length === 0 ? (
             <div style={{ marginTop: 14 }}>
               <p className="section-kicker" style={{ marginBottom: 6 }}>
                 Reasons for {winnerLabel}

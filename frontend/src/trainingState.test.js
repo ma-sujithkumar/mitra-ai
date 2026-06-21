@@ -80,12 +80,15 @@ test('terminal model status always displays one hundred percent', () => {
   assert.equal(trainingCounts(state).failed, 1);
 });
 
-test('all_completed event stores summary and finishes the session', () => {
+test('training-stage all_completed stores summary but does not finish the session', () => {
+  // A training-stage completion means the Ray model jobs finished, but SHAP /
+  // overfitting / judge still run afterward, so the session is not yet complete.
   let state = applyTrainingEvent(createTrainingState(), event());
   state = applyTrainingEvent(state, event({
     model_id: null,
     model_name: null,
     status: 'all_completed',
+    stage: 'training',
     pct: 100,
     sequence: 2,
     msg: 'All model training jobs finished: 1 completed, 0 failed',
@@ -97,7 +100,7 @@ test('all_completed event stores summary and finishes the session', () => {
     },
   }));
 
-  assert.equal(state.complete, true);
+  assert.equal(state.complete, false);
   assert.deepEqual(state.summary, {
     status: 'completed',
     total: 1,
@@ -105,6 +108,63 @@ test('all_completed event stores summary and finishes the session', () => {
     failed: 0,
     message: 'All model training jobs finished: 1 completed, 0 failed',
   });
+});
+
+test('top-level all_completed (no stage) finishes the session', () => {
+  let state = applyTrainingEvent(createTrainingState(), event());
+  state = applyTrainingEvent(state, event({
+    model_id: null,
+    model_name: null,
+    status: 'all_completed',
+    stage: undefined,
+    pct: 100,
+    sequence: 2,
+    msg: 'Pipeline completed successfully',
+    details: {
+      summary_status: 'completed',
+      total_models: 1,
+      completed: 1,
+      failed: 0,
+    },
+  }));
+
+  assert.equal(state.complete, true);
+});
+
+test('SSE reconnect replays are idempotent (sequence dedup)', () => {
+  // Apply an initial batch of events.
+  let state = createTrainingState();
+  state = applyTrainingEvent(state, event({ model_id: 'model_001', sequence: 1 }));
+  state = applyTrainingEvent(state, event({
+    model_id: 'model_001',
+    status: 'running',
+    sequence: 2,
+    msg: 'training started',
+  }));
+  const logCountAfterFirstPass = state.logs.length;
+  assert.equal(logCountAfterFirstPass, 2);
+  assert.equal(state.lastSequence, 2);
+
+  // Simulate an SSE reconnect re-replaying the same history (same sequences).
+  state = applyTrainingEvent(state, event({ model_id: 'model_001', sequence: 1 }));
+  state = applyTrainingEvent(state, event({
+    model_id: 'model_001',
+    status: 'running',
+    sequence: 2,
+    msg: 'training started',
+  }));
+  // Replayed events are dropped -> logs unchanged.
+  assert.equal(state.logs.length, logCountAfterFirstPass);
+
+  // A genuinely new event (higher sequence) is still applied.
+  state = applyTrainingEvent(state, event({
+    model_id: 'model_001',
+    status: 'completed',
+    sequence: 3,
+    msg: 'training completed',
+  }));
+  assert.equal(state.logs.length, 3);
+  assert.equal(state.lastSequence, 3);
 });
 
 

@@ -1554,7 +1554,10 @@ h2 {
 .leaderboard-head,
 .leaderboard-row {
   display: grid;
-  grid-template-columns: 60px minmax(0, 1.4fr) minmax(160px, 0.9fr) 0.4fr 0.45fr;
+  /* Column template is computed in JSX from the dynamic metric-column count and
+     supplied via --lb-grid-cols on the .leaderboard-table parent; this static
+     value is only a fallback for the legacy/prototype 5-column layout. */
+  grid-template-columns: var(--lb-grid-cols, 60px minmax(0, 1.4fr) minmax(160px, 0.9fr) 0.4fr 0.45fr);
   gap: 12px;
   align-items: center;
 }
@@ -2387,11 +2390,255 @@ h2 {
 :root {
   --ok: #13845f;
   --err: #cf3e3a;
+  /* HPT / Optuna accent (pink) + info accent, themed for light/dark so inline
+     hard-coded hex values can be replaced with tokens that respect the theme. */
+  --hpt: #be185d;
+  --hpt-soft: rgba(236, 72, 153, 0.12);
+  --hpt-line: rgba(236, 72, 153, 0.3);
+  --info: #3b82f6;
 }
 
 [data-theme="dark"] {
   --ok: #35d497;
   --err: #f07070;
+  --hpt: #ec4899;
+  --hpt-soft: rgba(236, 72, 153, 0.15);
+  --hpt-line: rgba(236, 72, 153, 0.32);
+  --info: #60a5fa;
+}
+
+.hpt-score-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  background: var(--hpt-soft);
+  color: var(--hpt);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+/* ------------------------------------------------------------------ */
+/* Reusable inline banners (errors / warnings / info / retry rows)     */
+/* Themed via tokens so they work in both light and dark mode.         */
+/* ------------------------------------------------------------------ */
+.inline-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.inline-banner .inline-banner-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.inline-banner-error {
+  background: var(--error-bg);
+  border: 1px solid var(--error-line);
+  color: var(--error);
+}
+
+.inline-banner-warn {
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-line);
+  color: var(--warning);
+}
+
+.inline-banner-info {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------------ */
+/* Workflow breadcrumb / stepper (run lifecycle navigation)            */
+/* ------------------------------------------------------------------ */
+.stepper {
+  width: 100%;
+}
+
+.stepper-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stepper-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stepper-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.stepper-node:disabled {
+  cursor: default;
+}
+
+.stepper-item.active .stepper-node {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.stepper-item.done .stepper-node {
+  color: var(--ink);
+}
+
+.stepper-node:not(:disabled):hover {
+  border-color: var(--line);
+}
+
+.stepper-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--line-soft);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.stepper-item.active .stepper-index {
+  background: var(--accent);
+  color: #fff;
+}
+
+.stepper-item.done .stepper-index {
+  background: var(--ok);
+  color: #fff;
+}
+
+.stepper-sep {
+  width: 18px;
+  height: 1px;
+  background: var(--line);
+}
+
+/* ------------------------------------------------------------------ */
+/* Confirmation dialog (destructive actions)                           */
+/* ------------------------------------------------------------------ */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.dialog-card {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+  max-width: 440px;
+  width: 100%;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--warning);
+}
+
+.dialog-head h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--ink);
+}
+
+.dialog-body {
+  margin: 12px 0 0 0;
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.btn-danger {
+  background: var(--error);
+  border: 1px solid var(--error);
+  color: #fff;
+}
+
+/* Leaderboard bottom row holds three panels (SHAP / Judge / Tokens). The shared
+   .leaderboard-grid is two-column, which wrapped the third panel awkwardly. */
+.leaderboard-bottom-grid {
+  display: grid;
+  align-items: start;
+  gap: 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 1100px) {
+  .leaderboard-bottom-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Pipeline stage-card message: clamp to two lines instead of a hard pixel crop. */
+.stage-card-message {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 2.2em;
+}
+
+/* Screen-reader-only text (visually hidden but announced). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ------------------------------------------------------------------ */

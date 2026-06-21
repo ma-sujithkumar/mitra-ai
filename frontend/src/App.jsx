@@ -138,7 +138,7 @@ function App() {
         setRunState={setRunState}
       />
     ),
-    leaderboard: <LeaderboardScreen activeSessionId={activeSessionId} startRun={startRun} />,
+    leaderboard: <LeaderboardScreen activeSessionId={activeSessionId} go={go} startRun={startRun} />,
     visualize: <VisualizationPage activeSessionId={activeSessionId} />,
     settings: (
       <Settings
