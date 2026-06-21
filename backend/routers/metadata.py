@@ -47,6 +47,9 @@ class MetadataRequest(BaseModel):
     model: str | None = None
     api_key: str | None = None
     gateway_url: str | None = None
+    # When metadata.json already exists, the agent is skipped (resume from
+    # checkpoint) unless force is True (explicit "Re-run metadata").
+    force: bool = False
 
 
 @router.post("/metadata")
@@ -61,6 +64,19 @@ def start_metadata(
         session_manager=session_manager,
         session_id=metadata_request.session_id,
     )
+    # Resume-from-checkpoint: if metadata.json already exists, skip the agent
+    # unless the caller explicitly forces a re-run.
+    metadata_artifact_path = session_path / "reports" / "metadata.json"
+    if metadata_artifact_path.is_file() and not metadata_request.force:
+        ActivityLog(session_path=session_path).record(
+            stage="metadata",
+            message="Metadata generation skipped (cached metadata.json reused)",
+        )
+        return {
+            "session_id": metadata_request.session_id,
+            "status": "skipped",
+            "artifact": "metadata.json",
+        }
     _load_passing_validation_report(session_path=session_path)
     job_registry.start_job(
         session_id=metadata_request.session_id,

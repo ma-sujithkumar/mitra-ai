@@ -80,16 +80,14 @@ class ConfigLoader:
     
     def load_metadata(self) -> Dict[str, Any]:
         """
-        Load metadata from the session, preferring the Epic-3-normalized file.
+        Load metadata from the session's single metadata.json.
 
-        training_service.py writes reports/metadata_epic3.json with problem_type
-        already mapped to the canonical 'classification'/'regression'/'unsupervised'
-        enum (raw metadata.json may still say problem_type='supervised'). Prefer
-        the normalized file so HPT reads the same problem_type as training.
+        training_service.py normalizes reports/metadata.json in place so its
+        problem_type is the canonical 'classification'/'regression'/'unsupervised'
+        enum (raw metadata.json may originally say problem_type='supervised').
+        HPT therefore reads the same problem_type as training from one file.
         """
         candidates = [
-            self.session_root / "reports" / "metadata_epic3.json",
-            self.session_root / "metadata_epic3.json",
             self.session_root / "reports" / "metadata.json",
             self.session_root / "metadata.json",
         ]

@@ -6,10 +6,12 @@ from typing import Any
 
 from fastapi import APIRouter
 from fastapi import Depends
+from fastapi import HTTPException
 
 from backend.config_loader import ConfigLoader
 from backend.dependencies import get_config_loader
 from backend.dependencies import get_session_manager
+from backend.services.session_progress import SessionProgress
 from backend.session import SessionManager
 
 
@@ -61,6 +63,33 @@ def run_stats(
             1 for run_record in run_records
             if run_record["leaderboard_status"] == "complete"
         ),
+    }
+
+
+@router.get("/runs/{session_id}/progress")
+def get_run_progress(
+    session_id: str,
+    config_loader: ConfigLoader = Depends(get_config_loader),
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, object]:
+    """Per-phase completion for a session so the UI can resume from the last
+    checkpoint and skip phases whose artifacts already exist."""
+    try:
+        session_dir = session_manager.get_session_path(session_id=session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not session_dir.is_dir():
+        raise HTTPException(
+            status_code=404, detail=f"Session not found: {session_id}"
+        )
+    progress = SessionProgress(
+        session_dir=session_dir,
+        config_loader=config_loader,
+    )
+    return {
+        "session_id": session_id,
+        "phases": progress.phase_status(),
+        "next_phase": progress.first_incomplete_phase(),
     }
 
 

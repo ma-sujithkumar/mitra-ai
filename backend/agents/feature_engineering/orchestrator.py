@@ -153,6 +153,9 @@ class FeatureEngineerOrchestrator:
             raise ValueError(f"target column {self.target_column!r} not in dataset columns {list(df.columns)}")
         target = df[self.target_column].copy()
         features = df.drop(columns=[self.target_column])
+        # Original input columns (target excluded). Used at artifact time to
+        # report columns removed by feature selection, not just by imputation.
+        original_input_columns = list(features.columns)
 
         # Resolve task: inference if not supplied
         if self.task is None:
@@ -233,11 +236,24 @@ class FeatureEngineerOrchestrator:
         self._run_pipeline(state, model_call)
 
         # Write feature_artifact.json (orchestrator owns it; reporter only writes report.md)
+        # Effective dropped columns = imputation drops (state.dropped_columns)
+        # plus original input columns that feature selection excluded. Only count
+        # selection drops when selection actually ran (selected_columns is not
+        # None); otherwise an empty/failed selection would mislabel every input
+        # as dropped. Dedup while preserving order (imputation drops first).
+        dropped_columns = list(state.dropped_columns)
+        if state.selected_columns is not None:
+            selected = set(state.selected_columns)
+            dropped_columns.extend(
+                column for column in original_input_columns if column not in selected
+            )
+        dropped_columns = list(dict.fromkeys(dropped_columns))
+
         artifact = {
             "run_id": run_id,
             "task": resolved_task,
             "target_column": self.target_column,
-            "dropped_columns": state.dropped_columns,
+            "dropped_columns": dropped_columns,
             "created_columns": state.created_columns,
             "transformers": state.transformers,
             "selected_columns": state.selected_columns or [],

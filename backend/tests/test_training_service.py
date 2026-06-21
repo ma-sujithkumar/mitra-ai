@@ -292,7 +292,7 @@ def test_existing_metadata_without_output_cols_is_normalized_for_epic3(
         )
     )
 
-    assert paths.metadata_path.name == "metadata_epic3.json"
+    assert paths.metadata_path.name == "metadata.json"
     normalized = json.loads(paths.metadata_path.read_text(encoding="utf-8"))
     assert normalized["problem_type"] == "classification"
     assert normalized["target_column"] == "species"

@@ -110,6 +110,14 @@ class FeatureEngineeringApiConfig:
 
 
 @dataclass(frozen=True)
+class PipelinePhasesConfig:
+    # Ordered mapping phase_name -> list of relative artifact paths that must all
+    # exist for the phase to be considered complete. Insertion order defines the
+    # pipeline order used when resuming from the last checkpoint.
+    phase_artifacts: dict[str, list[str]]
+
+
+@dataclass(frozen=True)
 class TrainingApiConfig:
     model_library_root: Path
     default_execution_mode: str
@@ -328,6 +336,24 @@ class ConfigLoader:
                 fallback="feature_run.json",
             ).strip(),
         )
+        # [pipeline_phases] section: optional; fallback keeps older configs working.
+        # The single PHASE_ARTIFACTS value encodes the ordered phase -> artifacts
+        # map so resume logic reads from config (no hardcoded lists in code).
+        self.pipeline_phases = PipelinePhasesConfig(
+            phase_artifacts=self._parse_phase_artifacts(
+                self.parser.get(
+                    "pipeline_phases",
+                    "PHASE_ARTIFACTS",
+                    fallback=(
+                        "validation:reports/validation_report.json;"
+                        "metadata:reports/metadata.json;"
+                        "feature_engineering:reports/feature_engineering/feature_artifact.json,reports/model_config.json;"
+                        "training:reports/training_summary.json;"
+                        "evaluation:reports/judge_decision.json"
+                    ),
+                )
+            ),
+        )
         # [authdb] section: uses fallbacks so the app starts without a
         # PostgreSQL server; only auth endpoints fail in that case.
         self.authdb = AuthDbConfig(
@@ -414,6 +440,28 @@ class ConfigLoader:
             for item in raw_value.split(",")
             if item.strip()
         ]
+
+    @staticmethod
+    def _parse_phase_artifacts(raw_value: str) -> dict[str, list[str]]:
+        # Format: "phase:artifactA,artifactB;phase2:artifactC". Semicolons split
+        # phases, the first colon splits the phase name from its artifact list,
+        # and commas split that phase's artifacts. Insertion order is preserved so
+        # it doubles as the pipeline phase order.
+        phase_artifacts: dict[str, list[str]] = {}
+        for phase_entry in raw_value.split(";"):
+            phase_entry = phase_entry.strip()
+            if not phase_entry or ":" not in phase_entry:
+                continue
+            phase_name, artifacts_raw = phase_entry.split(":", 1)
+            phase_name = phase_name.strip()
+            artifacts = [
+                artifact.strip()
+                for artifact in artifacts_raw.split(",")
+                if artifact.strip()
+            ]
+            if phase_name and artifacts:
+                phase_artifacts[phase_name] = artifacts
+        return phase_artifacts
 
     @staticmethod
     def _parse_json_string_list(raw_value: str) -> list[str]:

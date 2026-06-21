@@ -72,6 +72,8 @@ export async function startMetadata(payload) {
       model: payload.model || null,
       api_key: payload.apiKey || null,
       gateway_url: payload.gatewayUrl || null,
+      // Skip the agent when metadata.json exists unless an explicit re-run.
+      force: payload.force ?? false,
     }),
   });
 }
@@ -156,8 +158,14 @@ export async function startFeatureEngineering(payload) {
       model: payload.model || null,
       api_key: payload.apiKey || null,
       gateway_url: payload.gatewayUrl || null,
+      // Skip the pipeline when FE artifacts exist unless an explicit re-run.
+      force: payload.force ?? false,
     }),
   });
+}
+
+export async function fetchRunProgress(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/progress`);
 }
 
 export async function fetchFeatureEngineeringJobStatus(sessionId) {

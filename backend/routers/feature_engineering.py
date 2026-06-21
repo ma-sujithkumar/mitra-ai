@@ -63,6 +63,9 @@ class FeatureEngineeringRequest(BaseModel):
     model: str | None = None
     api_key: str | None = None
     gateway_url: str | None = None
+    # When FE artifacts already exist, the pipeline is skipped (resume from
+    # checkpoint) unless force is True (explicit "Re-run feature engineering").
+    force: bool = False
 
 
 @router.post("/feature-engineering")
@@ -87,6 +90,28 @@ def start_feature_engineering(
                 "message": "Run metadata generation before feature engineering.",
             },
         )
+    # Resume-from-checkpoint: if FE already produced its artifacts (feature
+    # artifact + model_config.json), skip the pipeline unless force is set.
+    feature_artifact_path = (
+        session_path
+        / config_loader.feature_engineering_api.output_subdir
+        / "feature_artifact.json"
+    )
+    model_config_path = session_path / "reports" / "model_config.json"
+    if (
+        feature_artifact_path.is_file()
+        and model_config_path.is_file()
+        and not feature_request.force
+    ):
+        ActivityLog(session_path=session_path).record(
+            stage="feature_engineering",
+            message="Feature engineering skipped (cached artifacts reused)",
+        )
+        return {
+            "session_id": feature_request.session_id,
+            "status": "skipped",
+            "artifact": "feature_artifact.json",
+        }
     raw_data_path = session_path / "data" / "data.csv"
 
     # Resolve the prediction target: request wins, else fall back to metadata.

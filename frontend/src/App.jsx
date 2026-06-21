@@ -126,6 +126,31 @@ function App() {
     setRoute('features');
   }
 
+  // Resume an existing session by routing to the screen that owns the first
+  // phase not yet complete. nextPhase === null means every phase is done, so
+  // land on the leaderboard. Completed phases are not re-run (the backend skips
+  // them and their agents are not re-triggered here).
+  function resumeSession(sessionId, nextPhase) {
+    const normalized = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!normalized) {
+      return;
+    }
+    setActiveSessionId(normalized);
+    window.localStorage.setItem('mitra.activeTrainingSession', normalized);
+    const phaseRoute = {
+      validation: 'upload',
+      metadata: 'upload',
+      feature_engineering: 'features',
+      training: 'pipeline',
+      evaluation: 'leaderboard',
+    };
+    const targetRoute = nextPhase ? (phaseRoute[nextPhase] || 'features') : 'leaderboard';
+    if (targetRoute === 'pipeline') {
+      setRunState('running');
+    }
+    setRoute(targetRoute);
+  }
+
   const screens = {
     dashboard: <Dashboard go={go} startRun={startRun} />,
     features: <FeatureEngineeringPage activeSessionId={activeSessionId} go={go} startRun={startRun} />,
@@ -174,6 +199,8 @@ function App() {
               go={go}
               llmSettings={llmSettings}
               llmSmokeStatus={llmSmokeStatus}
+              resumeSession={resumeSession}
+              route={route}
               setLlmSettings={setLlmSettings}
               setLlmSmokeStatus={setLlmSmokeStatus}
               startRun={startRun}

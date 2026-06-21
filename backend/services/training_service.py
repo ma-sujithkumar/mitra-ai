@@ -499,7 +499,7 @@ class TrainingService:
         target_column: str | None,
         train_path: Path,
     ) -> Path:
-        """Write an Epic-3-compatible metadata view and return its path.
+        """Normalize metadata.json in place for Epic-3 routing and return its path.
 
         Epic-1 metadata can be valid for the setup page but still incomplete for
         Epic-3 routing. The router requires a legacy problem type
@@ -509,6 +509,10 @@ class TrainingService:
         before the orchestrator prepares jobs. This prevents pre-routing failures
         that otherwise stop ``training_jobs.json`` and ``training_summary.json``
         from being generated.
+
+        The normalized fields are written back into the same ``metadata.json``
+        (no separate ``metadata_epic3.json`` artifact is produced) so every
+        downstream consumer reads a single metadata file.
         """
 
         payload = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -548,12 +552,13 @@ class TrainingService:
         if translated_payload == payload:
             return metadata_path
 
-        epic3_metadata_path = metadata_path.parent / "metadata_epic3.json"
-        epic3_metadata_path.write_text(
+        # Write the normalized fields back into the same metadata.json instead of
+        # emitting a duplicate metadata_epic3.json artifact.
+        metadata_path.write_text(
             json.dumps(translated_payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
-        return epic3_metadata_path
+        return metadata_path
 
     @staticmethod
     def _metadata_target_column(

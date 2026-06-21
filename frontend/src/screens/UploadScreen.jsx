@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import FormField from '../components/FormField.jsx';
 import MetadataProgress from '../components/MetadataProgress.jsx';
@@ -9,6 +9,7 @@ import Toast from '../components/Toast.jsx';
 import {
   fetchPublicConfig,
   fetchRecentUploads,
+  fetchRunProgress,
   startFeatureEngineering,
   startMetadata,
   startValidation,
@@ -48,13 +49,27 @@ const PROBLEM_OPTIONS = [
   { value: 'unsupervised', label: 'Cluster' },
 ];
 
-function UploadScreen({ go, startRun, enterFeatureEngineering, llmSettings, llmSmokeStatus, setLlmSettings, setLlmSmokeStatus }) {
+// Ordered pipeline phases shown in the resume panel. Keys match the backend
+// /api/runs/{id}/progress response (config.ini [pipeline_phases]).
+const PHASE_LABELS = [
+  ['validation', 'Validation'],
+  ['metadata', 'Metadata generation'],
+  ['feature_engineering', 'Feature engineering'],
+  ['training', 'Training'],
+  ['evaluation', 'Evaluation'],
+];
+const PHASE_LABEL_MAP = Object.fromEntries(PHASE_LABELS);
+
+function UploadScreen({ go, startRun, enterFeatureEngineering, resumeSession, route, llmSettings, llmSmokeStatus, setLlmSettings, setLlmSmokeStatus }) {
   const [publicConfig, setPublicConfig] = useState(null);
   const reviewSectionRef = useRef(null);
   const [recentUploads, setRecentUploads] = useState([]);
   const [datasetFile, setDatasetFile] = useState(null);
   const [metadataFile, setMetadataFile] = useState(null);
   const [selectedRecent, setSelectedRecent] = useState(null);
+  // Per-phase completion for a selected existing session, so completed phases
+  // are skipped on resume and the user can continue from the last checkpoint.
+  const [sessionProgress, setSessionProgress] = useState(null);
   const [sessionSummary, setSessionSummary] = useState(null);
   const [activeSessionId, setActiveSessionId] = useState('');
   const [validationEvents, setValidationEvents] = useState([]);
@@ -70,6 +85,17 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, llmSettings, llmS
     description: '',
     dataType: 'tabular',
   });
+
+  // Reusable so the recent-uploads list can refresh on navigation and after a
+  // new upload, not only once on mount (the screen stays mounted across routes).
+  const loadRecentUploads = useCallback(async () => {
+    try {
+      const recentPayload = await fetchRecentUploads(5);
+      setRecentUploads(recentPayload.uploads || []);
+    } catch {
+      // Transient backend hiccup (e.g. restart): keep the last known list.
+    }
+  }, []);
 
   useEffect(() => {
     let ignore = false;
@@ -100,6 +126,14 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, llmSettings, llmS
       ignore = true;
     };
   }, []);
+
+  // Refresh the recent-uploads list whenever the Upload screen becomes active so
+  // newly uploaded datasets show up without a full page reload.
+  useEffect(() => {
+    if (route === 'upload') {
+      loadRecentUploads();
+    }
+  }, [route, loadRecentUploads]);
 
   const acceptedExtensions = publicConfig?.upload?.allowed_extensions || ['.csv', '.xls', '.xlsx'];
   const validationByKey = useMemo(
@@ -157,6 +191,7 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, llmSettings, llmS
   function handleDatasetChange(file) {
     setDatasetFile(file);
     setSelectedRecent(null);
+    setSessionProgress(null);
     resetRunState();
   }
 
@@ -173,6 +208,53 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, llmSettings, llmS
     setActiveSessionId(uploadRecord.session_id);
     setDatasetFile(null);
     setMetadataFile(null);
+    // Fetch per-phase progress so completed phases can be skipped on resume.
+    setSessionProgress(null);
+    fetchRunProgress(uploadRecord.session_id)
+      .then((progress) => setSessionProgress(progress))
+      .catch(() => setSessionProgress(null));
+  }
+
+  // Resume: route to the screen that owns the first incomplete phase, starting
+  // it where this screen owns the handoff. Completed phases are never re-run.
+  function handleResumeSession() {
+    const sessionId = String(activeSessionId || '').trim();
+    if (!sessionId) {
+      setError('Select a recent upload to resume.');
+      return;
+    }
+    const nextPhase = sessionProgress?.next_phase ?? null;
+    if (nextPhase === 'validation' || nextPhase === 'metadata') {
+      // Earliest phases are still missing; run the standard (skip-aware) flow.
+      handleValidateAndReview();
+      return;
+    }
+    if (nextPhase === 'feature_engineering') {
+      handleContinueToFeatureEngineering();
+      return;
+    }
+    if (nextPhase === 'training') {
+      // FE is complete; land on the FE page where "Continue to Training" lives.
+      enterFeatureEngineering(sessionId);
+      return;
+    }
+    // evaluation pending or everything complete -> jump to the leaderboard.
+    resumeSession(sessionId, nextPhase);
+  }
+
+  async function handleRerunMetadata() {
+    const sessionId = String(activeSessionId || '').trim();
+    if (!sessionId) {
+      return;
+    }
+    await runMetadata(sessionId, { force: true });
+    fetchRunProgress(sessionId)
+      .then((progress) => setSessionProgress(progress))
+      .catch(() => {});
+  }
+
+  function handleRerunFeatureEngineering() {
+    handleContinueToFeatureEngineering({ force: true });
   }
 
   async function handleValidateAndReview() {
@@ -207,6 +289,8 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, llmSettings, llmS
         sessionId = uploadPayload.session_id;
         setActiveSessionId(sessionId);
         setSessionSummary(uploadPayload.summary);
+        // Surface the just-uploaded dataset in the recent list immediately.
+        loadRecentUploads();
       } else if (selectedRecent) {
         setSessionSummary({
           row_count: selectedRecent.row_count,
@@ -252,11 +336,11 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, llmSettings, llmS
     });
   }
 
-  async function runMetadata(sessionId) {
+  async function runMetadata(sessionId, { force = false } = {}) {
     setMetadataPhase('running');
 
     try {
-      await startMetadata({
+      const response = await startMetadata({
         sessionId,
         description: form.description,
         targetCol: form.problemType === 'unsupervised' ? null : form.targetCol,
@@ -265,7 +349,15 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, llmSettings, llmS
         model: llmSettings.model,
         apiKey: llmSettings.apiKey || '',
         gatewayUrl: llmSettings.gatewayUrl,
+        force,
       });
+
+      // Cached metadata.json reused: the backend skipped the agent and no SSE
+      // events will arrive, so mark done without waiting on the stream.
+      if (response?.status === 'skipped') {
+        setMetadataPhase('done');
+        return;
+      }
 
       const metadataDoneEvent = await collectMetadataEvents(sessionId);
       setMetadataPhase(metadataDoneEvent.type === 'done' ? 'done' : 'error');
@@ -291,7 +383,7 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, llmSettings, llmS
   // Feature Engineering tab. Training is started later from that tab, only
   // after FE + model selection succeed. This replaces the old flow that jumped
   // straight to training with deterministic fallback artifacts.
-  async function handleContinueToFeatureEngineering() {
+  async function handleContinueToFeatureEngineering({ force = false } = {}) {
     const sessionId = String(activeSessionId || '').trim();
     if (!sessionId) {
       setError('No active session is available for feature engineering.');
@@ -309,6 +401,7 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, llmSettings, llmS
         model: llmSettings.model,
         apiKey: llmSettings.apiKey || '',
         gatewayUrl: llmSettings.gatewayUrl,
+        force,
       });
       setFeaturePhase('accepted');
       enterFeatureEngineering(sessionId);
@@ -390,6 +483,62 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, llmSettings, llmS
               </div>
             )}
           </div>
+
+          {selectedRecent && sessionProgress ? (
+            <div className="recent-list" style={{ marginTop: 16 }}>
+              <p className="section-kicker">Session progress (resume from checkpoint)</p>
+              {PHASE_LABELS.map(([phaseKey, phaseLabel]) => {
+                const phaseStatus = sessionProgress.phases?.[phaseKey] || 'pending';
+                const isDone = phaseStatus === 'complete' || phaseStatus === 'passed';
+                return (
+                  <div
+                    className="recent-row"
+                    key={phaseKey}
+                    style={{ cursor: 'default' }}
+                  >
+                    <Icons.doc size={16} />
+                    <span><strong>{phaseLabel}</strong></span>
+                    <StatusPill
+                      status={isDone ? 'passed' : (phaseStatus === 'failed' ? 'failed' : 'queued')}
+                      label={phaseStatus}
+                    />
+                  </div>
+                );
+              })}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                <button
+                  className="btn btn-primary"
+                  disabled={busy}
+                  onClick={handleResumeSession}
+                  type="button"
+                >
+                  {sessionProgress.next_phase
+                    ? `Continue (${PHASE_LABEL_MAP[sessionProgress.next_phase] || sessionProgress.next_phase})`
+                    : 'View leaderboard'}
+                </button>
+                {(sessionProgress.phases?.metadata === 'complete') ? (
+                  <button
+                    className="btn btn-secondary"
+                    disabled={busy}
+                    onClick={handleRerunMetadata}
+                    type="button"
+                  >
+                    Re-run metadata
+                  </button>
+                ) : null}
+                {(sessionProgress.phases?.feature_engineering === 'complete') ? (
+                  <button
+                    className="btn btn-secondary"
+                    disabled={busy}
+                    onClick={handleRerunFeatureEngineering}
+                    type="button"
+                  >
+                    Re-run feature engineering
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </section>
 
         <section className="card panel-section">
