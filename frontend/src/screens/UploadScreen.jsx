@@ -9,6 +9,7 @@ import Toast from '../components/Toast.jsx';
 import {
   fetchPublicConfig,
   fetchRecentUploads,
+  fetchRunMetadata,
   fetchRunProgress,
   startFeatureEngineering,
   startMetadata,
@@ -60,7 +61,7 @@ const PHASE_LABELS = [
 ];
 const PHASE_LABEL_MAP = Object.fromEntries(PHASE_LABELS);
 
-function UploadScreen({ go, startRun, enterFeatureEngineering, resumeSession, route, llmSettings, llmSmokeStatus, setLlmSettings, setLlmSmokeStatus }) {
+function UploadScreen({ go, startRun, enterFeatureEngineering, resumeSession, route, incomingDataset, onIncomingDatasetConsumed, llmSettings, llmSmokeStatus, setLlmSettings, setLlmSmokeStatus }) {
   const [publicConfig, setPublicConfig] = useState(null);
   const reviewSectionRef = useRef(null);
   const [recentUploads, setRecentUploads] = useState([]);
@@ -211,6 +212,39 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, resumeSession, ro
       .then((progress) => setSessionProgress(progress))
       .catch(() => setSessionProgress(null));
   }
+
+  // Reopen an existing dataset (from the dashboard): select it, load its phase
+  // progress, and pre-fill the run form (target column, problem type) from the
+  // session's stored metadata so every stage reflects that session.
+  function selectExistingSession(record) {
+    handleRecentSelect(record);
+    fetchRunMetadata(record.session_id)
+      .then((metadata) => {
+        const target = metadata?.target_col || metadata?.target_column || '';
+        const problemType = metadata?.problem_type;
+        const subtype = metadata?.problem_subtype;
+        setForm((currentForm) => ({
+          ...currentForm,
+          targetCol: target || currentForm.targetCol,
+          problemType: ['classification', 'regression', 'unsupervised'].includes(problemType)
+            ? problemType
+            : (problemType === 'supervised' && ['classification', 'regression'].includes(subtype)
+              ? subtype
+              : currentForm.problemType),
+        }));
+      })
+      .catch(() => {});
+  }
+
+  // Consume a dataset opened from the dashboard exactly once.
+  useEffect(() => {
+    if (!incomingDataset) {
+      return;
+    }
+    selectExistingSession(incomingDataset);
+    onIncomingDatasetConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incomingDataset]);
 
   // Resume: route to the screen that owns the first incomplete phase, starting
   // it where this screen owns the handoff. Completed phases are never re-run.

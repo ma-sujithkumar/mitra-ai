@@ -93,6 +93,24 @@ def get_run_progress(
     }
 
 
+@router.get("/runs/{session_id}/metadata")
+def get_run_metadata(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Return the session's metadata.json so the UI can pre-fill the run form
+    (target column, problem type) when an existing dataset is reopened. Returns
+    an empty object if metadata has not been generated yet."""
+    try:
+        session_dir = session_manager.get_session_path(session_id=session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    metadata_path = session_dir / "reports" / "metadata.json"
+    if not metadata_path.is_file():
+        return {}
+    return _read_json(path=metadata_path)
+
+
 def _build_run_record(
     workspace_root: Path,
     upload_record: dict[str, object],

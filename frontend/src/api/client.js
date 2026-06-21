@@ -168,6 +168,10 @@ export async function fetchRunProgress(sessionId) {
   return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/progress`);
 }
 
+export async function fetchRunMetadata(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/metadata`);
+}
+
 export async function fetchFeatureEngineeringJobStatus(sessionId) {
   return requestJson(`/api/feature-engineering/status?session_id=${encodeURIComponent(sessionId)}`);
 }

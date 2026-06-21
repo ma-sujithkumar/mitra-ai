@@ -61,6 +61,7 @@ function App() {
   const [route, setRoute] = useState('dashboard');
   const [previousRoute, setPreviousRoute] = useState('dashboard');
   const [runState, setRunState] = useState('idle');
+  const [incomingDataset, setIncomingDataset] = useState(null);
   const [activeSessionId, setActiveSessionId] = useState(
     () => window.localStorage.getItem('mitra.activeTrainingSession') || '',
   );
@@ -95,6 +96,20 @@ function App() {
   function handleLogout() {
     setAuthUser(null);
     window.localStorage.removeItem('mitra.authUser');
+  }
+
+  // Reopen an already-uploaded dataset from the dashboard: make it the active
+  // session and hand the record to the Upload screen, which selects it, loads
+  // its per-phase progress, and pre-fills the run form from its metadata.
+  function handleOpenDataset(run) {
+    const normalized = typeof run?.session_id === 'string' ? run.session_id.trim() : '';
+    if (!normalized) {
+      return;
+    }
+    setActiveSessionId(normalized);
+    window.localStorage.setItem('mitra.activeTrainingSession', normalized);
+    setIncomingDataset(run);
+    setRoute('upload');
   }
 
   function handleAuthenticated(user) {
@@ -157,7 +172,7 @@ function App() {
   }
 
   const screens = {
-    dashboard: <Dashboard go={go} startRun={startRun} />,
+    dashboard: <Dashboard go={go} onOpenDataset={handleOpenDataset} startRun={startRun} />,
     features: <FeatureEngineeringPage activeSessionId={activeSessionId} go={go} startRun={startRun} />,
     pipeline: (
       <TrainingPage
@@ -202,8 +217,10 @@ function App() {
             <UploadScreen
               enterFeatureEngineering={enterFeatureEngineering}
               go={go}
+              incomingDataset={incomingDataset}
               llmSettings={llmSettings}
               llmSmokeStatus={llmSmokeStatus}
+              onIncomingDatasetConsumed={() => setIncomingDataset(null)}
               resumeSession={resumeSession}
               route={route}
               setLlmSettings={setLlmSettings}

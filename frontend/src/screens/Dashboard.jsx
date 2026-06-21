@@ -8,7 +8,7 @@ import { fetchRuns, fetchRunStats } from '../api/client.js';
 import { AGENTS } from '../data.js';
 import { Icons } from '../icons.jsx';
 
-function Dashboard({ go }) {
+function Dashboard({ go, onOpenDataset }) {
   const [stats, setStats] = useState(null);
   const [runs, setRuns] = useState([]);
   const [error, setError] = useState(null);
@@ -20,7 +20,8 @@ function Dashboard({ go }) {
       try {
         const [statsPayload, runsPayload] = await Promise.all([
           fetchRunStats(),
-          fetchRuns(5),
+          // Show every uploaded dataset, not just the latest few.
+          fetchRuns(1000),
         ]);
         if (!ignore) {
           setStats(statsPayload);
@@ -79,8 +80,8 @@ function Dashboard({ go }) {
         <section className="card panel-section">
           <div className="section-head">
             <div>
-              <p className="section-kicker">Recent</p>
-              <h2>Uploads</h2>
+              <p className="section-kicker">All uploads</p>
+              <h2>Datasets</h2>
             </div>
             <button className="btn btn-secondary" onClick={() => go('upload')} type="button">
               <Icons.plus size={16} />
@@ -100,7 +101,7 @@ function Dashboard({ go }) {
                 <button
                   className="run-row"
                   key={run.session_id}
-                  onClick={() => go('upload')}
+                  onClick={() => (onOpenDataset ? onOpenDataset(run) : go('upload'))}
                   type="button"
                 >
                   <span>
