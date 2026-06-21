@@ -764,7 +764,17 @@ class TrainingService:
             )
         else:
             if not cancel_event.is_set():
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=request.session_id,
+                        status="all_completed",
+                        level="info",
+                        pct=100,
+                        msg="Training completed successfully.",
+                    )
+                )
                 self.event_bus.close_session(request.session_id)
+
 
     def _write_training_summary_artifacts(
         self,
@@ -980,7 +990,7 @@ class TrainingService:
                     engineered_dataset_path=engineered_csv,
                     run_hpt=False,
                 )
-                return new_summary
+                return new_summary, eval_output
 
             decision = judge_loop.run_with_feedback(
                 eval_artifacts=EvalArtifacts(
@@ -1043,6 +1053,17 @@ class TrainingService:
                     pct=100,
                 )
             )
+            # Emit final top-level completion event to close the stream
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=request.session_id,
+                    status="all_completed",
+                    level="info",
+                    pct=100,
+                    msg="Pipeline run completed successfully.",
+                )
+            )
+
         except Exception as eval_exc:  # noqa: BLE001 - eval must never fail training
             logger.warning(
                 "=> post-training evaluation skipped for session=%s: %s: %s",
@@ -1473,6 +1494,7 @@ class TrainingService:
                 return
             self._active_hpt_runs.add(session_id)
             
+        self.event_bus.reset_session(session_id, clear_history=False)
         self.worker_pool.submit(self._execute_hpt, session_id)
 
     def _execute_hpt(self, session_id: str) -> None:
@@ -1559,6 +1581,43 @@ class TrainingService:
             )
             data_bundle = hpt_agent.data_loader.create_databundle(X_train, y_train, X_val, y_val)
             
+            # Define Optuna trial callback to emit live status/progress and logs
+            def optuna_trial_callback(study, trial) -> None:
+                trial_num = trial.number + 1
+                max_trials = 5
+                val_score = trial.value
+                try:
+                    best_score = study.best_value
+                except ValueError:
+                    best_score = val_score if val_score is not None else 0.0
+                
+                if val_score is not None:
+                    msg = f"[HPT] Trial {trial_num}/{max_trials} completed | {hpt_agent.primary_metric}={val_score:.4f} | Best {hpt_agent.primary_metric}: {best_score:.4f}"
+                else:
+                    msg = f"[HPT] Trial {trial_num}/{max_trials} completed | Pruned or failed | Best {hpt_agent.primary_metric}: {best_score:.4f}"
+                
+                # Calculate granular progress pct (20% to 80% span)
+                trial_pct = 20 + int((trial_num / max_trials) * 60)
+                
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=session_id,
+                        stage="hpt",
+                        level="info",
+                        status="running",
+                        msg=msg,
+                        pct=trial_pct,
+                        details={
+                            "trial_number": trial_num,
+                            "total_trials": max_trials,
+                            "best_score": best_score,
+                            "trial_score": val_score if val_score is not None else 0.0,
+                            "trial_state": trial.state.name,
+                            "params": trial.params
+                        }
+                    )
+                )
+
             hpt_agent.results = []
             total_models = len(hpt_agent.model_config_sorted)
             
@@ -1578,7 +1637,7 @@ class TrainingService:
                 )
                 
                 try:
-                    result = hpt_agent.tune_model(model_entry, data_bundle)
+                    result = hpt_agent.tune_model(model_entry, data_bundle, trial_callback=optuna_trial_callback)
                     if result:
                         hpt_agent.results.append(result)
                 except Exception as e:
@@ -1639,3 +1698,4 @@ class TrainingService:
             with self.lock:
                 if hasattr(self, "_active_hpt_runs"):
                     self._active_hpt_runs.discard(session_id)
+            self.event_bus.close_session(session_id)

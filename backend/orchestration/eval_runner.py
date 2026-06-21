@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import sys
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
 from pathlib import Path
 from typing import Any, Optional
 

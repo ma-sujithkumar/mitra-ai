@@ -102,6 +102,18 @@ class SHAPRunner:
             session_context=session_ctx,
         )
 
+        # Performance guard: KernelExplainer is slow on large evaluation sets.
+        # Subsample to at most 20 samples to avoid stalling the pipeline.
+        if built_explainer.explainer_name == "KernelExplainer":
+            kernel_eval_limit: int = 20
+            if len(feature_df) > kernel_eval_limit:
+                feature_df = feature_df.sample(n=kernel_eval_limit, random_state=42)
+                logger.info(
+                    "=> SHAP: KernelExplainer/fallback detected, downsampled evaluation set to %d rows for speed for model=%s",
+                    kernel_eval_limit,
+                    model_name,
+                )
+
         shap_result = SHAPService(execution_logger).compute(
             built_explainer=built_explainer,
             feature_dataframe=feature_df,

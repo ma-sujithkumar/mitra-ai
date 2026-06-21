@@ -81,3 +81,35 @@ def test_format_training_sse_contains_no_secret_fields() -> None:
     assert "id: 4" in frame
     assert "event: training" in frame
     assert "api_key" not in frame
+
+
+def test_reset_session_reopens_closed_session() -> None:
+    bus = TrainingEventBus()
+    bus.emit(_event(status="running"))
+    bus.close_session("session-1")
+
+    # Emitting to a closed session should be ignored
+    ignored_event = bus.emit(_event(status="completed"))
+    assert ignored_event.sequence is None or len(bus.history("session-1")) == 1
+
+    # Subscribing to a closed session should immediately close the subscriber queue
+    subscription = bus.subscribe("session-1", replay=False)
+    assert subscription.get(timeout=0.1) is None
+    subscription.close()
+
+    # Re-open the session without clearing history
+    bus.reset_session("session-1", clear_history=False)
+
+    # Subscribing now should keep the queue open
+    new_sub = bus.subscribe("session-1", replay=False)
+    
+    # Emitting should now succeed and sequenced event should have sequence 2
+    success_event = bus.emit(_event(status="completed"))
+    assert success_event.sequence == 2
+
+    # Subscriber should receive the event
+    received = new_sub.get(timeout=0.1)
+    assert received is not None
+    assert received.status == "completed"
+    new_sub.close()
+

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import StatusPill from '../components/StatusPill.jsx';
-import { fetchPlots, plotUrl } from '../api/client.js';
+import { fetchPlots, plotUrl, generatePlots } from '../api/client.js';
 import { Icons } from '../icons.jsx';
 
 // Bounded polling so the gallery syncs as plots are generated.
@@ -69,6 +69,10 @@ function PlotCard({ sessionId, plot }) {
 function VisualizationPage({ activeSessionId }) {
   const [plots, setPlots] = useState([]);
   const [loadState, setLoadState] = useState('idle');
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationMessage, setGenerationMessage] = useState(null);
+  const [generationError, setGenerationError] = useState(null);
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -106,7 +110,22 @@ function VisualizationPage({ activeSessionId }) {
       cancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [activeSessionId]);
+  }, [activeSessionId, refreshTrigger]);
+
+  const handleGenerate = async () => {
+    setGenerationMessage(null);
+    setGenerationError(null);
+    setIsGenerating(true);
+    try {
+      const response = await generatePlots(activeSessionId);
+      setGenerationMessage(response.message || 'Visualizations generated successfully');
+      setRefreshTrigger((prev) => prev + 1);
+    } catch (err) {
+      setGenerationError(err.message || 'Failed to generate visualizations');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
 
   if (!activeSessionId) {
     return (
@@ -119,50 +138,73 @@ function VisualizationPage({ activeSessionId }) {
     );
   }
 
-  if (loadState === 'loading') {
-    return (
-      <div className="screen-stack">
-        <StatusPill status="running" spin label="Loading plots..." />
-      </div>
-    );
-  }
-
-  if (loadState === 'error') {
-    return (
-      <div className="screen-stack">
-        <div className="callout error compact">
-          <strong>Failed to load plots.</strong>
-          <span>Check that the session has completed at least one pipeline stage.</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (plots.length === 0) {
-    return (
-      <div className="screen-stack">
-        <div className="callout compact">
-          <strong>No plots yet</strong>
-          <span>Plots are generated during training and evaluation. Run the pipeline first.</span>
-        </div>
-      </div>
-    );
-  }
-
   const groupedPlots = groupPlotsByStage(plots);
 
   return (
     <div className="screen-stack">
-      <section className="card hero-panel" style={{ paddingBottom: 14 }}>
+      <section className="card hero-panel" style={{ paddingBottom: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 15 }}>
         <div>
-          <StatusPill status="done" label={`${plots.length} plots`} />
+          <StatusPill status={plots.length > 0 ? 'done' : 'queued'} label={`${plots.length} plots`} />
           <h2>All Generated Visualizations</h2>
-          <p className="muted">Click any plot to enlarge it.</p>
+          <p className="muted">Generate or refresh visual analytics for the current top 10 models.</p>
+        </div>
+        <div>
+          <button
+            className="btn btn-primary"
+            onClick={handleGenerate}
+            disabled={isGenerating}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--color-primary)', borderColor: 'var(--color-primary)' }}
+            type="button"
+          >
+            {isGenerating ? <div className="spinner small" /> : <Icons.spark size={15} />}
+            {isGenerating ? 'Generating...' : plots.length > 0 ? 'Refresh Visualizations' : 'Generate Visualizations'}
+          </button>
         </div>
       </section>
 
-      {Array.from(groupedPlots.entries()).map(([stage, stagePlots]) => (
-        <section className="card panel-section" key={stage}>
+      {isGenerating && (
+        <div className="callout compact" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div className="spinner small" />
+          <span>Generating visualizations...</span>
+        </div>
+      )}
+
+      {generationMessage && (
+        <div className="callout success compact" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Icons.checkCircle size={16} style={{ color: 'var(--ok)' }} />
+          <span>{generationMessage}</span>
+        </div>
+      )}
+
+      {generationError && (
+        <div className="callout error compact" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Icons.x size={16} style={{ color: 'var(--error)' }} />
+          <span>{generationError}</span>
+        </div>
+      )}
+
+      {loadState === 'loading' && plots.length === 0 && (
+        <div style={{ marginTop: 20 }}>
+          <StatusPill status="running" spin label="Loading plots..." />
+        </div>
+      )}
+
+      {loadState === 'error' && plots.length === 0 && (
+        <div className="callout error compact" style={{ marginTop: 20 }}>
+          <strong>Failed to load plots.</strong>
+          <span>Check that the session has completed at least one pipeline stage.</span>
+        </div>
+      )}
+
+      {plots.length === 0 && loadState !== 'loading' && (
+        <div className="callout compact" style={{ marginTop: 20 }}>
+          <strong>No plots yet</strong>
+          <span>Plots are generated during training and evaluation. Click 'Generate Visualizations' above to generate plots now.</span>
+        </div>
+      )}
+
+      {plots.length > 0 && Array.from(groupedPlots.entries()).map(([stage, stagePlots]) => (
+        <section className="card panel-section" key={stage} style={{ marginTop: 20 }}>
           <div className="section-head">
             <div>
               <p className="section-kicker">{stage}</p>
@@ -180,5 +222,6 @@ function VisualizationPage({ activeSessionId }) {
     </div>
   );
 }
+
 
 export default VisualizationPage;

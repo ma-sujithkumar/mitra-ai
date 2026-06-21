@@ -193,3 +193,10 @@ export function modelDownloadUrl(sessionId, modelName) {
 export function modelsDownloadAllUrl(sessionId) {
   return `/api/runs/${encodeURIComponent(sessionId)}/models/download-all`;
 }
+
+export async function generatePlots(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/plots/generate`, {
+    method: 'POST',
+  });
+}
+

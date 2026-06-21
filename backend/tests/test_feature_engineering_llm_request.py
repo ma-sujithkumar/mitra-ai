@@ -13,7 +13,7 @@ class CapturingLlm:
 
     async def generate_content_async(self, request, stream=False):
         del stream
-        _, _, _, generation_params = _get_completion_inputs(request)
+        _, _, _, generation_params = await _get_completion_inputs(request, request.model)
         self.generation_params = generation_params
         yield SimpleNamespace(
             content=genai_types.Content(

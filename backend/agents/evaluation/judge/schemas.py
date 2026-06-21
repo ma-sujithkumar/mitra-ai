@@ -38,6 +38,7 @@ class OverfittingInfo(BaseModel):
     train_metrics: Optional[Dict[str, Optional[float]]] = None
     test_metrics: Optional[Dict[str, Optional[float]]] = None
     cv_results: Optional[Dict[str, Any]] = None
+    diagnostics: Optional[Dict[str, Any]] = None
 
 
 
@@ -65,6 +66,19 @@ class JudgeInput(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+class Finding(BaseModel):
+    """One structured Judge finding for a single governance dimension.
+
+    The `status` drives the leaderboard marker (pass => check, fail => cross,
+    info => neutral) so the frontend never has to embed unicode glyphs in code.
+    """
+
+    dimension: str = Field(..., description="Stable dimension key, e.g. 'predictive_quality'.")
+    label: str = Field(..., description="Human-readable dimension label.")
+    status: str = Field(..., description="'pass', 'fail', or 'info'.")
+    message: str = Field(..., description="One-line human-readable finding.")
+
+
 class RankedModel(BaseModel):
     """Per-model output in the ranking."""
 
@@ -74,6 +88,19 @@ class RankedModel(BaseModel):
     verdict: str = Field(..., description="'select' or 'reject'.")
     reasons: List[str]
     llm_flags: List[str] = Field(default_factory=list)
+    # Governance-dashboard additions (deterministic, rule-derived):
+    decision: str = Field(
+        default="PENDING",
+        description="'APPROVED' or 'REJECTED', derived from verdict.",
+    )
+    findings: List[Finding] = Field(
+        default_factory=list,
+        description="Per-dimension structured findings for the model decision card.",
+    )
+    ranking_explanation: Optional[str] = Field(
+        default=None,
+        description="Why this model ranked where it did (approved models only).",
+    )
 
 
 class DecisionTrace(BaseModel):
@@ -91,3 +118,7 @@ class JudgeDecision(BaseModel):
     selected_model: Optional[str]
     ranked_models: List[RankedModel]
     decision_trace: DecisionTrace
+    comparison_explanation: Optional[str] = Field(
+        default=None,
+        description="Why the top model was preferred over the runner-up.",
+    )

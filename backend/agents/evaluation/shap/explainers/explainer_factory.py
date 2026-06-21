@@ -134,18 +134,19 @@ class ExplainerFactory:
             f"Selected explainer: {explainer_type_name} for model family: {model_family}"
         )
 
-        explainer_object: Any = self._dispatch_explainer_build(
+        # Dispatch returns the constructed explainer and the actual name (in case of fallback)
+        explainer_object, actual_explainer_name = self._dispatch_explainer_build(
             explainer_type_name, model_object, feature_dataframe
         )
 
-        session_context.explainer_name = explainer_type_name
+        session_context.explainer_name = actual_explainer_name
         self._execution_logger.log_explainer_selection(
-            f"Explainer constructed successfully: {explainer_type_name} | family: {model_family}"
+            f"Explainer constructed successfully: {actual_explainer_name} | family: {model_family}"
         )
 
         return BuiltExplainer(
             explainer_object=explainer_object,
-            explainer_name=explainer_type_name,
+            explainer_name=actual_explainer_name,
             model_family=model_family,
         )
 
@@ -154,29 +155,31 @@ class ExplainerFactory:
         explainer_type_name: str,
         model_object: Any,
         feature_dataframe: pd.DataFrame,
-    ) -> Any:
+    ) -> tuple[Any, str]:
         """Dispatch to the correct build method based on the explainer type string.
 
         Args:
             explainer_type_name: Explainer type as configured in JSON
                 (e.g. "TreeExplainer" or "LinearExplainer").
             model_object: Fitted model object passed to the explainer constructor.
-            feature_dataframe: Feature DataFrame needed for LinearExplainer only.
+            feature_dataframe: Feature DataFrame needed for Linear/Kernel explainer.
 
         Returns:
-            Constructed SHAP explainer object.
+            Tuple of (constructed SHAP explainer object, actual explainer name).
 
         Raises:
             SHAPExecutionError: If explainer_type_name is unrecognised or if
                 the underlying SHAP constructor raises.
         """
         explainer_dispatch: dict[str, Any] = {
-            _EXPLAINER_TREE: lambda: self._build_tree_explainer(model_object),
-            _EXPLAINER_LINEAR: lambda: self._build_linear_explainer(
-                model_object, feature_dataframe
+            _EXPLAINER_TREE: lambda: self._build_tree_explainer(model_object, feature_dataframe),
+            _EXPLAINER_LINEAR: lambda: (
+                self._build_linear_explainer(model_object, feature_dataframe),
+                _EXPLAINER_LINEAR,
             ),
-            _EXPLAINER_KERNEL: lambda: self._build_kernel_explainer(
-                model_object, feature_dataframe
+            _EXPLAINER_KERNEL: lambda: (
+                self._build_kernel_explainer(model_object, feature_dataframe),
+                _EXPLAINER_KERNEL,
             ),
         }
 
@@ -198,23 +201,48 @@ class ExplainerFactory:
                 f"Underlying error: {construction_error}"
             ) from construction_error
 
-    def _build_tree_explainer(self, model_object: Any) -> Any:
+    def _build_tree_explainer(
+        self, model_object: Any, feature_dataframe: pd.DataFrame
+    ) -> tuple[Any, str]:
         """Construct shap.TreeExplainer for tree-based model families.
 
         Supports XGBoost, RandomForest, LightGBM, and CatBoost. No background
         data is required for TreeExplainer construction (only for .shap_values()
         where CatBoost may need check_additivity=False -- handled by SHAPService).
+        If construction fails (e.g. multi-class GradientBoostingClassifier), we
+        fall back to KernelExplainer.
 
         Args:
             model_object: Fitted tree-based model object.
+            feature_dataframe: Feature DataFrame passed to fallback KernelExplainer.
 
         Returns:
-            shap.TreeExplainer instance.
+            Tuple of (shap.TreeExplainer or shap.KernelExplainer instance, explainer_name).
         """
         self._execution_logger.log_explainer_selection(
             f"Building TreeExplainer for model: {type(model_object).__name__}"
         )
-        return shap.TreeExplainer(model_object)
+        try:
+            # Attempt to construct standard TreeExplainer
+            return shap.TreeExplainer(model_object), _EXPLAINER_TREE
+        except Exception as tree_explainer_error:
+            self._execution_logger.log_explainer_selection(
+                f"TreeExplainer construction failed for {type(model_object).__name__}: "
+                f"{tree_explainer_error}. Attempting fallback to KernelExplainer."
+            )
+            try:
+                # Fall back to KernelExplainer
+                kernel_explainer_instance = self._build_kernel_explainer(
+                    model_object, feature_dataframe
+                )
+                return kernel_explainer_instance, _EXPLAINER_KERNEL
+            except Exception as kernel_fallback_error:
+                # Raise the original TreeExplainer error but mention that fallback also failed
+                raise SHAPExecutionError(
+                    f"Failed to construct TreeExplainer for model: {type(model_object).__name__}. "
+                    f"Underlying TreeExplainer error: {tree_explainer_error}. "
+                    f"KernelExplainer fallback also failed: {kernel_fallback_error}"
+                ) from tree_explainer_error
 
     def _build_linear_explainer(
         self, model_object: Any, feature_dataframe: pd.DataFrame

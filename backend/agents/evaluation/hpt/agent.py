@@ -7,7 +7,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Callable
 import time
 
 from .config_loader import ConfigLoader
@@ -174,13 +174,14 @@ class HyperparameterTuningAgent:
         
         return train_fn
     
-    def tune_model(self, model_entry: Dict[str, Any], data_bundle: DataBundle) -> Optional[Dict[str, Any]]:
+    def tune_model(self, model_entry: Dict[str, Any], data_bundle: DataBundle, trial_callback: Optional[Callable] = None) -> Optional[Dict[str, Any]]:
         """
         Perform hyperparameter tuning for a single model
         
         Args:
             model_entry: Model configuration from model_config.json
             data_bundle: DataBundle with train/val split
+            trial_callback: Optional callback invoked after each Optuna trial
         
         Returns:
             dict: Tuning results for this model, or None if failed
@@ -214,7 +215,7 @@ class HyperparameterTuningAgent:
         
         # Run optimization
         start_time = time.time()
-        optuna_result = optuna_wrapper.run_optimization()
+        optuna_result = optuna_wrapper.run_optimization(trial_callback=trial_callback)
         tuning_time = time.time() - start_time
         
         if optuna_result is None:

@@ -31,6 +31,32 @@ logger = logging.getLogger(__name__)
 class UpstreamAdapter:
     """Translates upstream tool outputs into the JudgeInput adapter schema."""
 
+    @staticmethod
+    def _numeric_metrics_only(
+        metrics: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Optional[float]]]:
+        """Keep only numeric metric entries from an upstream metrics dict.
+
+        The overfitting tool embeds non-numeric metadata (e.g. ``task_type`` and
+        ``model_name``) alongside the numeric metrics inside train_metrics /
+        test_metrics. OverfittingInfo types these as ``Dict[str, float]``, so the
+        strings must be dropped here (the adapter is the upstream-decoupling layer)
+        to avoid a pydantic float-parsing ValidationError.
+        """
+        if not metrics:
+            return None
+        numeric_metrics: Dict[str, Optional[float]] = {}
+        for metric_name, metric_value in metrics.items():
+            if metric_value is None:
+                numeric_metrics[metric_name] = None
+            elif isinstance(metric_value, bool):
+                # bool is a subclass of int; exclude it from numeric metrics.
+                continue
+            elif isinstance(metric_value, (int, float)):
+                numeric_metrics[metric_name] = float(metric_value)
+            # Non-numeric metadata (task_type, model_name, ...) is dropped.
+        return numeric_metrics or None
+
     def adapt_overfitting(self, overfitting_json: Dict[str, Any]) -> OverfittingInfo:
         """Map overfitting_analysis.json => OverfittingInfo.
 
@@ -55,8 +81,8 @@ class UpstreamAdapter:
             is_overfitted=bool(overfitting_json.get("is_overfitted", False)),
             gap=float(primary_gap) if primary_gap is not None else 0.0,
             train_vs_cv_gap=float(train_vs_cv_gap) if train_vs_cv_gap is not None else None,
-            train_metrics=overfitting_json.get("train_metrics"),
-            test_metrics=overfitting_json.get("test_metrics"),
+            train_metrics=self._numeric_metrics_only(overfitting_json.get("train_metrics")),
+            test_metrics=self._numeric_metrics_only(overfitting_json.get("test_metrics")),
             cv_results=cv_results if cv_results else None,
             diagnostics=overfitting_json.get("diagnostics"),
         )

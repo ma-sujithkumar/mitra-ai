@@ -6,11 +6,12 @@ import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 import numpy as np
 import pandas as pd
 import yaml
+from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from sklearn.preprocessing import LabelEncoder
 
@@ -284,7 +285,7 @@ class OverfittingAnalyzer:
 
     def compute_holdout_metrics(
         self, common: CommonData
-    ) -> tuple[Optional[MetricsResult], Optional[MetricsResult]]:
+    ) -> tuple[Optional[MetricsResult], Optional[MetricsResult], Optional[Any], Optional[np.ndarray]]:
         """Compute or reuse holdout train/test metrics.
 
         When precomputed metrics are provided in the input JSON, they are used as-is.
@@ -294,7 +295,7 @@ class OverfittingAnalyzer:
             logger.info("=> Using precomputed train/test metrics from input JSON.")
             train_result = self._metrics_result_from_dict(self.precomputed_train_metrics, "train")
             test_result = self._metrics_result_from_dict(self.precomputed_test_metrics, "test")
-            return train_result, test_result
+            return train_result, test_result, None, None
 
         logger.info("=> Training model to compute holdout metrics via MLKit.")
         data_bundle = DataBundle(common=common)
@@ -319,7 +320,7 @@ class OverfittingAnalyzer:
         )
         logger.info("=> Train metrics:\n%s", train_result)
         logger.info("=> Test metrics:\n%s", test_result)
-        return train_result, test_result
+        return train_result, test_result, kit, test_predictions
 
     def _assemble_cv_data(self, common: CommonData) -> tuple[np.ndarray, np.ndarray]:
         """Return (X_cv, y_cv) based on the configured cv_data_source."""
@@ -492,14 +493,83 @@ class OverfittingAnalyzer:
         logger.info("=> Output written to: %s", output_path)
         return output_path
 
+    def _compute_prediction_diagnostics(
+        self, common: CommonData, kit: Any, test_predictions: np.ndarray
+    ) -> Optional[dict[str, Any]]:
+        if self.model_type != TASK_TYPE_CLASSIFICATION:
+            return None
+
+        try:
+            # 1. Prediction distribution fractions
+            unique_preds, counts_preds = np.unique(test_predictions, return_counts=True)
+            pred_dist = {str(k): float(v) / len(test_predictions) for k, v in zip(unique_preds, counts_preds)}
+
+            # 2. Majority class in training data
+            unique_train, counts_train = np.unique(common.y_train, return_counts=True)
+            majority_idx = np.argmax(counts_train)
+            majority_class = unique_train[majority_idx]
+            majority_fraction = float(counts_train[majority_idx]) / len(common.y_train)
+
+            # Baseline accuracy of predicting majority class
+            majority_baseline_acc = float(np.sum(common.y_test == majority_class)) / len(common.y_test)
+
+            # 3. Class-level metrics
+            precisions = precision_score(common.y_test, test_predictions, average=None, zero_division=0)
+            recalls = recall_score(common.y_test, test_predictions, average=None, zero_division=0)
+            f1s = f1_score(common.y_test, test_predictions, average=None, zero_division=0)
+            
+            # Map classes to their metrics
+            class_metrics = {}
+            for i, cls in enumerate(unique_train):
+                cls_str = str(cls)
+                class_metrics[cls_str] = {
+                    "precision": float(precisions[i]) if i < len(precisions) else 0.0,
+                    "recall": float(recalls[i]) if i < len(recalls) else 0.0,
+                    "f1": float(f1s[i]) if i < len(f1s) else 0.0,
+                }
+
+            # 4. Prediction Entropy Analysis
+            try:
+                model_wrapper = kit.model
+                actual_model = getattr(model_wrapper, "model", model_wrapper)
+                if hasattr(actual_model, "predict_proba"):
+                    probs = actual_model.predict_proba(common.X_test)
+                    epsilon = 1e-15
+                    probs = np.clip(probs, epsilon, 1 - epsilon)
+                    entropies = -np.sum(probs * np.log(probs), axis=1)
+                    mean_entropy = float(np.mean(entropies))
+                else:
+                    p_vals = np.array(list(pred_dist.values()))
+                    mean_entropy = float(-np.sum(p_vals * np.log(p_vals + 1e-15)))
+            except Exception:
+                p_vals = np.array(list(pred_dist.values()))
+                mean_entropy = float(-np.sum(p_vals * np.log(p_vals + 1e-15)))
+
+            return {
+                "prediction_distribution": pred_dist,
+                "majority_class": str(majority_class),
+                "majority_class_fraction": majority_fraction,
+                "majority_baseline_accuracy": majority_baseline_acc,
+                "class_level_metrics": class_metrics,
+                "prediction_entropy": mean_entropy,
+            }
+        except Exception as e:
+            logger.warning("=> Failed to compute prediction diagnostics: %s", e)
+            return None
+
     def run(self) -> dict:
         """Orchestrate the full analysis: load data, compute metrics, CV, verdict, write output."""
         common = self.load_dataset(self.dataset_path)
-        train_result, test_result = self.compute_holdout_metrics(common)
+        train_result, test_result, kit, test_predictions = self.compute_holdout_metrics(common)
         kfold_result, cv_skipped_reason = self.run_kfold(common, train_result)
 
         gaps, rel_rmse_gap = self.compute_gaps(train_result, test_result)
         is_overfitted = self.decide_verdict(gaps, kfold_result)
+
+        # Compute prediction distribution, baseline majority-class comparison, class-wise metrics, entropy
+        diagnostics = None
+        if kit is not None and test_predictions is not None:
+            diagnostics = self._compute_prediction_diagnostics(common, kit, test_predictions)
 
         payload = {
             "model_name": self.model_name,
@@ -515,6 +585,7 @@ class OverfittingAnalyzer:
                 asdict(kfold_result) if kfold_result is not None else None
             ),
             "cv_skipped_reason": cv_skipped_reason,
+            "diagnostics": diagnostics,
         }
 
         self.write_output(payload)

@@ -29,6 +29,10 @@ shap_top_n_features: 5
 # LLM_TYPE, LLM_MODEL, LLM_API_KEY, LLM_GATEWAY_URL) - same as every other agent.
 use_llm: true
 prompt_template: judge_prompt.jinja2
+# When true, sets LITELLM_LOG=DEBUG around the judge LLM call so the raw litellm
+# request/response is printed in the backend logs (same wire-level debug the
+# other agents produce). The rendered prompt + response are always logged at INFO.
+litellm_debug: false
 
 
 # Maps each metric name to its direction for gap computation (mirrors parent tool).
@@ -48,3 +52,45 @@ metric_direction_map:
 primary_metric_map:
   classification: accuracy
   regression: r2
+
+# Judge Findings: thresholds + labels driving the per-model decision card.
+# All thresholds live here (no hardcoding inside findings_engine.py).
+findings:
+  # Human-readable dimension labels keyed by stable dimension id. The order of
+  # this map is the order findings appear on each model decision card.
+  dimension_labels:
+    predictive_quality:  Predictive Quality
+    class_balance:       Class Balance
+    generalization:      Generalization
+    feature_utilization: Feature Utilization
+    data_leakage:        Data Leakage
+    robustness:          Robustness
+  # Classification metrics surfaced (in order) inside the predictive-quality line.
+  classification_report_metrics:
+    - accuracy
+    - f1_macro
+    - f1_weighted
+    - precision_macro
+    - recall_macro
+    - roc_auc
+    - balanced_accuracy
+  # Regression metrics surfaced (in order) inside the predictive-quality line.
+  regression_report_metrics:
+    - r2
+    - mae
+    - rmse
+  # Class balance: macro recall below this => weak minority-class recall.
+  macro_recall_floor: 0.50
+  # Class balance: |f1_weighted - f1_macro| above this => class prediction skew.
+  f1_spread_warn: 0.15
+  # Generalization: primary train-test gap above this => generalization concern.
+  overfit_gap_warn: 0.10
+  # Feature utilization: single top-feature share (of top-N |SHAP|) above this
+  # => dominant-feature / shortcut concern.
+  dominant_feature_share: 0.60
+  # Data leakage: near-perfect train primary metric at/above this AND a gap at/
+  # above leakage_gap_warn => potential shortcut learning / leakage.
+  leakage_train_perfect: 0.999
+  leakage_gap_warn: 0.20
+  # Robustness: cross-validation std above this => unstable across folds.
+  cv_std_unstable: 0.05

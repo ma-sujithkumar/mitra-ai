@@ -244,6 +244,8 @@ class JudgeLoop:
         )
         decision = self.judge_agent.judge(judge_input, use_llm=self.use_llm)
         self._persist_decision(decision, session_dir, turn=1)
+        # Stream per-model Judge findings live to the leaderboard.
+        self._emit_findings_stream(decision, turn_number=1, total_turns=1)
         logger.info(
             "=> judge turn 1: selected=%s ranked=%d",
             decision.selected_model,
@@ -327,6 +329,8 @@ class JudgeLoop:
             )
             decision = self.judge_agent.judge(judge_input, use_llm=self.use_llm)
             self._persist_decision(decision, session_dir, turn=turn_number)
+            # Stream per-model Judge findings live to the leaderboard.
+            self._emit_findings_stream(decision, turn_number=turn_number, total_turns=self.max_turns)
             last_decision = decision
 
             logger.info(
@@ -395,7 +399,16 @@ class JudgeLoop:
             )
 
             # Re-train via callback; callback should also re-run EvalRunner.
-            current_training_summary = training_callback(excluded_model_names)
+            callback_result = training_callback(excluded_model_names)
+            if isinstance(callback_result, tuple):
+                current_training_summary, new_eval_output = callback_result
+                current_eval_artifacts = EvalArtifacts(
+                    shap_dirs=new_eval_output.get("shap_dirs", {}),
+                    overfitting_dirs=new_eval_output.get("overfitting_dirs", {}),
+                    hpt_results_path=new_eval_output.get("hpt_results_path"),
+                )
+            else:
+                current_training_summary = callback_result
 
         return last_decision or decision  # type: ignore[return-value]
 
@@ -453,6 +466,59 @@ class JudgeLoop:
             )
         except Exception as emit_exc:
             logger.debug("=> judge SSE emit failed (non-fatal): %s", emit_exc)
+
+    def _emit_findings_stream(
+        self,
+        decision: JudgeDecision,
+        turn_number: int,
+        total_turns: int,
+    ) -> None:
+        """Replay each model's structured findings as live [Judge] SSE lines.
+
+        Emits, per ranked model: an 'Evaluating <model>' line, one line per
+        finding, and a final 'Approving'/'Rejecting' line. Findings are carried
+        in event.details so the leaderboard can render the full decision card.
+        """
+        if self.event_bus is None or not self.session_id:
+            return
+        # Map verdict => streamed verb (no if-else ladder).
+        verdict_verb_map: Dict[str, str] = {"select": "Approving", "reject": "Rejecting"}
+        for ranked_model in decision.ranked_models:
+            self._emit_judge_event(
+                turn_number=turn_number,
+                total_turns=total_turns,
+                status="running",
+                msg=f"[Judge] Evaluating {ranked_model.model_name}",
+                pct=80,
+                details={"model_name": ranked_model.model_name, "phase": "evaluating"},
+            )
+            for finding in ranked_model.findings:
+                self._emit_judge_event(
+                    turn_number=turn_number,
+                    total_turns=total_turns,
+                    status="running",
+                    msg=f"[Judge] {finding.label}: {finding.message}",
+                    pct=85,
+                    details={
+                        "model_name": ranked_model.model_name,
+                        "phase": "finding",
+                        "dimension": finding.dimension,
+                        "finding_status": finding.status,
+                    },
+                )
+            verb = verdict_verb_map.get(ranked_model.verdict, "Reviewing")
+            self._emit_judge_event(
+                turn_number=turn_number,
+                total_turns=total_turns,
+                status="running",
+                msg=f"[Judge] {verb} model {ranked_model.model_name} ({ranked_model.decision})",
+                pct=90,
+                details={
+                    "model_name": ranked_model.model_name,
+                    "phase": "decision",
+                    "decision": ranked_model.decision,
+                },
+            )
 
     def _persist_decision(self, decision: JudgeDecision, session_dir: Path, turn: int) -> None:
         """Write judge_decision.json (overwritten each turn; turn N also archived)."""

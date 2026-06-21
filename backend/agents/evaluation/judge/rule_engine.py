@@ -15,9 +15,13 @@ where all three component values are in [0, 1].
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+from .findings_engine import FindingsEngine
 from .schemas import CandidateModel, DecisionTrace, JudgeDecision, RankedModel
 
 logger = logging.getLogger(__name__)
+
+# Map rule verdicts to governance-dashboard decision labels (no if-else ladder).
+_VERDICT_DECISION_MAP: Dict[str, str] = {"select": "APPROVED", "reject": "REJECTED"}
 
 
 class RuleEngine:
@@ -25,6 +29,7 @@ class RuleEngine:
 
     def __init__(self, config: Dict[str, Any]) -> None:
         self._config = config
+        self._findings_engine = FindingsEngine(config)
         self._weights: Dict[str, float] = config["weights"]
         self._accuracy_floor: float = float(config["accuracy_floor"])
         self._r2_floor: float = float(config["r2_floor"])
@@ -54,7 +59,7 @@ class RuleEngine:
     def apply_hard_gates(
         self, candidates: List[CandidateModel]
     ) -> Tuple[List[CandidateModel], Dict[str, str]]:
-        """Reject any model whose primary metric is below the task-type floor.
+        """Reject any model whose primary metric is below the floor, or is biased / degenerate.
 
         Returns:
             survivors: list of candidates that passed the gate.
@@ -86,14 +91,65 @@ class RuleEngine:
                 )
                 gate_outcomes[candidate.model_name] = reason
                 logger.debug("=> GATE REJECT %s: %s", candidate.model_name, reason)
-            else:
-                survivors.append(candidate)
-                logger.debug(
-                    "=> GATE PASS %s: perf=%.4f >= floor=%.4f",
-                    candidate.model_name,
-                    perf,
-                    floor,
-                )
+                continue
+
+            # --- Epic 4 Judge Robustness & Model Bias Detection ---
+            if candidate.task_type == "classification" and candidate.overfitting.diagnostics:
+                diag = candidate.overfitting.diagnostics
+                
+                # Rule 1: Prediction skew check (Dominant class fraction >= 85.0%)
+                pred_dist = diag.get("prediction_distribution") or {}
+                skewed = False
+                for cls, fraction in pred_dist.items():
+                    if fraction >= 0.85:
+                        reason = f"Suspicious model bias: class '{cls}' dominates predictions ({fraction * 100:.1f}% of all outputs)."
+                        gate_outcomes[candidate.model_name] = reason
+                        logger.debug("=> GATE REJECT %s: %s", candidate.model_name, reason)
+                        skewed = True
+                        break
+                if skewed:
+                    continue
+
+                # Rule 2: Majority-class baseline check
+                majority_baseline = diag.get("majority_baseline_accuracy")
+                if majority_baseline is not None:
+                    improvement = perf - majority_baseline
+                    if improvement < 0.02:
+                        reason = f"Shortcut learning detected: model accuracy ({perf:.4f}) is similar to majority-class baseline ({majority_baseline:.4f}) with +{improvement * 100:.1f}% improvement (minimum +2.0% required)."
+                        gate_outcomes[candidate.model_name] = reason
+                        logger.debug("=> GATE REJECT %s: %s", candidate.model_name, reason)
+                        continue
+
+                # Rule 3: Prediction entropy check
+                entropy = diag.get("prediction_entropy")
+                if entropy is not None and entropy < 0.15:
+                    reason = f"Degenerate model behavior: prediction entropy is extremely low ({entropy:.4f}), indicating near-identical outputs and zero prediction diversity."
+                    gate_outcomes[candidate.model_name] = reason
+                    logger.debug("=> GATE REJECT %s: %s", candidate.model_name, reason)
+                    continue
+
+            # Rule 4: SHAP Feature Importance Concentration Leakage Check
+            if candidate.shap_summary and "mean_abs_shap" in candidate.shap_summary:
+                shap_dict = candidate.shap_summary["mean_abs_shap"]
+                total_shap = sum(shap_dict.values())
+                if total_shap > 0:
+                    top_feature_val = max(shap_dict.values())
+                    top_feature_name = [k for k, v in shap_dict.items() if v == top_feature_val][0]
+                    ratio = top_feature_val / total_shap
+                    if ratio >= 0.80:
+                        reason = f"Label leakage suspected: feature '{top_feature_name}' dominates importance ({ratio * 100:.1f}% of top-5 SHAP sum)."
+                        gate_outcomes[candidate.model_name] = reason
+                        logger.debug("=> GATE REJECT %s: %s", candidate.model_name, reason)
+                        continue
+
+            # If all checks passed, candidate survives
+            survivors.append(candidate)
+            logger.debug(
+                "=> GATE PASS %s: perf=%.4f >= floor=%.4f",
+                candidate.model_name,
+                perf,
+                floor,
+            )
         return survivors, gate_outcomes
 
     def _normalize_complexity(
@@ -182,6 +238,10 @@ class RuleEngine:
 
         ranked_models: List[RankedModel] = []
         selected_model: Optional[str] = None
+        # Lookup so findings/explanations can reach the source candidate cheaply.
+        candidate_by_name: Dict[str, CandidateModel] = {
+            candidate.model_name: candidate for candidate in all_candidates
+        }
 
         for rank_index, (score, candidate) in enumerate(scored, start=1):
             perf = self._primary_perf(candidate) or 0.0
@@ -190,16 +250,28 @@ class RuleEngine:
                 f"Overfitting gap={candidate.overfitting.gap:.4f}",
                 f"Complexity family_rank={candidate.complexity.family_rank}",
             ]
-            ranked_models.append(
-                RankedModel(
-                    model_name=candidate.model_name,
-                    rank=rank_index,
-                    score=round(score, 6),
-                    verdict="select",
-                    reasons=reasons,
-                    llm_flags=[],
-                )
+            # Build structured per-dimension findings + a ranking explanation.
+            findings = self._findings_engine.build_findings(candidate)
+            ranked_model = RankedModel(
+                model_name=candidate.model_name,
+                rank=rank_index,
+                score=round(score, 6),
+                verdict="select",
+                reasons=reasons,
+                llm_flags=[],
+                decision=_VERDICT_DECISION_MAP["select"],
+                findings=findings,
             )
+            ranked_model = ranked_model.model_copy(
+                update={
+                    "ranking_explanation": self._findings_engine.build_ranking_explanation(
+                        ranked_model=ranked_model,
+                        candidate=candidate,
+                        findings=findings,
+                    )
+                }
+            )
+            ranked_models.append(ranked_model)
             if rank_index == 1:
                 selected_model = candidate.model_name
 
@@ -212,6 +284,8 @@ class RuleEngine:
             if candidate.model_name not in rejected_names:
                 continue
             reason = gate_outcomes.get(candidate.model_name, "Rejected by hard gate.")
+            # Rejected models still get full findings so the card explains *why*.
+            findings = self._findings_engine.build_findings(candidate)
             ranked_models.append(
                 RankedModel(
                     model_name=candidate.model_name,
@@ -220,9 +294,14 @@ class RuleEngine:
                     verdict="reject",
                     reasons=[reason],
                     llm_flags=[],
+                    decision=_VERDICT_DECISION_MAP["reject"],
+                    findings=findings,
                 )
             )
             gate_rank_start += 1
+
+        # Head-to-head comparison for the top two approved models.
+        comparison_explanation = self._build_top_comparison(ranked_models, candidate_by_name)
 
         rule_outcomes = {
             "gate_outcomes": gate_outcomes,
@@ -239,6 +318,28 @@ class RuleEngine:
             selected_model=selected_model,
             ranked_models=ranked_models,
             decision_trace=DecisionTrace(rule_outcomes=rule_outcomes, llm_commentary=None),
+            comparison_explanation=comparison_explanation,
+        )
+
+    def _build_top_comparison(
+        self,
+        ranked_models: List[RankedModel],
+        candidate_by_name: Dict[str, CandidateModel],
+    ) -> Optional[str]:
+        """Build the 'Why A beat B' explanation for the top two approved models."""
+        approved = [rm for rm in ranked_models if rm.verdict == "select"]
+        if len(approved) < 2:
+            return None
+        winner_ranked, runner_ranked = approved[0], approved[1]
+        winner_candidate = candidate_by_name.get(winner_ranked.model_name)
+        runner_candidate = candidate_by_name.get(runner_ranked.model_name)
+        if winner_candidate is None or runner_candidate is None:
+            return None
+        return self._findings_engine.build_comparison_explanation(
+            winner_ranked=winner_ranked,
+            winner_candidate=winner_candidate,
+            runner_ranked=runner_ranked,
+            runner_candidate=runner_candidate,
         )
 
     def _apply_tie_break(

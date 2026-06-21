@@ -507,6 +507,7 @@ class TrainingOrchestrator:
             self.event_sink.emit(
                 TrainingEvent(
                     session_id=summary.session_id,
+                    stage="training",
                     status="all_completed",
                     pct=100,
                     level="error" if summary.status == "failed" else "info",
@@ -522,6 +523,7 @@ class TrainingOrchestrator:
                     },
                 )
             )
+
         except Exception:
             pass
 

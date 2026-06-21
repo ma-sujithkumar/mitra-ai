@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -190,34 +191,86 @@ class JudgeAgent:
         decision: JudgeDecision,
     ) -> JudgeDecision:
         """Invoke the LLM and merge its output into the decision. Falls back on any error."""
-        # Resolve credentials the SAME way every other agent does: via
-        # LlmSettingsResolver, which reads .env (LLM_TYPE/LLM_MODEL/LLM_API_KEY).
-        # Reading os.environ directly was broken -- .env is never exported to the
-        # process environment (no load_dotenv anywhere), so the key was always
-        # empty and the judge silently fell back to rule-only output.
-        judge_llm_settings = LlmSettingsResolver(ConfigLoader()).resolve()
+        # Opt-in litellm wire-level debug (judge prompts/responses in backend logs),
+        # matching the other agents. Driven by judge config so it is not hardcoded.
+        if self._config.get("litellm_debug", False):
+            os.environ["LITELLM_LOG"] = "DEBUG"
 
-        prompt_text = _render_prompt(
-            judge_input=judge_input,
-            decision=decision,
-            prompts_dir=self._prompts_dir,
-            template_name=self._prompt_template,
-        )
-        logger.debug("=> Rendered prompt length=%d chars", len(prompt_text))
+        try:
+            # Resolve credentials the SAME way every other agent does: via
+            # LlmSettingsResolver, which reads .env (LLM_TYPE/LLM_MODEL/LLM_API_KEY).
+            # Reading os.environ directly was broken -- .env is never exported to the
+            # process environment (no load_dotenv anywhere), so the key was always
+            # empty and the judge silently fell back to rule-only output.
+            judge_llm_settings = LlmSettingsResolver(ConfigLoader()).resolve()
+            # INFO so it is visible without DEBUG: confirms the judge actually
+            # reaches the LLM call and which model/provider it uses.
+            logger.info(
+                "=> [JUDGE LLM] invoking provider=%s model=%s for %d candidate(s)",
+                judge_llm_settings.provider,
+                judge_llm_settings.model,
+                len(judge_input.candidates),
+            )
 
-        # Store the prompt text as the audit transcript inside decision_trace
-        updated_trace = decision.decision_trace.model_copy(
-            update={"transcript": prompt_text}
-        )
-        decision = decision.model_copy(update={"decision_trace": updated_trace})
+            prompt_text = _render_prompt(
+                judge_input=judge_input,
+                decision=decision,
+                prompts_dir=self._prompts_dir,
+                template_name=self._prompt_template,
+            )
+            # Log the full rendered prompt at INFO so it is debuggable from the
+            # backend logs (the prompt is also persisted as the audit transcript).
+            logger.info(
+                "=> [JUDGE LLM] rendered prompt (%d chars):\n%s",
+                len(prompt_text),
+                prompt_text,
+            )
 
-        raw_response: Optional[str] = None
-        raw_response = asyncio.run(_invoke_llm_agent(prompt_text, judge_llm_settings))
+            # Store the prompt text as the audit transcript inside decision_trace
+            updated_trace = decision.decision_trace.model_copy(
+                update={"transcript": prompt_text}
+            )
+            decision = decision.model_copy(update={"decision_trace": updated_trace})
 
-        if not raw_response:
-            logger.warning("=> LLM returned empty response; using rule-only decision.")
+            # Call the LLM with a 30-second timeout to prevent pipeline hanging
+            llm_call_started = time.monotonic()
+            raw_response = asyncio.run(
+                asyncio.wait_for(
+                    _invoke_llm_agent(prompt_text, judge_llm_settings),
+                    timeout=30.0,
+                )
+            )
+            llm_elapsed_sec = time.monotonic() - llm_call_started
+
+            if not raw_response:
+                logger.warning(
+                    "=> [JUDGE LLM] empty response after %.1fs; using rule-only decision.",
+                    llm_elapsed_sec,
+                )
+                return decision
+
+            logger.info(
+                "=> [JUDGE LLM] response received in %.1fs (%d chars):\n%s",
+                llm_elapsed_sec,
+                len(raw_response),
+                raw_response,
+            )
+
+            enriched = _parse_llm_response(raw_response, decision)
+            logger.info("=> [JUDGE LLM] enrichment applied successfully.")
+            return enriched
+        except asyncio.TimeoutError:
+            # Surface the timeout explicitly -- this is the most common cause of
+            # "judge takes a huge time": a slow/unreachable LLM endpoint.
+            logger.warning(
+                "=> [JUDGE LLM] timed out after 30s; falling back to rule-only decision. "
+                "Check the LLM endpoint/credentials (.env LLM_TYPE/LLM_MODEL/LLM_API_KEY/LLM_GATEWAY_URL)."
+            )
             return decision
-
-        enriched = _parse_llm_response(raw_response, decision)
-        logger.debug("=> LLM enrichment applied successfully.")
-        return enriched
+        except Exception as exc:
+            logger.warning(
+                "=> [JUDGE LLM] enrichment failed (%s: %s); falling back to rule-only decision.",
+                type(exc).__name__,
+                exc,
+            )
+            return decision

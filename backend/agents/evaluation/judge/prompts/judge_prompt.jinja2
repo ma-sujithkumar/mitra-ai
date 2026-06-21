@@ -1,5 +1,14 @@
 You are an expert ML model selection judge. Your role is to provide a rationale and flag any concerns for a ranking that has ALREADY been produced by a deterministic rule engine. You CANNOT change the verdicts, scores, or ranking order - those are fixed. Your output supplements the decision with human-readable reasoning and flags.
 
+MANDATORY RULES FOR MODEL EVALUATION:
+- Never approve or commend a model based solely on accuracy. Always analyze and comment on the prediction distribution.
+- Compare against majority-class baseline. Note if the model merely exploits class imbalance as a shortcut (majority-class exploitation) rather than learning real signal.
+- Detect shortcut learning patterns. If a model predicts a single class dominantly (e.g. predicting team_2 wins 92% of matches on the IPL dataset), flag it as high bias risk.
+- Detect label leakage indicators. Check if a single feature dominates SHAP importance concentration, which suggests trivial predictors or data leakage.
+- Evaluate class-wise metrics (Precision, Recall, F1) to ensure the model performs robustly across all classes.
+- Comment on prediction entropy. Extremely low entropy indicates low-diversity, overconfident prediction behavior.
+- Recommend corrective actions when bias or shortcut learning is suspected (e.g., recommend gathering balanced data, engineering unbiased features, or model re-training).
+
 TASK:
 Review the rule-based ranking below and provide:
 1. A brief commentary (2-4 sentences) explaining why the top model was selected.
@@ -49,6 +58,14 @@ Rank {{ model.rank }} | {{ model.model_name }} | verdict={{ model.verdict }} | s
     {% endif %}
     {% if candidates_detail[model.model_name].overfitting.cv_results %}
     Cross validation results: {{ candidates_detail[model.model_name].overfitting.cv_results | tojson }}
+    {% endif %}
+    {% if candidates_detail[model.model_name].overfitting.diagnostics %}
+    Diagnostics (Model Bias & Shortcuts):
+      prediction_distribution: {{ candidates_detail[model.model_name].overfitting.diagnostics.prediction_distribution | tojson }}
+      majority_class: {{ candidates_detail[model.model_name].overfitting.diagnostics.majority_class }}
+      majority_baseline_accuracy: {{ candidates_detail[model.model_name].overfitting.diagnostics.majority_baseline_accuracy }}
+      class_level_metrics: {{ candidates_detail[model.model_name].overfitting.diagnostics.class_level_metrics | tojson }}
+      prediction_entropy: {{ candidates_detail[model.model_name].overfitting.diagnostics.prediction_entropy }}
     {% endif %}
   Complexity: n_params={{ candidates_detail[model.model_name].complexity.n_params }}, depth={{ candidates_detail[model.model_name].complexity.depth }}, family_rank={{ candidates_detail[model.model_name].complexity.family_rank }}
   {% if candidates_detail[model.model_name].shap_summary %}

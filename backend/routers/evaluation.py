@@ -20,6 +20,7 @@ from backend.dependencies import get_config_loader
 from backend.dependencies import get_session_manager
 from backend.services.feature_status import FeatureEngineeringStatusReader
 from backend.session import SessionManager
+from backend.orchestration.plotting import PipelinePlotGenerator
 
 
 router = APIRouter(prefix="/api/runs", tags=["evaluation"])
@@ -81,6 +82,7 @@ class EvaluationArtifactReader:
         hpt_by_model = self._index_hpt_results()
         selected_model = (judge_decision or {}).get("selected_model")
         decision_trace = (judge_decision or {}).get("decision_trace")
+        comparison_explanation = (judge_decision or {}).get("comparison_explanation")
 
         leaderboard_rows: list[dict[str, Any]] = []
         ranked_models = (judge_decision or {}).get("ranked_models") or []
@@ -95,6 +97,10 @@ class EvaluationArtifactReader:
                 "verdict": ranked_model.get("verdict"),
                 "reasons": ranked_model.get("reasons", []),
                 "llm_flags": ranked_model.get("llm_flags", []),
+                # Governance-dashboard fields (structured Judge findings + decision).
+                "decision": ranked_model.get("decision"),
+                "findings": ranked_model.get("findings", []),
+                "ranking_explanation": ranked_model.get("ranking_explanation"),
                 "validation_score": training_record.get("validation_score"),
                 "metrics": training_record.get("metrics", {}),
                 "overfitting": overfitting_by_model.get(model_name),
@@ -116,6 +122,7 @@ class EvaluationArtifactReader:
             "status": status,
             "selected_model": selected_model,
             "decision_trace": decision_trace,
+            "comparison_explanation": comparison_explanation,
             "models": leaderboard_rows,
         }
 
@@ -393,6 +400,10 @@ class EvaluationArtifactReader:
                 "verdict": "pending",
                 "reasons": [],
                 "llm_flags": [],
+                # Judge has not run yet => no structured findings/decision yet.
+                "decision": "PENDING",
+                "findings": [],
+                "ranking_explanation": None,
                 "validation_score": training_record.get("validation_score"),
                 "metrics": training_record.get("metrics", {}),
                 "overfitting": overfitting_by_model.get(model_name),
@@ -586,3 +597,25 @@ def download_model(
         filename=model_path.name,
         media_type="application/octet-stream",
     )
+
+
+@router.post("/{session_id}/plots/generate")
+def generate_plots(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Trigger plot generation for the given session ID."""
+    session_dir = session_manager.get_session_path(session_id=session_id)
+    if not session_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Unknown session '{session_id}'.")
+    try:
+        plot_generator = PipelinePlotGenerator(session_dir=session_dir)
+        results = plot_generator.generate_all()
+        return {
+            "status": "success",
+            "message": "Visualizations generated successfully",
+            "results": results,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

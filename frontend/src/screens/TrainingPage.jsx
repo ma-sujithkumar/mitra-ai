@@ -130,10 +130,6 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
     return () => { cancelled = true; };
   }, [sessionId]);
 
-  if (!verdictData || verdictData.status !== 'complete') {
-    return null;
-  }
-
   const decisionTrace = verdictData?.decision_trace || null;
   const llmCommentary = decisionTrace?.llm_commentary || null;
   const ruleOutcomes = decisionTrace?.rule_outcomes || {};
@@ -158,6 +154,42 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
   }, [modelConfigData]);
 
   const hasLeftContent = Boolean(shapData || analyticsPlots.length > 0);
+
+  // While post-training evaluation + judge are still running, the verdict endpoint
+  // returns status:"pending". Render a live progress placeholder (instead of a blank
+  // screen) so the user always sees evaluation is in flight -- this stage can take
+  // several minutes. All hooks above run unconditionally so this early return is
+  // hook-order safe.
+  if (verdictData?.status !== 'complete') {
+    return (
+      <section className="screen-stack">
+        {analyticsError ? (
+          <div className="inline-banner inline-banner-error" role="alert" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Icons.alert size={16} />
+            <span>{analyticsError}</span>
+          </div>
+        ) : null}
+        <section className="card panel-section reasoning-panel">
+          <div className="agent-reasoning-header">
+            {judgeAgent ? <AgentAvatar agent={judgeAgent} size={30} state="idle" /> : null}
+            <div>
+              <p className="section-kicker">Judge</p>
+              <h2>Agent Reasoning</h2>
+            </div>
+          </div>
+          <div style={{ padding: '15px 0', display: 'flex', flexDirection: 'column', gap: 16 }} aria-live="polite">
+            <EvaluationProgressSteps stageStatuses={stageStatuses} />
+            <div className="progress-bar indeterminate" role="progressbar" aria-label="Evaluating trained candidates">
+              <span />
+            </div>
+            <p className="muted" style={{ textAlign: 'center', fontSize: '0.82rem', margin: 0 }}>
+              Evaluating trained candidates against complexity and accuracy constraints...
+            </p>
+          </div>
+        </section>
+      </section>
+    );
+  }
 
   return (
     <section className="screen-stack">
@@ -403,6 +435,20 @@ function EvaluationLogs({ logs }) {
               }}
             >
               <span>{formatTime(entry.ts)}</span>
+              {entry.stage ? (
+                <span
+                  className="mono"
+                  style={{
+                    textTransform: 'uppercase',
+                    fontSize: '0.68rem',
+                    color: 'var(--ink-muted)',
+                    margin: '0 8px',
+                    letterSpacing: '0.04em',
+                  }}
+                >
+                  {entry.stage}
+                </span>
+              ) : null}
               <strong
                 className={`level-${entry.level}`}
                 style={{
