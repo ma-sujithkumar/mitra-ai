@@ -66,28 +66,37 @@ class ConfigLoader:
     
     def load_model_config(self) -> list:
         """
-        Load model_config.json from session root
-        
+        Load model_config.json from the session. Checks reports/ first (canonical
+        write location used by the pipeline), then falls back to session root for
+        legacy or test layouts.
+
         Returns:
             list: Array of model entries with name, family, hp_space, priority
         """
-        config_path = self.session_root / "model_config.json"
-        if not config_path.exists():
-            raise FileNotFoundError(f"model_config.json not found at {config_path}")
-        
-        with open(config_path, 'r') as f:
-            return json.load(f)
+        candidates = [
+            self.session_root / "reports" / "model_config.json",
+            self.session_root / "model_config.json",
+        ]
+        for config_path in candidates:
+            if config_path.exists():
+                with open(config_path, 'r') as config_file:
+                    return json.load(config_file)
+        raise FileNotFoundError(
+            f"model_config.json not found at {self.session_root}. "
+            f"Searched: {[str(path) for path in candidates]}"
+        )
     
     def load_metadata(self) -> Dict[str, Any]:
         """
-        Load metadata from the session's single metadata.json.
+        Load metadata for the session. Prefers metadata_model_selection.json (always
+        has the canonical problem_type set by PipelinePrep), then falls back to
+        reports/metadata.json and session root metadata.json.
 
-        training_service.py normalizes reports/metadata.json in place so its
-        problem_type is the canonical 'classification'/'regression'/'unsupervised'
-        enum (raw metadata.json may originally say problem_type='supervised').
-        HPT therefore reads the same problem_type as training from one file.
+        metadata.json may still carry problem_type='supervised' if the normalization
+        step in training_service did not run before HPT was triggered.
         """
         candidates = [
+            self.session_root / "reports" / "metadata_model_selection.json",
             self.session_root / "reports" / "metadata.json",
             self.session_root / "metadata.json",
         ]
@@ -102,21 +111,45 @@ class ConfigLoader:
     
     def get_primary_metric(self, problem_type: str) -> str:
         """
-        Get primary metric based on problem type from config.ini
-        
+        Get primary metric based on problem type from config.ini.
+
+        Maps legacy/raw problem_type values (e.g. 'supervised') to canonical ones
+        before looking up the metric, so HPT does not fail when metadata.json
+        was not normalized before HPT was triggered.
+
         Args:
-            problem_type: 'classification' or 'regression'
-        
+            problem_type: problem type string (canonical or legacy)
+
         Returns:
             str: Primary metric name (e.g., 'accuracy', 'r2')
         """
-        if problem_type == 'classification':
-            return self.config.get('hpt', 'HPT_PRIMARY_METRIC_CLASSIFICATION', fallback='accuracy')
-        elif problem_type == 'regression':
-            return self.config.get('hpt', 'HPT_PRIMARY_METRIC_REGRESSION', fallback='r2')
-        else:
+        # Normalize legacy values that metadata.json may still carry.
+        legacy_to_canonical = {
+            "supervised": "classification",
+            "unsupervised": "unsupervised",
+        }
+        canonical_type = legacy_to_canonical.get(problem_type, problem_type)
+
+        metric_map = {
+            "classification": self.config.get('hpt', 'HPT_PRIMARY_METRIC_CLASSIFICATION', fallback='accuracy'),
+            "regression": self.config.get('hpt', 'HPT_PRIMARY_METRIC_REGRESSION', fallback='r2'),
+        }
+        if canonical_type not in metric_map:
             raise ValueError(f"Unsupported problem_type: {problem_type}")
+        return metric_map[canonical_type]
     
+    def load_default_hp_spaces(self) -> Dict[str, Any]:
+        """
+        Load the built-in default hyperparameter search spaces keyed by model name.
+        Used when model_config.json carries an empty hp_space (which is always the
+        case for models produced by the model-selection agent).
+        """
+        default_path = Path(__file__).parent / "default_hp_spaces.json"
+        if not default_path.exists():
+            return {}
+        with open(default_path, 'r') as default_file:
+            return json.load(default_file)
+
     def get_workspace_root(self) -> Path:
         """Get the workspace root directory for this session"""
         return self.session_root

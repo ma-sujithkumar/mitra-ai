@@ -481,10 +481,12 @@ def get_leaderboard(
 def run_hpt_endpoint(
     session_id: str,
     request: Request,
+    top_n: int = Query(default=3, ge=1, le=10),
+    num_trials: int = Query(default=5, ge=1, le=50),
 ) -> dict[str, str]:
     from backend.services.dependencies import get_training_service
     training_service = get_training_service(request)
-    training_service.run_hpt(session_id)
+    training_service.run_hpt(session_id, top_n=top_n, num_trials=num_trials)
     return {"session_id": session_id, "status": "running"}
 
 

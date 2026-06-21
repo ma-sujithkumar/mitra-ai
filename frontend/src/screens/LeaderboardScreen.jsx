@@ -178,6 +178,10 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
   const [hptTotalTrials, setHptTotalTrials] = useState(5);
   const [hptBestScore, setHptBestScore] = useState(null);
   const [hptError, setHptError] = useState(null);
+  // User-configurable HPT run parameters. topN defaults to 3 per product
+  // requirement; numTrials mirrors the backend default of 5.
+  const [hptTopN, setHptTopN] = useState(3);
+  const [hptNumTrials, setHptNumTrials] = useState(5);
 
 
   // Main page poll (bounded): fetches leaderboard + SHAP + verdict + tokens as
@@ -319,8 +323,12 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
       setHptMessage('Starting Optuna hyperparameter tuning...');
       setHptLogs([]);
       setHptTrialNum(0);
+      setHptTotalTrials(hptNumTrials);
       setHptBestScore(null);
-      await runHpt(activeSessionId);
+      // Clear prior results so a re-tune with different top-N/trials doesn't
+      // show stale cards from the previous run while the new one is in flight.
+      setHptData(null);
+      await runHpt(activeSessionId, { topN: hptTopN, numTrials: hptNumTrials });
     } catch (err) {
       console.error(err);
       setHptStatus('failed');
@@ -457,6 +465,204 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
           </button>
         </div>
       </section>
+
+      {/* Hyperparameter Tuning Section — moved above the leaderboard table so
+          the user sees and can configure it first. */}
+      {usingLive && activeSessionId && (
+        <section className="card panel-section" style={{ borderLeft: '4px solid #ec4899', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+              <div className="stage-card-icon" style={{ background: 'rgba(236, 72, 153, 0.15)', color: 'var(--hpt)', width: 36, height: 36, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Icons.cpu size={20} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.15rem' }}>Hyperparameter Tuning (Optuna HPT)</h3>
+                <p className="muted" style={{ margin: '4px 0 0 0', fontSize: '0.85rem' }}>
+                  {hptStatus === 'idle' && `Run Optuna HPT on the top-${hptTopN} Judge-selected model(s) (${hptNumTrials} trials each). Results appear in leaderboard.`}
+                  {hptStatus === 'running' && (hptMessage || `Tuning top-${hptTopN} model(s) (${hptNumTrials} Optuna trials each)...`)}
+                  {hptStatus === 'complete' && "HPT completed. Best hyperparameters and score are now in the leaderboard winner row."}
+                  {hptStatus === 'failed' && (hptError || "Hyperparameter tuning execution failed.")}
+                </p>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+              {/* Controls stay visible (and editable) after completion too, so the
+                  user can change top-N / trials and re-tune without losing context. */}
+              {hptStatus !== 'running' && (
+                <>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.72rem', color: 'var(--ink-muted)' }}>
+                    Top models
+                    <select
+                      className="input"
+                      style={{ minWidth: 84, minHeight: 32, padding: '4px 8px' }}
+                      value={hptTopN}
+                      onChange={(event) => setHptTopN(Number(event.target.value))}
+                    >
+                      {[1, 2, 3, 5, 10].map((count) => (
+                        <option key={count} value={count}>{count}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.72rem', color: 'var(--ink-muted)' }}>
+                    Trials per model
+                    <input
+                      type="number"
+                      className="input"
+                      style={{ width: 76, minHeight: 32, padding: '4px 8px' }}
+                      min={1}
+                      max={50}
+                      value={hptNumTrials}
+                      onChange={(event) => {
+                        const parsed = Number(event.target.value);
+                        setHptNumTrials(Number.isFinite(parsed) ? Math.min(50, Math.max(1, parsed)) : 5);
+                      }}
+                    />
+                  </label>
+                </>
+              )}
+              {hptStatus === 'idle' && (
+                <button className="btn btn-primary" onClick={handleRunHpt} style={{ background: '#ec4899', borderColor: '#ec4899' }} type="button">
+                  <Icons.spark size={15} /> Tune Hyperparameters
+                </button>
+              )}
+              {hptStatus === 'running' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div className="spinner small" />
+                  <span className="mono" style={{ fontSize: '0.85rem', color: 'var(--hpt)', fontWeight: 600 }}>{hptProgress}%</span>
+                </div>
+              )}
+              {hptStatus === 'complete' && (
+                <>
+                  <span className="pill pill-done" style={{ background: 'rgba(236, 72, 153, 0.15)', color: 'var(--hpt)', border: '1px solid rgba(236, 72, 153, 0.3)', fontWeight: 600 }}>
+                    Tuned
+                  </span>
+                  <button className="btn btn-secondary" onClick={handleRunHpt} type="button">
+                    <Icons.spark size={15} /> Re-tune
+                  </button>
+                </>
+              )}
+              {hptStatus === 'failed' && (
+                <button className="btn btn-secondary" onClick={handleRunHpt} type="button">
+                  Retry Tuning
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Live progress bar & trial stats - visible while HPT is running */}
+          {hptStatus === 'running' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', color: 'var(--ink-muted)', fontWeight: 500 }}>
+                <div>
+                  Trial <span className="mono" style={{ color: 'var(--hpt)', fontWeight: 700 }}>{hptTrialNum}</span> / {hptTotalTrials}
+                </div>
+                {hptBestScore !== null && (
+                  <div>
+                    Best Score: <span className="mono" style={{ color: '#be185d', fontWeight: 700 }}>{formatNumber(hptBestScore, 4)}</span>
+                  </div>
+                )}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
+                <span className="muted mono" style={{ maxWidth: '80%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {hptMessage || 'Initialising Optuna study...'}
+                </span>
+                <strong className="mono" style={{ color: 'var(--hpt)' }}>{hptProgress}%</strong>
+              </div>
+              <div
+                style={{ height: 6, background: 'var(--line-soft)', borderRadius: 3, overflow: 'hidden' }}
+                role="progressbar"
+                aria-valuenow={Math.round(hptProgress)}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label="Hyperparameter tuning progress"
+              >
+                <div style={{ width: `${hptProgress}%`, height: '100%', background: 'linear-gradient(90deg, var(--hpt) 0%, #ec4899 100%)', borderRadius: 3, transition: 'width 0.4s ease' }} />
+              </div>
+            </div>
+          )}
+
+          {/* Scrollable event log viewer */}
+          {hptLogs && hptLogs.length > 0 && (
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <p className="section-kicker" style={{ marginBottom: 0, fontSize: '0.75rem' }}>Optuna Trial Events Stream</p>
+              <div
+                className="terminal-body"
+                style={{
+                  height: 140,
+                  overflowY: 'auto',
+                  background: 'rgba(0,0,0,0.3)',
+                  border: '1px solid rgba(255,255,255,0.05)',
+                  borderRadius: 6,
+                  padding: 10,
+                  fontSize: '0.75rem',
+                  lineHeight: '1.4',
+                  fontFamily: 'monospace'
+                }}
+                ref={(el) => {
+                  if (el) {
+                    el.scrollTop = el.scrollHeight;
+                  }
+                }}
+              >
+                {hptLogs.map((log, index) => (
+                  <div key={index} style={{ color: 'var(--ink-muted)', marginBottom: 4, display: 'flex', gap: 8 }}>
+                    <span style={{ color: 'var(--ink-faint)' }}>{formatTime(log.ts)}</span>
+                    <span style={{ color: 'var(--hpt)', fontWeight: 600 }}>[HPT]</span>
+                    <span style={{ whiteSpace: 'pre-wrap' }}>{log.message}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {hptData && hptData.length > 0 && (
+            <div className="hpt-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 15 }}>
+              {hptData.map((model) => (
+                <div className="hpt-card" key={model.name} style={{
+                  background: 'rgba(255, 255, 255, 0.02)',
+                  border: '1px solid rgba(255, 255, 255, 0.06)',
+                  borderRadius: 8,
+                  padding: 16,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h4 style={{ margin: 0, fontSize: '0.975rem' }}>{model.name}</h4>
+                    <span className="mono text-xs muted">{model.n_trials} trials</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 12, fontSize: '0.8rem', color: 'var(--ink-muted)' }}>
+                    <div>Tuning time: <span className="mono">{model.tuning_time_seconds ? model.tuning_time_seconds.toFixed(1) : 'N/A'}s</span></div>
+                    <div>Best trial: <span className="mono">#{model.best_trial_number}</span></div>
+                  </div>
+                  <div style={{ marginTop: 4 }}>
+                    <p className="section-kicker" style={{ marginBottom: 4, fontSize: '0.675rem' }}>Best Hyperparameters</p>
+                    <div style={{
+                      background: 'rgba(0,0,0,0.2)',
+                      padding: 8,
+                      borderRadius: 4,
+                      maxHeight: 100,
+                      overflowY: 'auto'
+                    }}>
+                      <pre className="mono" style={{ margin: 0, fontSize: '0.75rem', whiteSpace: 'pre-wrap', color: 'var(--ink-muted)' }}>
+                        {JSON.stringify(model.best_hyperparameters, null, 2)}
+                      </pre>
+                    </div>
+                  </div>
+                  {model.val_metrics ? (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: '0.8rem' }}>
+                      <span>Validation Score:</span>
+                      <strong className="mono" style={{ color: 'var(--hpt)' }}>
+                        {Object.entries(model.val_metrics).map(([metric, val]) => `${metric}=${val.toFixed(4)}`).join(', ')}
+                      </strong>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Empty state: a real run that has produced no ranked models yet. Shown
           instead of fabricated prototype rows so users aren't misled. */}
@@ -634,164 +840,6 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
           </div>
         </section>
       ) : null}
-
-      {/* Hyperparameter Tuning Section */}
-      {usingLive && activeSessionId && (
-        <section className="card panel-section" style={{ borderLeft: '4px solid #ec4899', display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-              <div className="stage-card-icon" style={{ background: 'rgba(236, 72, 153, 0.15)', color: 'var(--hpt)', width: 36, height: 36, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <Icons.cpu size={20} />
-              </div>
-              <div>
-                <h3 style={{ margin: 0, fontSize: '1.15rem' }}>Hyperparameter Tuning (Optuna HPT)</h3>
-                <p className="muted" style={{ margin: '4px 0 0 0', fontSize: '0.85rem' }}>
-                  {hptStatus === 'idle' && "Run Optuna HPT on the top-1 Judge-selected model (5 trials). Results appear in leaderboard."}
-                  {hptStatus === 'running' && (hptMessage || "Tuning the top-1 model (5 Optuna trials)...")}
-                  {hptStatus === 'complete' && "HPT completed. Best hyperparameters and score are now in the leaderboard winner row."}
-                  {hptStatus === 'failed' && (hptError || "Hyperparameter tuning execution failed.")}
-                </p>
-              </div>
-            </div>
-            <div>
-              {hptStatus === 'idle' && (
-                <button className="btn btn-primary" onClick={handleRunHpt} style={{ background: '#ec4899', borderColor: '#ec4899' }} type="button">
-                  <Icons.spark size={15} /> Tune Hyperparameters
-                </button>
-              )}
-              {hptStatus === 'running' && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div className="spinner small" />
-                  <span className="mono" style={{ fontSize: '0.85rem', color: 'var(--hpt)', fontWeight: 600 }}>{hptProgress}%</span>
-                </div>
-              )}
-              {hptStatus === 'complete' && (
-                <span className="pill pill-done" style={{ background: 'rgba(236, 72, 153, 0.15)', color: 'var(--hpt)', border: '1px solid rgba(236, 72, 153, 0.3)', fontWeight: 600 }}>
-                  Tuned
-                </span>
-              )}
-              {hptStatus === 'failed' && (
-                <button className="btn btn-secondary" onClick={handleRunHpt} type="button">
-                  Retry Tuning
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Live progress bar & trial stats - visible while HPT is running */}
-          {hptStatus === 'running' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', color: 'var(--ink-muted)', fontWeight: 500 }}>
-                <div>
-                  Trial <span className="mono" style={{ color: 'var(--hpt)', fontWeight: 700 }}>{hptTrialNum}</span> / {hptTotalTrials}
-                </div>
-                {hptBestScore !== null && (
-                  <div>
-                    Best Score: <span className="mono" style={{ color: '#be185d', fontWeight: 700 }}>{formatNumber(hptBestScore, 4)}</span>
-                  </div>
-                )}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
-                <span className="muted mono" style={{ maxWidth: '80%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {hptMessage || 'Initialising Optuna study...'}
-                </span>
-                <strong className="mono" style={{ color: 'var(--hpt)' }}>{hptProgress}%</strong>
-              </div>
-              <div
-                style={{ height: 6, background: 'var(--line-soft)', borderRadius: 3, overflow: 'hidden' }}
-                role="progressbar"
-                aria-valuenow={Math.round(hptProgress)}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-label="Hyperparameter tuning progress"
-              >
-                <div style={{ width: `${hptProgress}%`, height: '100%', background: 'linear-gradient(90deg, var(--hpt) 0%, #ec4899 100%)', borderRadius: 3, transition: 'width 0.4s ease' }} />
-              </div>
-            </div>
-          )}
-
-          {/* Scrollable event log viewer */}
-          {hptLogs && hptLogs.length > 0 && (
-            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <p className="section-kicker" style={{ marginBottom: 0, fontSize: '0.75rem' }}>Optuna Trial Events Stream</p>
-              <div 
-                className="terminal-body" 
-                style={{ 
-                  height: 140, 
-                  overflowY: 'auto', 
-                  background: 'rgba(0,0,0,0.3)', 
-                  border: '1px solid rgba(255,255,255,0.05)', 
-                  borderRadius: 6, 
-                  padding: 10,
-                  fontSize: '0.75rem',
-                  lineHeight: '1.4',
-                  fontFamily: 'monospace'
-                }}
-                ref={(el) => {
-                  if (el) {
-                    el.scrollTop = el.scrollHeight;
-                  }
-                }}
-              >
-                {hptLogs.map((log, index) => (
-                  <div key={index} style={{ color: 'var(--ink-muted)', marginBottom: 4, display: 'flex', gap: 8 }}>
-                    <span style={{ color: 'var(--ink-faint)' }}>{formatTime(log.ts)}</span>
-                    <span style={{ color: 'var(--hpt)', fontWeight: 600 }}>[HPT]</span>
-                    <span style={{ whiteSpace: 'pre-wrap' }}>{log.message}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {hptData && hptData.length > 0 && (
-            <div className="hpt-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 15 }}>
-              {hptData.map((model) => (
-                <div className="hpt-card" key={model.name} style={{
-                  background: 'rgba(255, 255, 255, 0.02)',
-                  border: '1px solid rgba(255, 255, 255, 0.06)',
-                  borderRadius: 8,
-                  padding: 16,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 8
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h4 style={{ margin: 0, fontSize: '0.975rem' }}>{model.name}</h4>
-                    <span className="mono text-xs muted">{model.n_trials} trials</span>
-                  </div>
-                  <div style={{ display: 'flex', gap: 12, fontSize: '0.8rem', color: 'var(--ink-muted)' }}>
-                    <div>Tuning time: <span className="mono">{model.tuning_time_seconds ? model.tuning_time_seconds.toFixed(1) : 'N/A'}s</span></div>
-                    <div>Best trial: <span className="mono">#{model.best_trial_number}</span></div>
-                  </div>
-                  <div style={{ marginTop: 4 }}>
-                    <p className="section-kicker" style={{ marginBottom: 4, fontSize: '0.675rem' }}>Best Hyperparameters</p>
-                    <div style={{
-                      background: 'rgba(0,0,0,0.2)',
-                      padding: 8,
-                      borderRadius: 4,
-                      maxHeight: 100,
-                      overflowY: 'auto'
-                    }}>
-                      <pre className="mono" style={{ margin: 0, fontSize: '0.75rem', whiteSpace: 'pre-wrap', color: 'var(--ink-muted)' }}>
-                        {JSON.stringify(model.best_hyperparameters, null, 2)}
-                      </pre>
-                    </div>
-                  </div>
-                  {model.val_metrics ? (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: '0.8rem' }}>
-                      <span>Validation Score:</span>
-                      <strong className="mono" style={{ color: 'var(--hpt)' }}>
-                        {Object.entries(model.val_metrics).map(([metric, val]) => `${metric}=${val.toFixed(4)}`).join(', ')}
-                      </strong>
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-      )}
 
       {/* Bottom row: SHAP + Judge Reasoning + Token Usage */}
       <div className="leaderboard-bottom-grid">

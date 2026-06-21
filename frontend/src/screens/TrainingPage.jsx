@@ -470,10 +470,12 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     }
   }, [runState, setRunState, state.complete]);
 
-  // Backend status poll (bounded): stops on terminal status, on completion, on
-  // manual Disconnect, and gives up after repeated non-404 errors instead of
-  // looping forever. A 404 means the session is not registered yet -> keep
-  // polling without counting it as an error.
+  // Backend status poll (bounded): stops on terminal status/completion, and
+  // gives up after repeated non-404 errors instead of looping forever. A 404
+  // means the session is not registered yet -> keep polling without counting
+  // it as an error. Like the other secondary polls (verdict/shap/overfitting/
+  // judge), this is NOT stopped by the manual "Disconnect" button -- that only
+  // closes the live SSE stream, not background status polling.
   const pollStatus = useCallback(async () => {
     try {
       const statusPayload = await fetchTrainingStatus(connectedSessionId);
@@ -492,8 +494,18 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     }
   }, [connectedSessionId, setRunState]);
 
+  // NOTE: deliberately NOT gated on connectionStatus !== 'closed'. On reconnect
+  // to an already-finished session the SSE replay can be incomplete (only the
+  // last judge-turn's events may remain in the in-memory history) and the
+  // session is often already closed server-side, so the stream flips to
+  // 'closed' within milliseconds of connecting -- before the top-level
+  // all_completed event (which sets state.complete) was ever received. Gating
+  // this disk-backed fallback on connectionStatus created a race where BOTH
+  // the SSE path and this poll could fail to ever set state.complete, leaving
+  // "Continue to leaderboard" permanently disabled. !state.complete alone is
+  // sufficient to stop polling once we have a true answer.
   useBoundedPoll(pollStatus, {
-    enabled: Boolean(connectedSessionId) && !state.complete && connectionStatus !== 'closed',
+    enabled: Boolean(connectedSessionId) && !state.complete,
     intervalMs: 1500,
     maxErrorAttempts: 8,
     stopWhen: (statusPayload) =>

@@ -1677,19 +1677,25 @@ class TrainingService:
             target_column=target_column,
         )
 
-    def run_hpt(self, session_id: str) -> None:
-        """Run HPT asynchronously in the background and publish SSE events."""
+    def run_hpt(self, session_id: str, top_n: int = 3, num_trials: int = 5) -> None:
+        """Run HPT asynchronously in the background and publish SSE events.
+
+        Args:
+            session_id: Session to tune.
+            top_n: Number of top Judge-ranked models to tune (default 3).
+            num_trials: Optuna trials per model (default 5).
+        """
         with self.lock:
             if not hasattr(self, "_active_hpt_runs"):
                 self._active_hpt_runs = set()
             if session_id in self._active_hpt_runs:
                 return
             self._active_hpt_runs.add(session_id)
-            
-        self.event_bus.reset_session(session_id, clear_history=False)
-        self.worker_pool.submit(self._execute_hpt, session_id)
 
-    def _execute_hpt(self, session_id: str) -> None:
+        self.event_bus.reset_session(session_id, clear_history=False)
+        self.worker_pool.submit(self._execute_hpt, session_id, top_n, num_trials)
+
+    def _execute_hpt(self, session_id: str, top_n: int = 3, num_trials: int = 5) -> None:
         try:
             self.event_bus.emit(
                 TrainingEvent(
@@ -1697,35 +1703,34 @@ class TrainingService:
                     stage="hpt",
                     level="info",
                     status="running",
-                    msg="[HPT TUNING] Starting hyperparameter optimization for the top-1 model selected by Judge Agent...",
+                    msg=f"[HPT TUNING] Starting hyperparameter optimization for the top-{top_n} model(s) selected by Judge Agent...",
                     pct=10,
                 )
             )
             session_path = self.session_manager.get_session_path(session_id=session_id)
-            
-            # 1. Read top 5 model names from judge_decision.json
+
+            # 1. Read top-N model names from judge_decision.json
             judge_decision_path = session_path / "reports" / "judge_decision.json"
             top_model_names = []
             if judge_decision_path.is_file():
                 try:
                     decision_data = json.loads(judge_decision_path.read_text(encoding="utf-8"))
                     ranked = decision_data.get("ranked_models") or []
-                    # Only tune the single top-ranked model (rank 1) per user requirement
-                    top_model_names = [m.get("model_name") for m in ranked if m.get("model_name")][:1]
+                    top_model_names = [m.get("model_name") for m in ranked if m.get("model_name")][:top_n]
                 except Exception as exc:
                     logger.warning("=> failed to load judge_decision for HPT filtering: %s", exc)
-            
+
             # If no judge decision, read from model_config.json
             if not top_model_names:
                 try:
                     model_config_path = session_path / "model_config.json"
                     if model_config_path.is_file():
                         model_config = json.loads(model_config_path.read_text(encoding="utf-8"))
-                        # Fallback: pick only the first model when judge hasn't run yet
-                        top_model_names = [m.get("name") for m in model_config if m.get("name")][:1]
+                        # Fallback: pick the first top_n models when judge hasn't run yet
+                        top_model_names = [m.get("name") for m in model_config if m.get("name")][:top_n]
                 except Exception:
                     pass
-            
+
             if not top_model_names:
                 self.event_bus.emit(
                     TrainingEvent(
@@ -1745,7 +1750,7 @@ class TrainingService:
                     stage="hpt",
                     level="info",
                     status="running",
-                    msg=f"[HPT TUNING] Tuning top-1 model: {top_model_names[0]}",
+                    msg=f"[HPT TUNING] Tuning top-{len(top_model_names)} model(s): {', '.join(top_model_names)}",
                     pct=20,
                 )
             )
@@ -1756,13 +1761,12 @@ class TrainingService:
                 session_id=session_id,
                 verbose=True,
             )
-            
-            # Restrict to top-1 model only; still run 5 Optuna trials for that model
+
+            # Restrict to the top-N Judge-ranked models; run num_trials Optuna trials each.
             hpt_agent.model_config = [m for m in hpt_agent.model_config if m.get("name") in top_model_names]
             hpt_agent.model_config_sorted = sorted(hpt_agent.model_config, key=lambda x: x.get('priority', 999))
-            
-            # 5 Optuna trials for the single top-1 model
-            hpt_agent.hpt_config['MAX_HPT_TRIALS'] = 5
+
+            hpt_agent.hpt_config['MAX_HPT_TRIALS'] = num_trials
             
             # Setup data splits
             X, y, metadata = hpt_agent.data_loader.load_train_data()
@@ -1776,7 +1780,7 @@ class TrainingService:
             # Define Optuna trial callback to emit live status/progress and logs
             def optuna_trial_callback(study, trial) -> None:
                 trial_num = trial.number + 1
-                max_trials = 5
+                max_trials = num_trials
                 val_score = trial.value
                 try:
                     best_score = study.best_value
@@ -1823,7 +1827,7 @@ class TrainingService:
                         stage="hpt",
                         level="info",
                         status="running",
-                        msg=f"[HPT TUNING] Tuning model {idx}/{total_models}: {model_name} (5 Optuna trials)...",
+                        msg=f"[HPT TUNING] Tuning model {idx}/{total_models}: {model_name} ({num_trials} Optuna trials)...",
                         pct=pct,
                     )
                 )
@@ -1851,26 +1855,37 @@ class TrainingService:
                 json.dumps({"hpt_results": enriched_results}, indent=2), encoding="utf-8"
             )
             
-            # Determine best score from the top-1 tuned result
-            best_score = None
-            if enriched_results:
-                val_metrics = enriched_results[0].get("val_metrics") or {}
-                best_score = (
-                    val_metrics.get("accuracy")
+            # Determine the best-scoring model across all tuned results (not just
+            # the first one — with top_n > 1 multiple models may have been tuned).
+            def _result_score(res: dict) -> float:
+                val_metrics = res.get("val_metrics") or {}
+                value = (
+                    val_metrics.get(hpt_agent.primary_metric)
+                    or val_metrics.get("accuracy")
                     or val_metrics.get("r2")
                     or val_metrics.get("f1")
                     or next(iter(val_metrics.values()), None)
                 )
-            
-            top1_model_name = top_model_names[0] if top_model_names else "top-1 model"
-            best_score_str = f" | Best {hpt_agent.primary_metric}: {best_score:.4f}" if best_score is not None else ""
+                return value if value is not None else float("-inf")
+
+            best_result = max(enriched_results, key=_result_score, default=None)
+            best_score = _result_score(best_result) if best_result else None
+            best_score = best_score if best_score != float("-inf") else None
+            best_model_name = best_result.get("name") if best_result else None
+
+            tuned_names = ", ".join(top_model_names) if top_model_names else "model(s)"
+            best_score_str = (
+                f" | Best {hpt_agent.primary_metric} ({best_model_name}): {best_score:.4f}"
+                if best_score is not None
+                else ""
+            )
             self.event_bus.emit(
                 TrainingEvent(
                     session_id=session_id,
                     stage="hpt",
                     level="info",
                     status="all_completed",
-                    msg=f"[HPT TUNING] Hyperparameter tuning completed for {top1_model_name}.{best_score_str} Best params stored in leaderboard.",
+                    msg=f"[HPT TUNING] Hyperparameter tuning completed for {len(enriched_results)} model(s) ({tuned_names}).{best_score_str} Best params stored in leaderboard.",
                     pct=100,
                 )
             )

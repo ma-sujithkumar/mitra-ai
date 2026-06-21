@@ -59,9 +59,9 @@ class ResultWriter:
         
         # Atomic rename
         os.replace(self.temp_path, self.output_path)
-        
-        self.logger.info(f"Results written to {self.output_path}")
-        self.logger.info(f"Total models tuned: {len(results)}")
+
+        logger.info(f"Results written to {self.output_path}")
+        logger.info(f"Total models tuned: {len(results)}")
         
         # Create a simplified version for quick viewing
         self._write_summary(results, summary)

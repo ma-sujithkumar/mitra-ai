@@ -2,34 +2,25 @@
 Data loading and validation for Hyperparameter Tuning Agent
 Creates DataBundle from CSV files
 """
-import pandas as pd
-import numpy as np
+import logging
+import sys
 from pathlib import Path
 from typing import Tuple, Dict, Any
-from sklearn.model_selection import StratifiedKFold, KFold, train_test_split
-import json
-import logging
 
-# Import MLKit components (will be available when project is set up)
-try:
-    from model_library.core.data_bundle import DataBundle, CommonData
-except ImportError:
-    # Fallback for development - define placeholder
-    class DataBundle:
-        def __init__(self, X_train, y_train, X_val, y_val):
-            self.X_train = X_train
-            self.y_train = y_train
-            self.X_val = X_val
-            self.y_val = y_val
-            self.train = CommonData(X_train, y_train)
-            self.val = CommonData(X_val, y_val)
-    
-    class CommonData:
-        def __init__(self, X, y):
-            self.X = X
-            self.y = y
-            self.data = X if isinstance(X, pd.DataFrame) else None
-            self.label = y if isinstance(y, pd.Series) else None
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import StratifiedKFold, KFold, train_test_split
+
+# Bootstrap model_library onto sys.path before importing from it.
+# hpt -> evaluation -> agents -> backend -> repo root -> model_library
+# Must run here (not rely on agent.py doing it first): agent.py imports this
+# module before it bootstraps sys.path, so without this the import below
+# fails and silently falls back to an incompatible shape if caught broadly.
+_MODEL_LIBRARY_ROOT = str(Path(__file__).resolve().parents[4] / "model_library")
+if _MODEL_LIBRARY_ROOT not in sys.path:
+    sys.path.insert(0, _MODEL_LIBRARY_ROOT)
+
+from model_library.core.data_bundle import DataBundle, CommonData
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +46,35 @@ class DataLoader:
         self.test_path = self.session_root / "data/test.csv"  # HIDDEN during HPT
         self.metadata_path = self.session_root / "metadata.json"
     
+    def _resolve_target_col(self, csv_path: str) -> str:
+        """
+        Resolve the target column name from metadata, trying multiple field names.
+        metadata_model_selection.json uses 'output_cols' while older metadata uses
+        'target_col' or 'target_column'.
+        """
+        output_cols = self.metadata.get('output_cols') or []
+        target_col = (
+            self.metadata.get('target_col')
+            or self.metadata.get('target_column')
+            or (output_cols[0] if output_cols else None)
+        )
+        if not target_col:
+            raise ValueError(
+                f"Cannot determine target column from metadata for {csv_path}: "
+                "no target_col, target_column, or output_cols field found."
+            )
+        return target_col
+
     def load_train_data(self) -> Tuple[pd.DataFrame, pd.Series, Dict[str, Any]]:
         """
         Load training data and separate features/target
-        
+
         Returns:
             Tuple of (X, y, metadata)
         """
         df = pd.read_csv(self.train_path)
-        target_col = self.metadata['target_col']
-        
+        target_col = self._resolve_target_col(str(self.train_path))
+
         if target_col not in df.columns:
             raise ValueError(f"Target column '{target_col}' not found in train.csv")
         
@@ -163,8 +173,8 @@ class DataLoader:
             Tuple of (X_test, y_test)
         """
         df = pd.read_csv(self.test_path)
-        target_col = self.metadata['target_col']
-        
+        target_col = self._resolve_target_col(str(self.test_path))
+
         if target_col not in df.columns:
             raise ValueError(f"Target column '{target_col}' not found in test.csv")
         

@@ -188,8 +188,9 @@ export async function fetchHpt(sessionId) {
   return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/hpt`);
 }
 
-export async function runHpt(sessionId) {
-  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/hpt/run`, {
+export async function runHpt(sessionId, { topN = 3, numTrials = 5 } = {}) {
+  const params = new URLSearchParams({ top_n: String(topN), num_trials: String(numTrials) });
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/hpt/run?${params.toString()}`, {
     method: 'POST',
   });
 }

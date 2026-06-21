@@ -2,6 +2,7 @@
 Main Hyperparameter Tuning Agent
 Orchestrates the entire hyperparameter tuning process
 """
+import dataclasses
 import json
 import os
 import sys
@@ -61,8 +62,12 @@ class HyperparameterTuningAgent:
         # Load session artifacts
         self.metadata = self.config_loader.load_metadata()
         self.model_config = self.config_loader.load_model_config()
-        self.model_config_sorted = sorted(self.model_config, 
-                                         key=lambda x: x.get('priority', 999))
+        # The model-selection agent always writes hp_space={} — fill in defaults so
+        # Optuna has a search space to work with.
+        self._default_hp_spaces = self.config_loader.load_default_hp_spaces()
+        self._fill_default_hp_spaces(self.model_config)
+        self.model_config_sorted = sorted(self.model_config,
+                                          key=lambda x: x.get('priority', 999))
         
         # Initialize data loader
         self.data_loader = DataLoader(session_id, self.config_loader)
@@ -119,7 +124,38 @@ class HyperparameterTuningAgent:
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
-    
+
+    def _fill_default_hp_spaces(self, model_config: List[Dict[str, Any]]) -> None:
+        """
+        Fill in hp_space for any model entry whose hp_space is empty, using the
+        built-in default_hp_spaces.json registry keyed by model name.
+
+        model_config.json entries always have hp_space={} (the model-selection
+        agent never populates it), so without this every model would be skipped
+        in tune_model() and HPT would silently produce zero results.
+        """
+        for model_entry in model_config:
+            if model_entry.get('hp_space'):
+                continue
+            model_name = model_entry.get('name') or model_entry.get('model_name')
+            default_space = self._default_hp_spaces.get(model_name)
+            if default_space:
+                model_entry['hp_space'] = default_space
+                self.logger.debug(f"Filled default hp_space for {model_name}")
+            else:
+                self.logger.warning(
+                    f"No default hp_space available for {model_name}; it will be skipped during tuning."
+                )
+
+    @staticmethod
+    def _metrics_result_to_dict(metrics_result: Any) -> Dict[str, float]:
+        """Convert a model_library MetricsResult dataclass into a plain metric-name->value dict."""
+        return {
+            field_name: field_value
+            for field_name, field_value in dataclasses.asdict(metrics_result).items()
+            if isinstance(field_value, (int, float))
+        }
+
     def _create_train_fn(self, model_entry: Dict[str, Any], data_bundle: DataBundle):
         """
         Create a training function for Optuna objective
@@ -158,9 +194,18 @@ class HyperparameterTuningAgent:
                 # on X_train since test() only covers X_test).
                 y_train_pred = mlkit.model.predict(data_bundle.common.X_train)
 
-                val_metrics = compute_metrics(data_bundle.common.y_test, y_val_pred, self.problem_type)
-                train_metrics = compute_metrics(data_bundle.common.y_train, y_train_pred, self.problem_type)
-                
+                # compute_metrics returns a MetricsResult dataclass, not a dict.
+                # OptunaWrapper.objective() and the result entries below index
+                # train/val metrics with primary_metric via .get(), so convert
+                # here at the model_library boundary, dropping the None fields
+                # that don't apply to this task_type (e.g. r2 for classification).
+                val_metrics = self._metrics_result_to_dict(
+                    compute_metrics(data_bundle.common.y_test, y_val_pred, self.problem_type)
+                )
+                train_metrics = self._metrics_result_to_dict(
+                    compute_metrics(data_bundle.common.y_train, y_train_pred, self.problem_type)
+                )
+
                 return {
                     'train_metrics': train_metrics,
                     'val_metrics': val_metrics,
