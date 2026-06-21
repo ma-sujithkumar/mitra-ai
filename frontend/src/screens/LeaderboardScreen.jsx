@@ -178,6 +178,10 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
   const [hptTotalTrials, setHptTotalTrials] = useState(5);
   const [hptBestScore, setHptBestScore] = useState(null);
   const [hptError, setHptError] = useState(null);
+  // True only during the POST /hpt/run round-trip, before hptStatus flips to
+  // 'running'. Used to disable the Tune/Re-tune button and show a starting
+  // spinner without prematurely opening the SSE subscription (see handleRunHpt).
+  const [isStartingHpt, setIsStartingHpt] = useState(false);
   // User-configurable HPT run parameters. topN defaults to 3 per product
   // requirement; numTrials mirrors the backend default of 5.
   const [hptTopN, setHptTopN] = useState(3);
@@ -318,7 +322,7 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
   const handleRunHpt = async () => {
     try {
       setHptError(null);
-      setHptStatus('running');
+      setIsStartingHpt(true);
       setHptProgress(0);
       setHptMessage('Starting Optuna hyperparameter tuning...');
       setHptLogs([]);
@@ -329,6 +333,16 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
       // show stale cards from the previous run while the new one is in flight.
       setHptData(null);
       await runHpt(activeSessionId, { topN: hptTopN, numTrials: hptNumTrials });
+      // Only flip to 'running' (which triggers the SSE subscription effect)
+      // AFTER the backend confirms the run started. The backend calls
+      // event_bus.reset_session() synchronously before responding, so by now
+      // the session is guaranteed to be un-marked as closed. Flipping this
+      // earlier raced the SSE subscribe against that reset: on a re-tune the
+      // prior run had already closed the session, so a subscribe attempt that
+      // beat reset_session() got an immediate empty stream with no retry
+      // until the native EventSource's ~3s auto-reconnect -- often after the
+      // run had already finished, so the events viewer never reappeared.
+      setHptStatus('running');
     } catch (err) {
       console.error(err);
       setHptStatus('failed');
@@ -336,6 +350,8 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
       setHptMessage('Failed to start tuning process.');
       // Surface the real backend error so the user can act on it.
       setHptError(err?.message || 'Failed to start hyperparameter tuning.');
+    } finally {
+      setIsStartingHpt(false);
     }
   };
 
@@ -478,10 +494,11 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
               <div>
                 <h3 style={{ margin: 0, fontSize: '1.15rem' }}>Hyperparameter Tuning (Optuna HPT)</h3>
                 <p className="muted" style={{ margin: '4px 0 0 0', fontSize: '0.85rem' }}>
-                  {hptStatus === 'idle' && `Run Optuna HPT on the top-${hptTopN} Judge-selected model(s) (${hptNumTrials} trials each). Results appear in leaderboard.`}
-                  {hptStatus === 'running' && (hptMessage || `Tuning top-${hptTopN} model(s) (${hptNumTrials} Optuna trials each)...`)}
-                  {hptStatus === 'complete' && "HPT completed. Best hyperparameters and score are now in the leaderboard winner row."}
-                  {hptStatus === 'failed' && (hptError || "Hyperparameter tuning execution failed.")}
+                  {isStartingHpt && 'Starting Optuna hyperparameter tuning...'}
+                  {!isStartingHpt && hptStatus === 'idle' && `Run Optuna HPT on the top-${hptTopN} Judge-selected model(s) (${hptNumTrials} trials each). Results appear in leaderboard.`}
+                  {!isStartingHpt && hptStatus === 'running' && (hptMessage || `Tuning top-${hptTopN} model(s) (${hptNumTrials} Optuna trials each)...`)}
+                  {!isStartingHpt && hptStatus === 'complete' && "HPT completed. Best hyperparameters and score are now in the leaderboard winner row."}
+                  {!isStartingHpt && hptStatus === 'failed' && (hptError || "Hyperparameter tuning execution failed.")}
                 </p>
               </div>
             </div>
@@ -496,6 +513,7 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
                       className="input"
                       style={{ minWidth: 84, minHeight: 32, padding: '4px 8px' }}
                       value={hptTopN}
+                      disabled={isStartingHpt}
                       onChange={(event) => setHptTopN(Number(event.target.value))}
                     >
                       {[1, 2, 3, 5, 10].map((count) => (
@@ -512,6 +530,7 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
                       min={1}
                       max={50}
                       value={hptNumTrials}
+                      disabled={isStartingHpt}
                       onChange={(event) => {
                         const parsed = Number(event.target.value);
                         setHptNumTrials(Number.isFinite(parsed) ? Math.min(50, Math.max(1, parsed)) : 5);
@@ -520,18 +539,24 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
                   </label>
                 </>
               )}
-              {hptStatus === 'idle' && (
+              {isStartingHpt && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div className="spinner small" />
+                  <span className="mono" style={{ fontSize: '0.85rem', color: 'var(--hpt)', fontWeight: 600 }}>Starting...</span>
+                </div>
+              )}
+              {!isStartingHpt && hptStatus === 'idle' && (
                 <button className="btn btn-primary" onClick={handleRunHpt} style={{ background: '#ec4899', borderColor: '#ec4899' }} type="button">
                   <Icons.spark size={15} /> Tune Hyperparameters
                 </button>
               )}
-              {hptStatus === 'running' && (
+              {!isStartingHpt && hptStatus === 'running' && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <div className="spinner small" />
                   <span className="mono" style={{ fontSize: '0.85rem', color: 'var(--hpt)', fontWeight: 600 }}>{hptProgress}%</span>
                 </div>
               )}
-              {hptStatus === 'complete' && (
+              {!isStartingHpt && hptStatus === 'complete' && (
                 <>
                   <span className="pill pill-done" style={{ background: 'rgba(236, 72, 153, 0.15)', color: 'var(--hpt)', border: '1px solid rgba(236, 72, 153, 0.3)', fontWeight: 600 }}>
                     Tuned
@@ -541,7 +566,7 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
                   </button>
                 </>
               )}
-              {hptStatus === 'failed' && (
+              {!isStartingHpt && hptStatus === 'failed' && (
                 <button className="btn btn-secondary" onClick={handleRunHpt} type="button">
                   Retry Tuning
                 </button>
@@ -750,8 +775,9 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
                       {row.reasons[0]}
                     </small>
                   ) : null}
-                  {/* HPT best score badge shown inline on winner row */}
-                  {row.winner && row.hpt_best_score != null && (
+                  {/* HPT best score badge shown inline on any tuned row (top_n can
+                      tune more than just the winner). */}
+                  {row.hpt_best_score != null && (
                     <small className="hpt-score-badge">
                       HPT {row.hpt_primary_metric ?? 'score'}: {typeof row.hpt_best_score === 'number' ? row.hpt_best_score.toFixed(4) : row.hpt_best_score}
                     </small>
@@ -788,8 +814,9 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
             );
           })}
 
-          {/* HPT best params inline panel — only for winner row when tuned */}
-          {displayRows.filter((r) => r.winner && r.hpt_best_params && Object.keys(r.hpt_best_params).length > 0).map((row) => (
+          {/* HPT best params inline panel — one per tuned model, not just the
+              winner, since "Top models" can tune more than one. */}
+          {displayRows.filter((r) => r.hpt_best_params && Object.keys(r.hpt_best_params).length > 0).map((row) => (
             <div
               key={`hpt-params-${row.model_name || row.model}`}
               style={{

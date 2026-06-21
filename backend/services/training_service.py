@@ -1692,6 +1692,20 @@ class TrainingService:
                 return
             self._active_hpt_runs.add(session_id)
 
+        # Delete stale results from a prior tune synchronously, before this
+        # call returns. /hpt reports status="complete" purely from the
+        # existence of hpt_results.json (it has no notion of "a new run is in
+        # flight"). Without this, a re-tune's first poll tick reads the OLD
+        # file within ~0-2s of starting, immediately flips hptStatus back to
+        # 'complete' with stale data, and kills the live SSE progress view
+        # before any new trial events ever arrive.
+        session_path = self.session_manager.get_session_path(session_id=session_id)
+        hpt_eval_dir = session_path / "evaluation" / "hpt"
+        for stale_filename in ("hpt_results.json", "hpt_summary.json"):
+            stale_path = hpt_eval_dir / stale_filename
+            if stale_path.is_file():
+                stale_path.unlink()
+
         self.event_bus.reset_session(session_id, clear_history=False)
         self.worker_pool.submit(self._execute_hpt, session_id, top_n, num_trials)
 
@@ -1905,4 +1919,14 @@ class TrainingService:
             with self.lock:
                 if hasattr(self, "_active_hpt_runs"):
                     self._active_hpt_runs.discard(session_id)
-            self.event_bus.close_session(session_id)
+            # Deliberately do NOT close_session() here. The training pipeline
+            # already closed this session before HPT ever runs (HPT only starts
+            # from the Leaderboard, after training is fully done), so this call
+            # was redundant on the first tune. On every re-tune it re-closed the
+            # session right after finishing, which raced the next subscribe():
+            # reset_session() (called at the top of run_hpt) un-closes it, but
+            # if a run finished fast, this close_session() flipped it closed
+            # again before/while the frontend's SSE viewer tried to subscribe,
+            # producing an immediate empty stream with no live trial events.
+            # Leaving the session open after HPT lets every subsequent re-tune
+            # subscribe cleanly.
