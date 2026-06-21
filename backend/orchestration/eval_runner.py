@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Optional
 
@@ -233,6 +233,46 @@ class EvalRunner:
             self.event_bus.emit(
                 TrainingEvent(
                     session_id=self.session_id,
+                    stage="evaluation",
+                    level="info",
+                    status="running",
+                    msg="Evaluation Started",
+                    pct=10,
+                )
+            )
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_id,
+                    stage="evaluation",
+                    level="info",
+                    status="running",
+                    msg="Loading Validation Dataset",
+                    pct=20,
+                )
+            )
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_id,
+                    stage="evaluation",
+                    level="info",
+                    status="running",
+                    msg="Running Metrics",
+                    pct=30,
+                )
+            )
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_id,
+                    stage="evaluation",
+                    level="info",
+                    status="running",
+                    msg="Generating SHAP Values",
+                    pct=40,
+                )
+            )
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_id,
                     stage="shap",
                     level="info",
                     status="running",
@@ -254,6 +294,17 @@ class EvalRunner:
                 if not model_result.model_path:
                     logger.warning("=> no model_path for %s, skipping SHAP", model_result.model_name)
                     shap_dirs[model_result.model_name] = None
+                    if self.event_bus:
+                        self.event_bus.emit(
+                            TrainingEvent(
+                                session_id=self.session_id,
+                                stage="shap",
+                                level="warn",
+                                status="running",
+                                msg=f"[SHAP EXPLAINER] Skipping SHAP for model {model_result.model_name} (failed to train, no model path)",
+                                pct=10,
+                            )
+                        )
                     continue
                 future = pool.submit(
                     _run_shap_for_model,
@@ -267,14 +318,64 @@ class EvalRunner:
                 )
                 futures[future] = model_result.model_name
 
-            for future in as_completed(futures):
-                model_name = futures[future]
-                try:
-                    shap_dirs[model_name] = future.result()
-                    logger.info("=> SHAP done: model=%s", model_name)
-                except Exception as exc:
-                    logger.warning("=> SHAP failed for %s: %s", model_name, exc)
-                    shap_dirs[model_name] = None
+            # Poll for completed SHAP futures with timeout so we can emit
+            # heartbeat events every 10 seconds during long computations.
+            # Without this, the SSE stream is silent for the full SHAP duration.
+            pending_futures = set(futures.keys())
+            total_models = len(futures)
+            completed_count = 0
+            heartbeat_interval_sec = 10.0
+            while pending_futures:
+                done, pending_futures = wait(
+                    pending_futures,
+                    timeout=heartbeat_interval_sec,
+                    return_when=FIRST_COMPLETED,
+                )
+                # Emit heartbeat if nothing completed in the window
+                if not done and self.event_bus and pending_futures:
+                    still_running_names = [futures[future_key] for future_key in pending_futures]
+                    self.event_bus.emit(
+                        TrainingEvent(
+                            session_id=self.session_id,
+                            stage="shap",
+                            level="info",
+                            status="running",
+                            msg=f"[SHAP EXPLAINER] Still computing SHAP values... ({completed_count}/{total_models} done, running: {', '.join(still_running_names[:3])})",
+                            pct=10 + int(80 * (completed_count / max(1, total_models))),
+                        )
+                    )
+                for completed_future in done:
+                    model_name = futures[completed_future]
+                    completed_count += 1
+                    progress_pct = 10 + int(80 * (completed_count / max(1, total_models)))
+                    try:
+                        shap_dirs[model_name] = completed_future.result()
+                        logger.info("=> SHAP done: model=%s", model_name)
+                        if self.event_bus:
+                            self.event_bus.emit(
+                                TrainingEvent(
+                                    session_id=self.session_id,
+                                    stage="shap",
+                                    level="info",
+                                    status="running",
+                                    msg=f"[SHAP EXPLAINER] Finished SHAP value computation for model: {model_name} ({completed_count}/{total_models})",
+                                    pct=progress_pct,
+                                )
+                            )
+                    except Exception as exc:
+                        logger.warning("=> SHAP failed for %s: %s", model_name, exc)
+                        shap_dirs[model_name] = None
+                        if self.event_bus:
+                            self.event_bus.emit(
+                                TrainingEvent(
+                                    session_id=self.session_id,
+                                    stage="shap",
+                                    level="warn",
+                                    status="running",
+                                    msg=f"[SHAP EXPLAINER] SHAP analysis failed for model {model_name}: {exc}",
+                                    pct=progress_pct,
+                                )
+                            )
 
         if self.event_bus:
             self.event_bus.emit(
@@ -287,8 +388,26 @@ class EvalRunner:
                     pct=100,
                 )
             )
-
-        if self.event_bus:
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_id,
+                    stage="evaluation",
+                    level="info",
+                    status="running",
+                    msg="Computing Drift Metrics",
+                    pct=60,
+                )
+            )
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_id,
+                    stage="evaluation",
+                    level="info",
+                    status="running",
+                    msg="Computing Overfitting Gaps",
+                    pct=80,
+                )
+            )
             self.event_bus.emit(
                 TrainingEvent(
                     session_id=self.session_id,
@@ -335,6 +454,16 @@ class EvalRunner:
                     level="info",
                     status="completed",
                     msg="[OVERFITTING] Overfitting analysis completed successfully.",
+                    pct=100,
+                )
+            )
+            self.event_bus.emit(
+                TrainingEvent(
+                    session_id=self.session_id,
+                    stage="evaluation",
+                    level="info",
+                    status="completed",
+                    msg="Evaluation Completed",
                     pct=100,
                 )
             )

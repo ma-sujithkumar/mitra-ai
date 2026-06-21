@@ -24,7 +24,61 @@ const judgeAgent = AGENTS.find((agent) => agent.id === 'judge');
 const hptAgent = AGENTS.find((agent) => agent.id === 'hpt');
 const featureAgent = AGENTS.find((agent) => agent.id === 'feature');
 
-function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, isRestarting, restartError }) {
+function getEvalStepStatus(stepKey, stageStatuses) {
+  const stage = stageStatuses?.[stepKey];
+  if (!stage) return 'queued';
+  if (stage.status === 'complete') return 'done';
+  if (stage.status === 'running') return 'active';
+  if (stage.status === 'failed') return 'error';
+  return 'queued';
+}
+
+function EvaluationProgressSteps({ stageStatuses }) {
+  const steps = [
+    { key: 'shap', label: 'SHAP Explainability Analysis' },
+    { key: 'overfitting', label: 'Overfitting Analysis' },
+    { key: 'judge', label: 'Judge Agent Verdict' },
+  ];
+
+  return (
+    <div className="metadata-progress" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="metadata-steps">
+        {steps.map((step) => {
+          const status = getEvalStepStatus(step.key, stageStatuses);
+          const stageInfo = stageStatuses?.[step.key];
+          const progress = stageInfo?.progress ?? 0;
+          const msg = stageInfo?.message ?? '';
+
+          return (
+            <div key={step.key} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div className={`metadata-step ${status}`} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span className="metadata-step-icon">
+                  {status === 'done' && <Icons.checkCircle size={16} style={{ color: 'var(--ok)' }} />}
+                  {status === 'active' && <span className="spinner small" style={{ borderColor: 'var(--accent)' }} />}
+                  {status === 'error' && <Icons.alert size={16} style={{ color: 'var(--error)' }} />}
+                  {status === 'queued' && <Icons.dot size={12} />}
+                </span>
+                <span className="metadata-step-label" style={{ fontSize: '0.85rem' }}>
+                  {step.label}
+                  {status === 'active' && progress > 0 ? (
+                    <small className="mono"> {progress}%</small>
+                  ) : null}
+                </span>
+              </div>
+              {status === 'active' && msg && (
+                <p className="muted" style={{ margin: '2px 0 0 28px', fontSize: '0.78rem', fontStyle: 'italic', lineHeight: 1.25 }}>
+                  {msg}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, isRestarting, restartError, stageStatuses }) {
   const [shapData, setShapData] = useState(null);
   const [modelConfigData, setModelConfigData] = useState(null);
   const [plots, setPlots] = useState([]);
@@ -51,6 +105,10 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
     return () => { cancelled = true; };
   }, [sessionId]);
 
+  if (!verdictData || verdictData.status !== 'complete') {
+    return null;
+  }
+
   const decisionTrace = verdictData?.decision_trace || null;
   const llmCommentary = decisionTrace?.llm_commentary || null;
   const ruleOutcomes = decisionTrace?.rule_outcomes || {};
@@ -62,9 +120,9 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
     return winnerRecord?.reasons || [];
   }, [verdictData, selectedModel]);
 
-  // Plots filtered to training/hpt/overfitting stages for display here.
+  // Plots filtered to training/overfitting stages for display here.
   const analyticsPlots = plots.filter((plot) =>
-    plot.stage && /training|hpt|overfitting/.test(plot.stage)
+    plot.stage && /training|overfitting/.test(plot.stage)
   );
 
   // Model families from model_config for the chip list.
@@ -73,6 +131,8 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
     const models = modelConfigData.models || modelConfigData.candidates || [];
     return models.map((modelEntry) => modelEntry.family || modelEntry.model_name || modelEntry.name).filter(Boolean);
   }, [modelConfigData]);
+
+  const hasLeftContent = Boolean(shapData || analyticsPlots.length > 0);
 
   return (
     <section className="screen-stack">
@@ -93,47 +153,49 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
         </section>
       ) : null}
 
-      <div className="training-analytics-grid">
+      <div className="training-analytics-grid" style={hasLeftContent ? {} : { gridTemplateColumns: '1fr' }}>
         {/* Left column: SHAP + HPT plots */}
-        <div className="screen-stack">
-          {shapData ? (
-            <section className="card panel-section">
-              <div className="agent-reasoning-header">
-                {featureAgent ? <AgentAvatar agent={featureAgent} size={28} state="done" /> : null}
-                <div>
-                  <p className="section-kicker">Explainability</p>
-                  <h2>SHAP Feature Importance</h2>
-                </div>
-              </div>
-              <HBars data={shapData} />
-            </section>
-          ) : null}
-
-          {analyticsPlots.length > 0 ? (
-            <section className="card panel-section">
-              <div className="agent-reasoning-header">
-                {hptAgent ? <AgentAvatar agent={hptAgent} size={28} state="done" /> : null}
-                <div>
-                  <p className="section-kicker">Training Plots</p>
-                  <h2>HPT / Overfitting / Training</h2>
-                </div>
-              </div>
-              <div className="plot-gallery">
-                {analyticsPlots.slice(0, 6).map((plot) => (
-                  <div className="plot-card" key={plot.path}>
-                    <img
-                      alt={plot.name}
-                      className="plot-thumb"
-                      loading="lazy"
-                      src={plotUrl(sessionId, plot.path)}
-                    />
-                    <p className="plot-name muted">{plot.name.replace(/_/g, ' ')}</p>
+        {hasLeftContent && (
+          <div className="screen-stack">
+            {shapData ? (
+              <section className="card panel-section">
+                <div className="agent-reasoning-header">
+                  {featureAgent ? <AgentAvatar agent={featureAgent} size={28} state="done" /> : null}
+                  <div>
+                    <p className="section-kicker">Explainability</p>
+                    <h2>SHAP Feature Importance</h2>
                   </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-        </div>
+                </div>
+                <HBars data={shapData} />
+              </section>
+            ) : null}
+
+            {analyticsPlots.length > 0 ? (
+              <section className="card panel-section">
+                <div className="agent-reasoning-header">
+                  {judgeAgent ? <AgentAvatar agent={judgeAgent} size={28} state="done" /> : null}
+                  <div>
+                    <p className="section-kicker">Training Plots</p>
+                    <h2>Training & Overfitting</h2>
+                  </div>
+                </div>
+                <div className="plot-gallery">
+                  {analyticsPlots.slice(0, 6).map((plot) => (
+                    <div className="plot-card" key={plot.path}>
+                      <img
+                        alt={plot.name}
+                        className="plot-thumb"
+                        loading="lazy"
+                        src={plotUrl(sessionId, plot.path)}
+                      />
+                      <p className="plot-name muted">{plot.name.replace(/_/g, ' ')}</p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+          </div>
+        )}
 
         {/* Right column: Judge Reasoning -- VERY IMPORTANT: full text, not truncated */}
         <div className="screen-stack">
@@ -221,87 +283,19 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
                 </div>
               </>
             ) : (
-              <div style={{ padding: '20px 0', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-                <span className="spinner" style={{ width: '20px', height: '20px', borderWidth: '2.5px' }} />
-                <p className="muted">Judge Agent is evaluating trained candidates against complexity and accuracy constraints...</p>
+              <div style={{ padding: '15px 0', display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <EvaluationProgressSteps stageStatuses={stageStatuses} />
+                <div className="progress-bar indeterminate">
+                  <span />
+                </div>
+                <p className="muted" style={{ textAlign: 'center', fontSize: '0.82rem', margin: 0 }}>
+                  Evaluating trained candidates against complexity and accuracy constraints...
+                </p>
               </div>
             )}
           </section>
         </div>
       </div>
-    </section>
-  );
-}
-
-function HptTuningSection({ hptData, isEvaluating }) {
-  if (!isEvaluating && !hptData) return null;
-
-  return (
-    <section className="card panel-section" style={{ marginTop: 20 }}>
-      <div className="agent-reasoning-header">
-        <Icons.cpu size={28} className={isEvaluating && !hptData ? "pulse-icon" : ""} style={{ color: 'var(--color-hpt-agent, #ec4899)' }} />
-        <div>
-          <p className="section-kicker">Hyperparameter Optimization</p>
-          <h2>Optuna HPT Tuning</h2>
-        </div>
-        {isEvaluating && !hptData ? (
-          <span className="pill pill-running" style={{ marginLeft: 'auto' }}>Optimizing...</span>
-        ) : (
-          <span className="pill pill-done" style={{ marginLeft: 'auto' }}>Tuned</span>
-        )}
-      </div>
-
-      {!hptData ? (
-        <div style={{ padding: '20px 0', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-          <div className="spinner" />
-          <p className="muted">Running parallel Optuna studies to find optimal hyperparameters for all candidates...</p>
-        </div>
-      ) : (
-        <div className="hpt-grid" style={{ marginTop: 15, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 15 }}>
-          {hptData.map((model) => (
-            <div className="hpt-card" key={model.name} style={{
-              background: 'rgba(255, 255, 255, 0.03)',
-              border: '1px solid rgba(255, 255, 255, 0.08)',
-              borderRadius: 8,
-              padding: 16,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ margin: 0, fontSize: '1.1rem' }}>{model.name}</h3>
-                <span className="mono text-xs muted">{model.n_trials} trials</span>
-              </div>
-              <div style={{ display: 'flex', gap: 12, fontSize: '0.9rem', color: '#aaa' }}>
-                <div>Tuning time: <span className="mono">{model.tuning_time_seconds ? model.tuning_time_seconds.toFixed(1) : 'N/A'}s</span></div>
-                <div>Best trial: <span className="mono">#{model.best_trial_number}</span></div>
-              </div>
-              <div style={{ marginTop: 4 }}>
-                <p className="section-kicker" style={{ marginBottom: 4, fontSize: '0.75rem' }}>Best Hyperparameters</p>
-                <div style={{
-                  background: 'rgba(0,0,0,0.2)',
-                  padding: 8,
-                  borderRadius: 4,
-                  maxHeight: 100,
-                  overflowY: 'auto'
-                }}>
-                  <pre className="mono" style={{ margin: 0, fontSize: '0.8rem', whiteSpace: 'pre-wrap' }}>
-                    {JSON.stringify(model.best_hyperparameters, null, 2)}
-                  </pre>
-                </div>
-              </div>
-              {model.val_metrics ? (
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: '0.85rem' }}>
-                  <span>Validation Score:</span>
-                  <strong className="mono" style={{ color: 'var(--color-primary)' }}>
-                    {Object.entries(model.val_metrics).map(([metric, val]) => `${metric}=${val.toFixed(4)}`).join(', ')}
-                  </strong>
-                </div>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      )}
     </section>
   );
 }
@@ -321,7 +315,101 @@ function reducer(state, action) {
   return state;
 }
 
+function formatTime(timestamp) {
+  if (!timestamp) return '--:--:--';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '--:--:--';
+  return date.toLocaleTimeString([], { hour12: false });
+}
+
+function EvaluationLogs({ logs }) {
+  const logRef = useRef(null);
+  const evaluationLogs = logs.filter(
+    (entry) =>
+      entry.stage === 'evaluation' ||
+      entry.stage === 'judge' ||
+      entry.stage === 'shap' ||
+      entry.stage === 'overfitting'
+  );
+
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [evaluationLogs.length]);
+
+  let status = 'pending';
+  if (evaluationLogs.length > 0) {
+    const lastLog = evaluationLogs[evaluationLogs.length - 1];
+    if (lastLog.level === 'error' || lastLog.status === 'failed') {
+      status = 'failed';
+    } else if (
+      lastLog.status === 'completed' ||
+      lastLog.message.toLowerCase().includes('completed') ||
+      lastLog.message.toLowerCase().includes('complete')
+    ) {
+      status = 'complete';
+    } else {
+      status = 'running';
+    }
+  }
+
+  return (
+    <section className="card terminal-panel evaluation-log-panel" style={{ marginTop: 15 }}>
+      <div className="terminal-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>SSE evaluation event stream</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {status === 'running' && (
+            <span className="pill pill-running" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#3b82f6', border: '1px solid rgba(59, 130, 246, 0.3)', fontWeight: 600 }}>
+              Running
+            </span>
+          )}
+          {status === 'complete' && (
+            <span className="pill pill-done" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.3)', fontWeight: 600 }}>
+              Completed
+            </span>
+          )}
+          {status === 'failed' && (
+            <span className="pill pill-failed" style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.3)', fontWeight: 600 }}>
+              Failed
+            </span>
+          )}
+          {status === 'pending' && <span className="pill pill-queued">Pending</span>}
+        </div>
+      </div>
+      <div className="terminal-body evaluation-log-body" ref={logRef} style={{ height: 180, overflowY: 'auto' }}>
+        {evaluationLogs.length ? (
+          evaluationLogs.map((entry, index) => (
+            <div
+              className="terminal-line evaluation-log-line"
+              key={`${entry.sequence}-${index}`}
+              style={{
+                color: entry.level === 'error' ? 'var(--error)' : entry.level === 'warn' ? 'var(--warning)' : 'inherit',
+              }}
+            >
+              <span>{formatTime(entry.ts)}</span>
+              <strong
+                className={`level-${entry.level}`}
+                style={{
+                  color: entry.level === 'error' ? 'var(--error)' : entry.level === 'warn' ? 'var(--warning)' : 'var(--accent)',
+                  marginRight: 8,
+                }}
+              >
+                {entry.status}
+              </strong>
+              <em style={{ fontStyle: 'normal' }}>{entry.message}</em>
+            </div>
+          ))
+        ) : (
+          <span className="terminal-empty">awaiting evaluation pipeline events</span>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSessionId }) {
+
   const [state, dispatch] = useReducer(reducer, undefined, createTrainingState);
   const [sessionInput, setSessionInput] = useState(
     activeSessionId || window.localStorage.getItem(SESSION_STORAGE_KEY) || '',
@@ -332,7 +420,6 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
   const [selectedModelId, setSelectedModelId] = useState(null);
   const [backendStatus, setBackendStatus] = useState(null);
   const [isCancelling, setIsCancelling] = useState(false);
-  const [hptData, setHptData] = useState(null);
   const [verdictData, setVerdictData] = useState(null);
   const [isRestarting, setIsRestarting] = useState(false);
   const [restartError, setRestartError] = useState(null);
@@ -343,8 +430,10 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     shap: { status: 'pending', progress: 0, message: '' },
     overfitting: { status: 'pending', progress: 0, message: '' },
     evaluation: { status: 'pending', progress: 0, message: '' },
+    judge: { status: 'pending', progress: 0, message: '' },
     hpt: { status: 'pending', progress: 0, message: '' },
   });
+
   const sourceRef = useRef(null);
 
   const models = useMemo(() => selectTrainingModels(state), [state]);
@@ -473,34 +562,8 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     };
   }, [connectedSessionId, setRunState, state.complete]);
 
-  useEffect(() => {
-    if (!connectedSessionId) return undefined;
-    let stopped = false;
-    let timerId = null;
 
-    async function pollHpt() {
-      try {
-        const data = await fetchHpt(connectedSessionId);
-        if (stopped) return;
-        if (data?.status === 'complete' && data?.hpt_results) {
-          setHptData(data.hpt_results);
-        } else {
-          timerId = window.setTimeout(pollHpt, 2000);
-        }
-      } catch (err) {
-        if (!stopped) {
-          timerId = window.setTimeout(pollHpt, 5000);
-        }
-      }
-    }
 
-    pollHpt();
-
-    return () => {
-      stopped = true;
-      if (timerId) window.clearTimeout(timerId);
-    };
-  }, [connectedSessionId]);
 
   useEffect(() => {
     if (!connectedSessionId) {
@@ -533,6 +596,37 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     };
   }, [connectedSessionId]);
 
+  useEffect(() => {
+    if (verdictData?.status === 'complete') {
+      setStageStatuses((prev) => ({
+        ...prev,
+        shap: prev.shap.status === 'complete' ? prev.shap : { status: 'complete', progress: 100, message: 'SHAP analysis completed.' },
+        overfitting: prev.overfitting.status === 'complete' ? prev.overfitting : { status: 'complete', progress: 100, message: 'Overfitting analysis completed.' },
+        judge: prev.judge.status === 'complete' ? prev.judge : { status: 'complete', progress: 100, message: 'Verdict complete.' },
+        evaluation: prev.evaluation.status === 'complete' ? prev.evaluation : { status: 'complete', progress: 100, message: 'Evaluation completed.' },
+      }));
+    }
+  }, [verdictData]);
+
+  // Terminal-close: once the pipeline truly ends (judge verdict converged, or the
+  // run failed/cancelled) the backend closes the SSE session. Native EventSource
+  // would otherwise auto-reconnect forever against the closed session and
+  // re-replay history. Close it explicitly so the stream stops cleanly.
+  useEffect(() => {
+    const verdictDone = verdictData?.status === 'complete';
+    const runEnded = ['failed', 'cancelled'].includes(backendStatus?.status);
+    if ((verdictDone || runEnded) && sourceRef.current) {
+      sourceRef.current.close();
+      sourceRef.current = null;
+      setConnectionStatus('closed');
+      setConnectionMessage(
+        verdictDone
+          ? 'Pipeline complete. Live stream closed.'
+          : 'Run ended. Live stream closed.',
+      );
+    }
+  }, [verdictData, backendStatus]);
+
   async function handleRestartTraining() {
     if (!connectedSessionId || isRestarting) {
       return;
@@ -546,7 +640,6 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
       await resetTraining(connectedSessionId);
 
       setVerdictData(null);
-      setHptData(null);
       setBackendStatus(null);
       setSelectedModelId(null);
 
@@ -786,7 +879,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
         </section>
       ) : !isModelSelectionComplete ? (
         <section className="card empty-card training-empty" style={{ marginTop: 20 }}>
-          <Icons.spark size={34} style={{ color: 'var(--color-primary)' }} />
+          <Icons.spark size={34} style={{ color: 'var(--accent)' }} />
           <h2>Model Selection running</h2>
           <p className="muted">
             The Model Selection agent is currently matching data schemas and selecting optimal architectures...
@@ -832,13 +925,29 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
               onClearFilter={() => setSelectedModelId(null)}
               selectedModelId={selectedModelId}
             />
+            <EvaluationLogs logs={state.logs} />
+            {/* Show evaluation pipeline steps as soon as any eval stage is active */}
+            {(stageStatuses.shap.status !== 'pending' ||
+              stageStatuses.overfitting.status !== 'pending' ||
+              stageStatuses.judge.status !== 'pending') && (
+              <section className="card panel-section" style={{ padding: 15 }}>
+                <div className="section-head" style={{ marginBottom: 12 }}>
+                  <div>
+                    <p className="section-kicker">Evaluation Status</p>
+                    <h2>Pipeline Progress</h2>
+                  </div>
+                </div>
+                <EvaluationProgressSteps stageStatuses={stageStatuses} />
+              </section>
+            )}
             <TrainingSummary
               canContinue={state.complete && verdictData?.status === 'complete'}
               onContinue={() => go('leaderboard')}
               summary={state.summary}
-              judgePending={state.complete && verdictData?.status !== 'complete'}
+              judgePending={state.summary != null && verdictData?.status !== 'complete'}
             />
           </aside>
+
         </div>
       ) : (
         <section className="card empty-card training-empty" style={{ marginTop: 20 }}>
@@ -850,10 +959,8 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
         </section>
       )}
 
-      <HptTuningSection
-        hptData={hptData}
-        isEvaluating={state.complete && (connectionStatus === 'open' || connectionStatus === 'reconnecting' || connectionStatus === 'connecting')}
-      />
+
+
 
       {/* Analytics section: SHAP + Judge Reasoning + plots -- shown after training completes */}
       {state.complete && connectedSessionId ? (
@@ -863,6 +970,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
           onRestartTraining={handleRestartTraining}
           isRestarting={isRestarting}
           restartError={restartError}
+          stageStatuses={stageStatuses}
         />
       ) : null}
     </div>

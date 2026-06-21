@@ -60,6 +60,10 @@ export function createTrainingState() {
     logs: [],
     summary: null,
     complete: false,
+    // Highest event sequence applied so far. SSE reconnects re-replay the full
+    // session history with the same sequence numbers; this lets us drop events
+    // we have already applied so logs stay idempotent across reconnects.
+    lastSequence: 0,
   };
 }
 
@@ -79,22 +83,40 @@ export function applyTrainingEvent(state, event) {
     return state;
   }
 
+  // Idempotent replay handling: when the SSE stream reconnects the backend
+  // re-sends the full history with the same (monotonic) sequence numbers. Drop
+  // anything at or below the highest sequence we have already applied so logs
+  // and completion are not duplicated. Events without a usable sequence are
+  // always applied (best effort).
+  const eventSequence = Number(event.sequence);
+  const hasSequence = Number.isFinite(eventSequence) && eventSequence > 0;
+  const priorSequence = state.lastSequence || 0;
+  if (hasSequence && eventSequence <= priorSequence) {
+    return state;
+  }
+  const lastSequence = hasSequence ? eventSequence : priorSequence;
+
   const logEntry = {
     sequence: event.sequence ?? state.logs.length + 1,
     ts: event.ts || new Date().toISOString(),
     level: event.level || 'info',
     status: event.status || 'running',
+    stage: event.stage || 'training',
     modelId: event.model_id || null,
     modelName: event.model_name || null,
     message: event.msg || 'Training event',
   };
   const logs = [...state.logs, logEntry].slice(-500);
 
-  if (event.status === 'all_completed') {
+  // The training-stage all_completed event fires when all Ray model jobs finish.
+  // Update summary so TrainingSummary can show model counts while eval is running.
+  // Do NOT set complete=true yet -- that comes only from the final top-level event.
+  const isTrainingStageComplete = event.status === 'all_completed' && event.stage === 'training';
+  if (isTrainingStageComplete) {
     return {
       ...state,
       logs,
-      complete: true,
+      lastSequence,
       summary: {
         status: event.details?.summary_status || 'completed',
         total: Number(event.details?.total_models ?? state.modelOrder.length),
@@ -105,8 +127,28 @@ export function applyTrainingEvent(state, event) {
     };
   }
 
+  // Only the top-level pipeline completion (no stage) marks the session fully done
+  // and shows the analytics section. This fires after SHAP, judge, and plots.
+  const isTopLevelCompletion = event.status === 'all_completed' && !event.stage;
+  if (isTopLevelCompletion) {
+    return {
+      ...state,
+      logs,
+      lastSequence,
+      complete: true,
+      // Preserve summary if already set from training-stage event.
+      summary: state.summary || {
+        status: event.details?.summary_status || 'completed',
+        total: Number(event.details?.total_models ?? state.modelOrder.length),
+        completed: Number(event.details?.completed ?? 0),
+        failed: Number(event.details?.failed ?? 0),
+        message: event.msg || 'Pipeline completed successfully',
+      },
+    };
+  }
+
   if (!event.model_id) {
-    return { ...state, logs };
+    return { ...state, logs, lastSequence };
   }
 
   const isNew = !state.models[event.model_id];
@@ -142,6 +184,7 @@ export function applyTrainingEvent(state, event) {
   return {
     ...state,
     logs,
+    lastSequence,
     models: {
       ...state.models,
       [event.model_id]: model,

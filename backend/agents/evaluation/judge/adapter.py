@@ -58,6 +58,7 @@ class UpstreamAdapter:
             train_metrics=overfitting_json.get("train_metrics"),
             test_metrics=overfitting_json.get("test_metrics"),
             cv_results=cv_results if cv_results else None,
+            diagnostics=overfitting_json.get("diagnostics"),
         )
 
     def adapt_complexity(self, complexity_dict: Dict[str, Any]) -> ComplexityDescriptor:

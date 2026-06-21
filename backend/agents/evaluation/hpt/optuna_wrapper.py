@@ -192,7 +192,7 @@ class OptunaWrapper:
         
         return val_score
     
-    def run_optimization(self) -> Dict[str, Any]:
+    def run_optimization(self, trial_callback: Optional[Callable] = None) -> Dict[str, Any]:
         """
         Run the full optimization process
         
@@ -206,7 +206,8 @@ class OptunaWrapper:
         
         # Run optimization
         try:
-            study.optimize(self.objective, n_trials=self.n_trials)
+            callbacks = [trial_callback] if trial_callback else []
+            study.optimize(self.objective, n_trials=self.n_trials, callbacks=callbacks)
         except Exception as e:
             self.logger.error(f"Optuna optimization failed: {e}")
             return None
