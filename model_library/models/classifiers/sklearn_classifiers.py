@@ -129,13 +129,32 @@ class LinearSVCWrapper(BaseModel):
 
 
 class NuSVCWrapper(BaseModel):
+    # Fallback nu candidates tried in order when the configured nu is infeasible.
+    _nu_fallback_candidates: list = [0.3, 0.1, 0.05, 0.01]
+
     def __init__(self, config: dict) -> None:
         super().__init__(config)
 
     def train(self, data: DataBundle) -> None:
         merged_config = self._merge_hyperparameter_overrides(data)
-        self.model = NuSVC(**merged_config)
-        self.model.fit(_ensure_2d(data.common.X_train), data.common.y_train)
+        configured_nu = float(merged_config.get("nu", 0.5))
+        # Build the candidate nu list: configured value first, then fallbacks (deduplicated).
+        nu_candidates = [configured_nu] + [
+            nu_value for nu_value in self._nu_fallback_candidates
+            if nu_value != configured_nu
+        ]
+        last_error: Exception = ValueError("NuSVC: no feasible nu found")
+        for nu_value in nu_candidates:
+            try:
+                merged_config["nu"] = nu_value
+                self.model = NuSVC(**merged_config)
+                self.model.fit(_ensure_2d(data.common.X_train), data.common.y_train)
+                return
+            except ValueError as exc:
+                if "infeasible" not in str(exc).lower():
+                    raise
+                last_error = exc
+        raise last_error
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         return self.model.predict(_ensure_2d(X))

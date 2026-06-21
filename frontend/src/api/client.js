@@ -208,3 +208,15 @@ export async function generatePlots(sessionId) {
   });
 }
 
+export async function fetchShapStatus(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/evaluation/shap/status`);
+}
+
+export async function fetchOverfittingStatus(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/evaluation/overfitting/status`);
+}
+
+export async function fetchJudgeStatus(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/evaluation/judge/status`);
+}
+

@@ -9,7 +9,7 @@ import ModelTrainingCard from '../components/training/ModelTrainingCard.jsx';
 import TrainingLogs from '../components/training/TrainingLogs.jsx';
 import TrainingProgress from '../components/training/TrainingProgress.jsx';
 import TrainingSummary from '../components/training/TrainingSummary.jsx';
-import { fetchHpt, fetchModelConfig, fetchPlots, fetchShap, fetchVerdict, plotUrl, fetchFeatureEngineering } from '../api/client.js';
+import { fetchHpt, fetchModelConfig, fetchPlots, fetchShap, fetchVerdict, plotUrl, fetchFeatureEngineering, fetchShapStatus, fetchOverfittingStatus, fetchJudgeStatus } from '../api/client.js';
 import { streamTrainingEvents } from '../api/events.js';
 import { cancelTraining, fetchTrainingStatus, startTraining, resetTraining } from '../api/training.js';
 import { useBoundedPoll } from '../hooks/useBoundedPoll.js';
@@ -94,7 +94,10 @@ function EvaluationProgressSteps({ stageStatuses }) {
   );
 }
 
-function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, isRestarting, restartError, stageStatuses }) {
+// TrainingAnalyticsSection renders SHAP + plot visualizations after training completes.
+// Judge reasoning is displayed in the aside panel (not here) so it appears before
+// the Continue button.
+function TrainingAnalyticsSection({ sessionId }) {
   const [shapData, setShapData] = useState(null);
   const [modelConfigData, setModelConfigData] = useState(null);
   const [plots, setPlots] = useState([]);
@@ -119,7 +122,6 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
       setModelConfigData(config?.status === 'complete' ? config : null);
       setPlots(plotsResp?.plots || []);
     }).catch((analyticsFetchError) => {
-      // Surface the failure instead of silently rendering empty panels.
       if (!cancelled) {
         setAnalyticsError(
           analyticsFetchError?.message || 'Could not load SHAP / model-config / plots for this run.',
@@ -129,17 +131,6 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
 
     return () => { cancelled = true; };
   }, [sessionId]);
-
-  const decisionTrace = verdictData?.decision_trace || null;
-  const llmCommentary = decisionTrace?.llm_commentary || null;
-  const ruleOutcomes = decisionTrace?.rule_outcomes || {};
-  const selectedModel = verdictData?.selected_model || null;
-  const winnerReasons = useMemo(() => {
-    if (!verdictData) return [];
-    const ranked = verdictData.ranked_models || [];
-    const winnerRecord = ranked.find((model) => model.model_name === selectedModel) || ranked[0];
-    return winnerRecord?.reasons || [];
-  }, [verdictData, selectedModel]);
 
   // Plots filtered to training/overfitting stages for display here.
   const analyticsPlots = plots.filter((plot) =>
@@ -153,43 +144,9 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
     return models.map((modelEntry) => modelEntry.family || modelEntry.model_name || modelEntry.name).filter(Boolean);
   }, [modelConfigData]);
 
-  const hasLeftContent = Boolean(shapData || analyticsPlots.length > 0);
+  const hasContent = Boolean(shapData || analyticsPlots.length > 0 || modelFamilies.length > 0);
 
-  // While post-training evaluation + judge are still running, the verdict endpoint
-  // returns status:"pending". Render a live progress placeholder (instead of a blank
-  // screen) so the user always sees evaluation is in flight -- this stage can take
-  // several minutes. All hooks above run unconditionally so this early return is
-  // hook-order safe.
-  if (verdictData?.status !== 'complete') {
-    return (
-      <section className="screen-stack">
-        {analyticsError ? (
-          <div className="inline-banner inline-banner-error" role="alert" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Icons.alert size={16} />
-            <span>{analyticsError}</span>
-          </div>
-        ) : null}
-        <section className="card panel-section reasoning-panel">
-          <div className="agent-reasoning-header">
-            {judgeAgent ? <AgentAvatar agent={judgeAgent} size={30} state="idle" /> : null}
-            <div>
-              <p className="section-kicker">Judge</p>
-              <h2>Agent Reasoning</h2>
-            </div>
-          </div>
-          <div style={{ padding: '15px 0', display: 'flex', flexDirection: 'column', gap: 16 }} aria-live="polite">
-            <EvaluationProgressSteps stageStatuses={stageStatuses} />
-            <div className="progress-bar indeterminate" role="progressbar" aria-label="Evaluating trained candidates">
-              <span />
-            </div>
-            <p className="muted" style={{ textAlign: 'center', fontSize: '0.82rem', margin: 0 }}>
-              Evaluating trained candidates against complexity and accuracy constraints...
-            </p>
-          </div>
-        </section>
-      </section>
-    );
-  }
+  if (!hasContent && !analyticsError) return null;
 
   return (
     <section className="screen-stack">
@@ -199,6 +156,7 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
           <span>{analyticsError}</span>
         </div>
       ) : null}
+
       {/* Model config chip list */}
       {modelFamilies.length > 0 ? (
         <section className="card panel-section">
@@ -216,150 +174,48 @@ function TrainingAnalyticsSection({ sessionId, verdictData, onRestartTraining, i
         </section>
       ) : null}
 
-      <div className="training-analytics-grid" style={hasLeftContent ? {} : { gridTemplateColumns: '1fr' }}>
-        {/* Left column: SHAP + HPT plots */}
-        {hasLeftContent && (
-          <div className="screen-stack">
-            {shapData ? (
-              <section className="card panel-section">
-                <div className="agent-reasoning-header">
-                  {featureAgent ? <AgentAvatar agent={featureAgent} size={28} state="done" /> : null}
-                  <div>
-                    <p className="section-kicker">Explainability</p>
-                    <h2>SHAP Feature Importance</h2>
-                  </div>
+      {/* Grid for SHAP and Plots -- Side by side or full width depending on availability */}
+      {hasContent && (
+        <div className="training-analytics-grid" style={{ gridTemplateColumns: shapData && analyticsPlots.length > 0 ? '1fr 1fr' : '1fr' }}>
+          {shapData ? (
+            <section className="card panel-section">
+              <div className="agent-reasoning-header">
+                {featureAgent ? <AgentAvatar agent={featureAgent} size={28} state="done" /> : null}
+                <div>
+                  <p className="section-kicker">Explainability</p>
+                  <h2>SHAP Feature Importance</h2>
                 </div>
-                <HBars data={shapData} />
-              </section>
-            ) : null}
-
-            {analyticsPlots.length > 0 ? (
-              <section className="card panel-section">
-                <div className="agent-reasoning-header">
-                  {judgeAgent ? <AgentAvatar agent={judgeAgent} size={28} state="done" /> : null}
-                  <div>
-                    <p className="section-kicker">Training Plots</p>
-                    <h2>Training & Overfitting</h2>
-                  </div>
-                </div>
-                <div className="plot-gallery">
-                  {analyticsPlots.slice(0, 6).map((plot) => (
-                    <div className="plot-card" key={plot.path}>
-                      <img
-                        alt={plot.name}
-                        className="plot-thumb"
-                        loading="lazy"
-                        src={plotUrl(sessionId, plot.path)}
-                      />
-                      <p className="plot-name muted">{plot.name.replace(/_/g, ' ')}</p>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-          </div>
-        )}
-
-        {/* Right column: Judge Reasoning -- VERY IMPORTANT: full text, not truncated */}
-        <div className="screen-stack">
-          <section className="card panel-section reasoning-panel">
-            <div className="agent-reasoning-header">
-              {judgeAgent ? <AgentAvatar agent={judgeAgent} size={30} state={verdictData?.status === 'complete' ? 'done' : 'idle'} /> : null}
-              <div>
-                <p className="section-kicker">Judge</p>
-                <h2>Agent Reasoning</h2>
               </div>
-            </div>
+              <HBars data={shapData} />
+            </section>
+          ) : null}
 
-            {verdictData?.status === 'complete' ? (
-              <>
-                {llmCommentary ? (
-                  <div style={{ marginTop: 12 }}>
-                    <p className="section-kicker" style={{ marginBottom: 6 }}>LLM Commentary</p>
-                    <pre className="reasoning-block">{llmCommentary}</pre>
-                  </div>
-                ) : (
-                  <p className="muted" style={{ marginTop: 10 }}>
-                    Rule-based decision -- no LLM commentary recorded.
-                  </p>
-                )}
-
-                {decisionTrace?.transcript ? (
-                  <div style={{ marginTop: 14 }}>
-                    <p className="section-kicker" style={{ marginBottom: 6 }}>LLM Audit Trail</p>
-                    <details style={{ cursor: 'pointer', background: 'var(--panel-2)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '10px 14px' }}>
-                      <summary style={{ outline: 'none', fontWeight: 500, fontSize: '13px', color: 'var(--ink)' }}>
-                        View Raw LLM Prompt & Response Transcript
-                      </summary>
-                      <pre className="reasoning-block" style={{ marginTop: 10, background: 'rgba(0, 0, 0, 0.25)', border: 'none', maxHeight: '350px', overflowY: 'auto' }}>
-                        {decisionTrace.transcript}
-                      </pre>
-                    </details>
-                  </div>
-                ) : null}
-
-                {Object.keys(ruleOutcomes).length > 0 ? (
-                  <div style={{ marginTop: 14 }}>
-                    <p className="section-kicker" style={{ marginBottom: 6 }}>Rule Outcomes</p>
-                    <div className="rule-outcomes-table">
-                      {Object.entries(ruleOutcomes).map(([ruleName, outcome]) => (
-                        <div className="rule-row" key={ruleName}>
-                          <span className="rule-name mono">{ruleName}</span>
-                          <span className="rule-value">{JSON.stringify(outcome)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
-                {winnerReasons.length > 0 ? (
-                  <div style={{ marginTop: 14 }}>
-                    <p className="section-kicker" style={{ marginBottom: 6 }}>
-                      Reasons for {selectedModel}
-                    </p>
-                    <div className="reason-list">
-                      {winnerReasons.map((reason, reasonIndex) => (
-                        <div className="reason-row" key={reasonIndex}>
-                          <Icons.checkCircle size={15} />
-                          <span>{reason}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
-                <div style={{ marginTop: 20, paddingTop: 15, borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}>
-                  <button
-                    className="btn btn-secondary full-width"
-                    disabled={isRestarting}
-                    onClick={onRestartTraining}
-                    type="button"
-                  >
-                    {isRestarting ? <span className="spinner small" style={{ marginRight: 8 }} /> : <Icons.play size={16} />}
-                    {isRestarting ? 'Restarting Training...' : 'Re-run Training with Judge Feedback'}
-                  </button>
-                  {restartError ? (
-                    <p className="inline-banner inline-banner-error" role="alert" style={{ marginTop: 8 }}>
-                      <Icons.alert size={15} />
-                      <span>{restartError}</span>
-                    </p>
-                  ) : null}
+          {analyticsPlots.length > 0 ? (
+            <section className="card panel-section">
+              <div className="agent-reasoning-header">
+                {judgeAgent ? <AgentAvatar agent={judgeAgent} size={28} state="done" /> : null}
+                <div>
+                  <p className="section-kicker">Training Plots</p>
+                  <h2>Training & Overfitting Gaps</h2>
                 </div>
-              </>
-            ) : (
-              <div style={{ padding: '15px 0', display: 'flex', flexDirection: 'column', gap: 16 }}>
-                <EvaluationProgressSteps stageStatuses={stageStatuses} />
-                <div className="progress-bar indeterminate">
-                  <span />
-                </div>
-                <p className="muted" style={{ textAlign: 'center', fontSize: '0.82rem', margin: 0 }}>
-                  Evaluating trained candidates against complexity and accuracy constraints...
-                </p>
               </div>
-            )}
-          </section>
+              <div className="plot-gallery">
+                {analyticsPlots.slice(0, 6).map((plot) => (
+                  <div className="plot-card" key={plot.path}>
+                    <img
+                      alt={plot.name}
+                      className="plot-thumb"
+                      loading="lazy"
+                      src={plotUrl(sessionId, plot.path)}
+                    />
+                    <p className="plot-name muted">{plot.name.replace(/_/g, ' ')}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
         </div>
-      </div>
+      )}
     </section>
   );
 }
@@ -386,9 +242,9 @@ function formatTime(timestamp) {
   return date.toLocaleTimeString([], { hour12: false });
 }
 
-function EvaluationLogs({ logs }) {
+function EvaluationLogs({ logs, polledLogs = [] }) {
   const logRef = useRef(null);
-  const evaluationLogs = logs.filter(
+  const sseEvalLogs = logs.filter(
     (entry) =>
       entry.stage === 'evaluation' ||
       entry.stage === 'judge' ||
@@ -396,17 +252,31 @@ function EvaluationLogs({ logs }) {
       entry.stage === 'overfitting'
   );
 
+  // Combine SSE logs and polled logs, deduplicating by message + stage + status
+  const combinedLogs = [...sseEvalLogs];
+  polledLogs.forEach((polled) => {
+    const isDuplicate = sseEvalLogs.some(
+      (sse) => sse.stage === polled.stage && sse.message === polled.message
+    );
+    if (!isDuplicate) {
+      combinedLogs.push(polled);
+    }
+  });
+
+  // Sort by timestamp or sequence to keep them chronological
+  combinedLogs.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
   useEffect(() => {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
     }
-  }, [evaluationLogs.length]);
+  }, [combinedLogs.length]);
 
   // Derive panel status from structured event fields only -- not by substring
   // matching the message text (which misclassified e.g. "incomplete").
   let status = 'pending';
-  if (evaluationLogs.length > 0) {
-    const lastLog = evaluationLogs[evaluationLogs.length - 1];
+  if (combinedLogs.length > 0) {
+    const lastLog = combinedLogs[combinedLogs.length - 1];
     if (lastLog.level === 'error' || lastLog.status === 'failed') {
       status = 'failed';
     } else if (['completed', 'all_completed'].includes(lastLog.status)) {
@@ -425,8 +295,8 @@ function EvaluationLogs({ logs }) {
         </div>
       </div>
       <div className="terminal-body evaluation-log-body" ref={logRef} style={{ height: 180, overflowY: 'auto' }}>
-        {evaluationLogs.length ? (
-          evaluationLogs.map((entry, index) => (
+        {combinedLogs.length ? (
+          combinedLogs.map((entry, index) => (
             <div
               className="terminal-line evaluation-log-line"
               key={`${entry.sequence}-${index}`}
@@ -487,10 +357,25 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
   const [pendingConfirm, setPendingConfirm] = useState(null); // 'cancel' | 'restart' | null
   const [sessionInputError, setSessionInputError] = useState(null);
   const [stageStatuses, setStageStatuses] = useState(createStageStatuses);
+  const [runToken, setRunToken] = useState(0);
+  const [judgeStatusData, setJudgeStatusData] = useState(null);
+  const [polledEvalLogs, setPolledEvalLogs] = useState([]);
 
   const sourceRef = useRef(null);
 
-  const models = useMemo(() => selectTrainingModels(state), [state]);
+  const baseModels = useMemo(() => selectTrainingModels(state), [state]);
+  // Push judge-rejected models to the end of the list so accepted models stay visible at top.
+  const models = useMemo(() => {
+    if (!verdictData?.ranked_models) return baseModels;
+    const rejectedNames = new Set(
+      verdictData.ranked_models
+        .filter((ranked) => ranked.verdict === 'reject')
+        .map((ranked) => ranked.model_name)
+    );
+    const accepted = baseModels.filter((model) => !rejectedNames.has(model.modelName));
+    const rejected = baseModels.filter((model) => rejectedNames.has(model.modelName));
+    return [...accepted, ...rejected];
+  }, [baseModels, verdictData]);
   const counts = useMemo(() => trainingCounts(state), [state]);
   const progress = useMemo(() => overallTrainingProgress(state), [state]);
 
@@ -514,11 +399,15 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     setSessionInput(normalized);
     setConnectionStatus('connecting');
     setBackendStatus(null);
+    setVerdictData(null);
+    setJudgeStatusData(null);
+    setPolledEvalLogs([]);
     setConnectionMessage('Connecting to the training event stream…');
     setRunState('running');
     setActiveSessionId(normalized);
     window.localStorage.setItem(SESSION_STORAGE_KEY, normalized);
     setStageStatuses(createStageStatuses());
+    setRunToken((prev) => prev + 1);
 
     sourceRef.current = streamTrainingEvents(normalized, {
       onOpen: () => {
@@ -609,7 +498,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     maxErrorAttempts: 8,
     stopWhen: (statusPayload) =>
       ['completed', 'partial_failure', 'failed', 'cancelled'].includes(statusPayload?.status),
-    resetKey: connectedSessionId,
+    resetKey: `${connectedSessionId}-${runToken}`,
   });
 
   // Clear the verdict when the connected session changes (mirrors the old
@@ -617,6 +506,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
   useEffect(() => {
     if (!connectedSessionId) {
       setVerdictData(null);
+      setJudgeStatusData(null);
     }
   }, [connectedSessionId]);
 
@@ -630,12 +520,86 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
   }, [connectedSessionId]);
 
   const { pollState: verdictPollState, restart: restartVerdictPoll } = useBoundedPoll(pollVerdict, {
-    enabled: Boolean(connectedSessionId) && connectionStatus !== 'closed',
+    // Keep polling even after the SSE stream closes: the backend closes the stream right after
+    // emitting the top-level all_completed event, which may arrive before the verdict poll
+    // has seen status='complete'. Without this the canContinue button never shows.
+    enabled: Boolean(connectedSessionId),
     intervalMs: 2000,
     maxAttempts: 150,
     maxErrorAttempts: 6,
     stopWhen: (data) => data?.status === 'complete',
-    resetKey: connectedSessionId,
+    resetKey: `${connectedSessionId}-${runToken}`,
+  });
+
+  // New live progress status polling for SHAP, Overfitting, and Judge Agent.
+  const pollShapStatus = useCallback(async () => {
+    try {
+      const data = await fetchShapStatus(connectedSessionId);
+      setStageStatuses((prev) => ({
+        ...prev,
+        shap: {
+          status: data.status === 'completed' ? 'complete' : data.status,
+          progress: data.progress ?? 0,
+          message: data.message || '',
+        }
+      }));
+      return data;
+    } catch {
+      return null;
+    }
+  }, [connectedSessionId]);
+
+  const pollOverfittingStatus = useCallback(async () => {
+    try {
+      const data = await fetchOverfittingStatus(connectedSessionId);
+      setStageStatuses((prev) => ({
+        ...prev,
+        overfitting: {
+          status: data.status === 'completed' ? 'complete' : data.status,
+          progress: data.progress ?? 0,
+          message: data.message || '',
+        }
+      }));
+      return data;
+    } catch {
+      return null;
+    }
+  }, [connectedSessionId]);
+
+  const pollJudgeStatus = useCallback(async () => {
+    try {
+      const data = await fetchJudgeStatus(connectedSessionId);
+      setJudgeStatusData(data);
+      setStageStatuses((prev) => ({
+        ...prev,
+        judge: {
+          status: (data.status === 'completed' || data.status === 'all_completed') ? 'complete' : data.status,
+          progress: data.progress ?? 0,
+          message: data.message || '',
+        }
+      }));
+      return data;
+    } catch {
+      return null;
+    }
+  }, [connectedSessionId]);
+
+  useBoundedPoll(pollShapStatus, {
+    enabled: Boolean(connectedSessionId) && verdictData?.status !== 'complete' && connectionStatus !== 'closed',
+    intervalMs: 2000,
+    resetKey: `${connectedSessionId}-${runToken}`,
+  });
+
+  useBoundedPoll(pollOverfittingStatus, {
+    enabled: Boolean(connectedSessionId) && verdictData?.status !== 'complete' && connectionStatus !== 'closed',
+    intervalMs: 2000,
+    resetKey: `${connectedSessionId}-${runToken}`,
+  });
+
+  useBoundedPoll(pollJudgeStatus, {
+    enabled: Boolean(connectedSessionId) && verdictData?.status !== 'complete' && connectionStatus !== 'closed',
+    intervalMs: 2000,
+    resetKey: `${connectedSessionId}-${runToken}`,
   });
 
   useEffect(() => {
@@ -649,6 +613,58 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
       }));
     }
   }, [verdictData]);
+
+  useEffect(() => {
+    setPolledEvalLogs((prev) => {
+      let updated = [...prev];
+      let changed = false;
+
+      const addIfNew = (stage, status, message) => {
+        if (!message || status === 'pending') return;
+        const lastOfStage = [...updated].reverse().find((entry) => entry.stage === stage);
+        if (!lastOfStage || lastOfStage.message !== message || lastOfStage.status !== status) {
+          updated.push({
+            sequence: `polled-${stage}-${updated.length}`,
+            ts: new Date().toISOString(),
+            level: status === 'failed' ? 'error' : 'info',
+            status: status,
+            stage: stage,
+            message: message,
+          });
+          changed = true;
+        }
+      };
+
+      addIfNew('shap', stageStatuses.shap.status, stageStatuses.shap.message);
+      addIfNew('overfitting', stageStatuses.overfitting.status, stageStatuses.overfitting.message);
+
+      if (judgeStatusData?.logs && Array.isArray(judgeStatusData.logs)) {
+        judgeStatusData.logs.forEach((logMsg) => {
+          const exists = updated.some((entry) => entry.stage === 'judge' && entry.message === logMsg);
+          if (!exists) {
+            updated.push({
+              sequence: `polled-judge-${updated.length}`,
+              ts: new Date().toISOString(),
+              level: judgeStatusData.status === 'failed' ? 'error' : 'info',
+              status: judgeStatusData.status || 'running',
+              stage: 'judge',
+              message: logMsg,
+            });
+            changed = true;
+          }
+        });
+      }
+
+      return changed ? updated : prev;
+    });
+  }, [
+    stageStatuses.shap.message,
+    stageStatuses.shap.status,
+    stageStatuses.overfitting.message,
+    stageStatuses.overfitting.status,
+    judgeStatusData?.logs,
+    judgeStatusData?.status,
+  ]);
 
   // Terminal-close: once the pipeline truly ends (judge verdict converged, or the
   // run failed/cancelled) the backend closes the SSE session. Native EventSource
@@ -695,6 +711,9 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
       setVerdictData(null);
       setBackendStatus(null);
       setSelectedModelId(null);
+      setJudgeStatusData(null);
+      setPolledEvalLogs([]);
+      setRunToken((prev) => prev + 1);
 
       await startTraining({
         sessionId: connectedSessionId,
@@ -790,9 +809,12 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
   const overfittingProgress = stageStatuses.overfitting.progress;
 
   const judgeStageStatus = stageStatuses.judge.status;
-  // Derive a unified judgeStatus: once verdict is final always 'complete',
-  // otherwise track the SSE judge stage events in real time.
-  const judgeStatus = verdictData?.status === 'complete' ? 'complete' : judgeStageStatus;
+  // Derive a unified judgeStatus: mark complete when verdict landed, pipeline fully done
+  // (state.complete), or the SSE judge stage event said all_completed. The state.complete
+  // guard prevents the spinner from persisting after SSE closes but before the verdict
+  // poll returns its first 'complete' response.
+  const judgeStatus =
+    verdictData?.status === 'complete' || state.complete ? 'complete' : judgeStageStatus;
   const judgeProgress = stageStatuses.judge.progress;
   const judgeMessage = stageStatuses.judge.message;
 
@@ -1116,7 +1138,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
               onClearFilter={() => setSelectedModelId(null)}
               selectedModelId={selectedModelId}
             />
-            <EvaluationLogs logs={state.logs} />
+            <EvaluationLogs logs={state.logs} polledLogs={polledEvalLogs} />
             {/* Show evaluation pipeline steps as soon as any eval stage is active */}
             {(stageStatuses.shap.status !== 'pending' ||
               stageStatuses.overfitting.status !== 'pending' ||
@@ -1131,6 +1153,166 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
                 <EvaluationProgressSteps stageStatuses={stageStatuses} />
               </section>
             )}
+
+            {/* Full Judge Agent Reasoning and Verdict in the aside panel.
+                This is intentionally placed BEFORE TrainingSummary so the user
+                sees the judge verdict before reaching the Continue button. */}
+            {(stageStatuses.judge.status !== 'pending' || judgeStatusData || verdictData) && (
+              <section className="card panel-section reasoning-panel" style={{ padding: 15 }}>
+                <div className="agent-reasoning-header" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                  {judgeAgent ? <AgentAvatar agent={judgeAgent} size={28} state={verdictData?.status === 'complete' ? 'done' : 'running'} /> : null}
+                  <div style={{ flex: 1 }}>
+                    <p className="section-kicker" style={{ margin: 0 }}>Judge Agent</p>
+                    <h3 style={{ margin: 0, fontSize: '1.1rem' }}>Reasoning & Verdict</h3>
+                  </div>
+                  {/* Multi-turn indicator badge */}
+                  {judgeStatusData?.max_turns > 1 ? (
+                    <span className="pill pill-run" style={{ fontSize: '0.72rem' }}>
+                      Turn {judgeStatusData.turn || 1}/{judgeStatusData.max_turns}
+                    </span>
+                  ) : null}
+                </div>
+
+                {/* Live judge logs shown while running and after completion */}
+                {judgeStatusData?.logs && judgeStatusData.logs.length > 0 ? (
+                  <div style={{ marginBottom: 10 }}>
+                    <p className="section-kicker" style={{ marginBottom: 6 }}>Logs</p>
+                    <div style={{ background: 'var(--panel-2)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: 12, maxHeight: 130, overflowY: 'auto', fontSize: '0.78rem', fontFamily: 'monospace' }}>
+                      {judgeStatusData.logs.map((log, logIndex) => (
+                        <div key={logIndex} style={{ marginBottom: 3, color: 'var(--ink)' }}>{"=> "}{log}</div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Active tool calls while judge is still running */}
+                {judgeStatusData?.tool_calls && judgeStatusData.tool_calls.length > 0 ? (
+                  <div style={{ marginBottom: 10 }}>
+                    <p className="section-kicker" style={{ marginBottom: 6 }}>Active Tool Calls</p>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                      {judgeStatusData.tool_calls.map((toolCall, callIndex) => (
+                        <div key={callIndex} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.75rem', padding: '7px 10px', borderRadius: 4, background: 'var(--panel-2)', border: '1px solid var(--line)' }}>
+                          <Icons.play size={12} className="spinner" style={{ color: 'var(--info)' }} />
+                          <span>Calling <strong>{toolCall.name}</strong></span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Full verdict display once judge completes */}
+                {verdictData?.status === 'complete' && (
+                  <div>
+                    {/* Winner / no-winner banner */}
+                    {verdictData.selected_model ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '10px 14px', borderRadius: 'var(--radius)', border: '1px solid var(--ok)', background: 'rgba(19,132,95,0.08)' }}>
+                        <Icons.checkCircle size={16} style={{ color: 'var(--ok)', flexShrink: 0 }} />
+                        <span style={{ fontWeight: 600, fontSize: '0.88rem' }}>
+                          Selected: {verdictData.selected_model}
+                        </span>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '10px 14px', borderRadius: 'var(--radius)', border: '1px solid var(--warning)', background: 'var(--warning-bg)' }}>
+                        <Icons.alert size={16} style={{ color: 'var(--warning)', flexShrink: 0 }} />
+                        <span style={{ fontSize: '0.88rem' }}>No model selected -- all candidates rejected</span>
+                      </div>
+                    )}
+
+                    {/* Ranked model list with accept/reject badges and top-2 findings */}
+                    {verdictData.ranked_models && verdictData.ranked_models.length > 0 ? (
+                      <div style={{ marginBottom: 12 }}>
+                        <p className="section-kicker" style={{ marginBottom: 8 }}>Ranked Models</p>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                          {verdictData.ranked_models.map((rankedModel, modelIndex) => {
+                            const isWinner = rankedModel.model_name === verdictData.selected_model;
+                            const isApproved = rankedModel.verdict === 'select';
+                            const topFindings = (rankedModel.findings || []).slice(0, 2);
+                            return (
+                              <div
+                                key={modelIndex}
+                                style={{
+                                  border: `1px solid ${isWinner ? 'var(--ok)' : 'var(--line)'}`,
+                                  borderRadius: 'var(--radius)',
+                                  padding: '9px 11px',
+                                  background: 'var(--panel-2)',
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: topFindings.length > 0 ? 5 : 0 }}>
+                                  <span style={{ fontWeight: 600, fontSize: '0.82rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    #{rankedModel.rank || modelIndex + 1} {rankedModel.model_name}
+                                  </span>
+                                  {rankedModel.score != null ? (
+                                    <span className="pill pill-run" style={{ fontSize: '0.68rem', flexShrink: 0 }}>
+                                      {typeof rankedModel.score === 'number' ? rankedModel.score.toFixed(3) : rankedModel.score}
+                                    </span>
+                                  ) : null}
+                                  <span
+                                    className={`pill ${isApproved ? 'pill-done' : 'pill-err'}`}
+                                    style={{ fontSize: '0.68rem', flexShrink: 0 }}
+                                  >
+                                    {isApproved ? 'APPROVED' : 'REJECTED'}
+                                  </span>
+                                </div>
+                                {topFindings.map((finding, findingIndex) => (
+                                  <div
+                                    key={findingIndex}
+                                    style={{ display: 'flex', gap: 5, alignItems: 'flex-start', fontSize: '0.74rem', marginTop: 3, color: 'var(--ink-muted)' }}
+                                  >
+                                    <Icons.dot size={9} style={{ marginTop: 3, flexShrink: 0 }} />
+                                    <span><strong>{finding.label}</strong>: {finding.message}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {/* LLM commentary in a collapsible block */}
+                    {verdictData.decision_trace?.llm_commentary ? (
+                      <details style={{ marginBottom: 8, cursor: 'pointer', background: 'var(--panel-2)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '8px 11px' }}>
+                        <summary style={{ outline: 'none', fontWeight: 500, fontSize: '0.82rem', color: 'var(--ink)' }}>
+                          LLM Commentary
+                        </summary>
+                        <pre className="reasoning-block" style={{ marginTop: 8, whiteSpace: 'pre-wrap', fontSize: '0.77rem', maxHeight: 180, overflowY: 'auto', background: 'none', border: 'none', padding: 0 }}>
+                          {verdictData.decision_trace.llm_commentary}
+                        </pre>
+                      </details>
+                    ) : (
+                      <p className="muted" style={{ fontSize: '0.8rem', marginBottom: 8 }}>
+                        Rule-based decision -- no LLM commentary recorded.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* Re-run Training button -- appears ABOVE Continue to Leaderboard so the
+                user must engage with the judge verdict before they can continue. */}
+            {verdictData?.status === 'complete' && state.complete ? (
+              <div>
+                <button
+                  className="btn btn-secondary full-width"
+                  disabled={isRestarting}
+                  onClick={() => setPendingConfirm('restart')}
+                  type="button"
+                >
+                  {isRestarting
+                    ? <span className="spinner small" style={{ marginRight: 8 }} />
+                    : <Icons.play size={16} />}
+                  {isRestarting ? 'Restarting...' : 'Re-run Training with Judge Feedback'}
+                </button>
+                {restartError ? (
+                  <p className="inline-banner inline-banner-error" role="alert" style={{ marginTop: 6 }}>
+                    <Icons.alert size={15} />
+                    <span>{restartError}</span>
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
             <TrainingSummary
               canContinue={state.complete && verdictData?.status === 'complete'}
               onContinue={() => go('leaderboard')}
@@ -1180,14 +1362,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
 
       {/* Analytics section: SHAP + Judge Reasoning + plots -- shown after training completes */}
       {state.complete && connectedSessionId ? (
-        <TrainingAnalyticsSection
-          sessionId={connectedSessionId}
-          verdictData={verdictData}
-          onRestartTraining={() => setPendingConfirm('restart')}
-          isRestarting={isRestarting}
-          restartError={restartError}
-          stageStatuses={stageStatuses}
-        />
+        <TrainingAnalyticsSection sessionId={connectedSessionId} />
       ) : null}
 
       <ConfirmDialog

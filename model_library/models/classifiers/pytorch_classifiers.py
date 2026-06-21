@@ -6,6 +6,7 @@ from typing import List
 import numpy as np
 import torch
 import torch.nn as nn
+from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import DataLoader, TensorDataset
 
 from core.data_bundle import DataBundle
@@ -68,15 +69,21 @@ class PyTorchFCNNClassifierWrapper(BaseModel):
     def __init__(self, config: dict) -> None:
         super().__init__(config)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.label_encoder: LabelEncoder = LabelEncoder()
 
     def train(self, data: DataBundle) -> None:
         merged_config = self._merge_hyperparameter_overrides(data)
 
         X_train = data.common.X_train.astype(np.float32)
-        y_train = data.common.y_train.astype(np.int64)
+        # Remap arbitrary class labels to consecutive integers 0..N-1.
+        # CrossEntropyLoss requires target indices in [0, num_classes); without this
+        # remapping a dataset with labels {0,1,3,...,14} causes "Target out of bounds".
+        y_train = self.label_encoder.fit_transform(data.common.y_train).astype(np.int64)
 
         num_features = X_train.shape[1]
-        num_classes = int(merged_config["num_classes"])
+        # Derive num_classes from actual data so the model output layer matches the
+        # dataset even when the config default (e.g. 10) doesn't match class count.
+        num_classes = len(self.label_encoder.classes_)
         hidden_layers: List[int] = list(merged_config["hidden_layers"])
         activation_name: str = merged_config["activation"]
         dropout_rate: float = float(merged_config["dropout"])
@@ -123,8 +130,9 @@ class PyTorchFCNNClassifierWrapper(BaseModel):
         self.model.eval()
         with torch.no_grad():
             logits = self.model(X_tensor)
-            predicted_classes = logits.argmax(dim=1).cpu().numpy()
-        return predicted_classes
+            encoded_predictions = logits.argmax(dim=1).cpu().numpy()
+        # Decode back to original class labels.
+        return self.label_encoder.inverse_transform(encoded_predictions)
 
     def _prepare_for_serialization(self) -> nn.Module:
         return self.model.cpu()
