@@ -13,6 +13,7 @@ where all three component values are in [0, 1].
 """
 
 import logging
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from .findings_engine import FindingsEngine
@@ -21,7 +22,11 @@ from .schemas import CandidateModel, DecisionTrace, JudgeDecision, RankedModel
 logger = logging.getLogger(__name__)
 
 # Map rule verdicts to governance-dashboard decision labels (no if-else ladder).
-_VERDICT_DECISION_MAP: Dict[str, str] = {"select": "APPROVED", "reject": "REJECTED"}
+_VERDICT_DECISION_MAP: Dict[str, str] = {
+    "select": "APPROVED",
+    "rank_only": "RANKED",
+    "reject": "REJECTED",
+}
 
 
 class RuleEngine:
@@ -36,6 +41,17 @@ class RuleEngine:
         self._tie_break_pct: float = float(config["tie_break_pct"])
         self._gap_cap: float = float(config.get("overfitting_gap_cap", 0.5))
         self._complexity_norm: Dict[str, int] = config["complexity_normalization"]
+        # Deterministic post-ranking selection (applied after the optional LLM
+        # ranking step, never decided by the LLM itself).
+        self._selection_top_pct: float = float(config["selection_top_pct"])
+        self._selection_min_count: int = int(config["selection_min_count"])
+        # Deterministic clamp on the LLM's reordering: SHAP/domain-reasoning
+        # signal may only break ties among comparably-performing models, never
+        # override a large predictive-quality gap.
+        self._max_accuracy_drop: float = float(config["llm_ranking_max_accuracy_drop"])
+        # Score deduction per governance flag (bias/shortcut/entropy/SHAP
+        # leakage) -- demotes rank without rejecting the candidate.
+        self._governance_flag_penalty: float = float(config["governance_flag_penalty"])
         # Map: task_type => floor value; avoids if-else ladder.
         self._floor_map: Dict[str, float] = {
             "classification": self._accuracy_floor,
@@ -59,10 +75,21 @@ class RuleEngine:
     def apply_hard_gates(
         self, candidates: List[CandidateModel]
     ) -> Tuple[List[CandidateModel], Dict[str, str]]:
-        """Reject any model whose primary metric is below the floor, or is biased / degenerate.
+        """Reject any model whose primary metric is below the floor.
+
+        This is the ONLY hard-reject gate. Bias/shortcut-learning/degenerate-
+        behavior/SHAP-leakage concerns (see _governance_flags) are deliberately
+        NOT rejection gates -- they only demote a model's rank via a score
+        penalty in _compute_score. Rejecting on those secondary heuristics
+        could legitimately zero out every candidate on a given dataset (e.g.
+        an imbalanced dataset where most models trip the skew check) even
+        though every candidate clears the real predictive-quality floor,
+        starving the deterministic top-N% selection step of anything to
+        select. The floor is the only signal serious enough to warrant never
+        selecting a model outright.
 
         Returns:
-            survivors: list of candidates that passed the gate.
+            survivors: list of candidates that passed the floor.
             gate_outcomes: dict of model_name => rejection reason (for rejected models).
         """
         survivors: List[CandidateModel] = []
@@ -93,56 +120,6 @@ class RuleEngine:
                 logger.debug("=> GATE REJECT %s: %s", candidate.model_name, reason)
                 continue
 
-            # --- Epic 4 Judge Robustness & Model Bias Detection ---
-            if candidate.task_type == "classification" and candidate.overfitting.diagnostics:
-                diag = candidate.overfitting.diagnostics
-                
-                # Rule 1: Prediction skew check (Dominant class fraction >= 85.0%)
-                pred_dist = diag.get("prediction_distribution") or {}
-                skewed = False
-                for cls, fraction in pred_dist.items():
-                    if fraction >= 0.85:
-                        reason = f"Suspicious model bias: class '{cls}' dominates predictions ({fraction * 100:.1f}% of all outputs)."
-                        gate_outcomes[candidate.model_name] = reason
-                        logger.debug("=> GATE REJECT %s: %s", candidate.model_name, reason)
-                        skewed = True
-                        break
-                if skewed:
-                    continue
-
-                # Rule 2: Majority-class baseline check
-                majority_baseline = diag.get("majority_baseline_accuracy")
-                if majority_baseline is not None:
-                    improvement = perf - majority_baseline
-                    if improvement < 0.02:
-                        reason = f"Shortcut learning detected: model accuracy ({perf:.4f}) is similar to majority-class baseline ({majority_baseline:.4f}) with +{improvement * 100:.1f}% improvement (minimum +2.0% required)."
-                        gate_outcomes[candidate.model_name] = reason
-                        logger.debug("=> GATE REJECT %s: %s", candidate.model_name, reason)
-                        continue
-
-                # Rule 3: Prediction entropy check
-                entropy = diag.get("prediction_entropy")
-                if entropy is not None and entropy < 0.15:
-                    reason = f"Degenerate model behavior: prediction entropy is extremely low ({entropy:.4f}), indicating near-identical outputs and zero prediction diversity."
-                    gate_outcomes[candidate.model_name] = reason
-                    logger.debug("=> GATE REJECT %s: %s", candidate.model_name, reason)
-                    continue
-
-            # Rule 4: SHAP Feature Importance Concentration Leakage Check
-            if candidate.shap_summary and "mean_abs_shap" in candidate.shap_summary:
-                shap_dict = candidate.shap_summary["mean_abs_shap"]
-                total_shap = sum(shap_dict.values())
-                if total_shap > 0:
-                    top_feature_val = max(shap_dict.values())
-                    top_feature_name = [k for k, v in shap_dict.items() if v == top_feature_val][0]
-                    ratio = top_feature_val / total_shap
-                    if ratio >= 0.80:
-                        reason = f"Label leakage suspected: feature '{top_feature_name}' dominates importance ({ratio * 100:.1f}% of top-5 SHAP sum)."
-                        gate_outcomes[candidate.model_name] = reason
-                        logger.debug("=> GATE REJECT %s: %s", candidate.model_name, reason)
-                        continue
-
-            # If all checks passed, candidate survives
             survivors.append(candidate)
             logger.debug(
                 "=> GATE PASS %s: perf=%.4f >= floor=%.4f",
@@ -151,6 +128,56 @@ class RuleEngine:
                 floor,
             )
         return survivors, gate_outcomes
+
+    def _governance_flags(self, candidate: CandidateModel) -> List[str]:
+        """Detect bias/shortcut-learning/degenerate-behavior/SHAP-leakage concerns.
+
+        These NEVER reject a candidate (see apply_hard_gates docstring) --
+        they only feed a score penalty in _compute_score, demoting a flagged
+        model's rank (and therefore its chance of landing in the top-N%
+        selection) without removing it from the eligible pool outright.
+        """
+        flags: List[str] = []
+        perf = self._primary_perf(candidate) or 0.0
+
+        if candidate.task_type == "classification" and candidate.overfitting.diagnostics:
+            diag = candidate.overfitting.diagnostics
+
+            pred_dist = diag.get("prediction_distribution") or {}
+            for cls, fraction in pred_dist.items():
+                if fraction >= 0.85:
+                    flags.append(
+                        f"Suspicious model bias: class '{cls}' dominates predictions ({fraction * 100:.1f}% of all outputs)."
+                    )
+                    break
+
+            majority_baseline = diag.get("majority_baseline_accuracy")
+            if majority_baseline is not None:
+                improvement = perf - majority_baseline
+                if improvement < 0.02:
+                    flags.append(
+                        f"Shortcut learning detected: model accuracy ({perf:.4f}) is similar to majority-class baseline ({majority_baseline:.4f}) with +{improvement * 100:.1f}% improvement (minimum +2.0% required)."
+                    )
+
+            entropy = diag.get("prediction_entropy")
+            if entropy is not None and entropy < 0.15:
+                flags.append(
+                    f"Degenerate model behavior: prediction entropy is extremely low ({entropy:.4f}), indicating near-identical outputs and zero prediction diversity."
+                )
+
+        if candidate.shap_summary and "mean_abs_shap" in candidate.shap_summary:
+            shap_dict = candidate.shap_summary["mean_abs_shap"]
+            total_shap = sum(shap_dict.values())
+            if total_shap > 0:
+                top_feature_val = max(shap_dict.values())
+                top_feature_name = [k for k, v in shap_dict.items() if v == top_feature_val][0]
+                ratio = top_feature_val / total_shap
+                if ratio >= 0.80:
+                    flags.append(
+                        f"Label leakage suspected: feature '{top_feature_name}' dominates importance ({ratio * 100:.1f}% of top-5 SHAP sum)."
+                    )
+
+        return flags
 
     def _normalize_complexity(
         self, candidates: List[CandidateModel]
@@ -180,8 +207,16 @@ class RuleEngine:
         self,
         candidate: CandidateModel,
         norm_complexity: float,
+        governance_flag_count: int = 0,
     ) -> float:
-        """Compute the weighted composite score for a single candidate."""
+        """Compute the weighted composite score for a single candidate.
+
+        governance_flag_count demotes (never rejects) a model that tripped a
+        bias/shortcut-learning/degenerate-behavior/SHAP-leakage check -- each
+        flag subtracts governance_flag_penalty from the composite score,
+        clamped at 0, so flagged models sort toward the bottom of the
+        eligible pool without being removed from selection consideration.
+        """
         perf = self._primary_perf(candidate) or 0.0
         # Overfitting signal: clip the gap to [0, gap_cap] then normalize.
         overfit_signal = min(max(candidate.overfitting.gap, 0.0), self._gap_cap)
@@ -196,12 +231,15 @@ class RuleEngine:
             + weight_overfit * (1.0 - norm_overfit)
             + weight_complex * (1.0 - norm_complexity)
         )
+        if governance_flag_count > 0:
+            score = max(0.0, score - self._governance_flag_penalty * governance_flag_count)
         logger.debug(
-            "=> Score %s: perf=%.4f overfit_signal=%.4f norm_complex=%.4f => %.4f",
+            "=> Score %s: perf=%.4f overfit_signal=%.4f norm_complex=%.4f governance_flags=%d => %.4f",
             candidate.model_name,
             perf,
             norm_overfit,
             norm_complexity,
+            governance_flag_count,
             score,
         )
         return score
@@ -223,10 +261,23 @@ class RuleEngine:
             A JudgeDecision with ranked_models and selected_model (rules authoritative).
         """
         norm_complexity_map = self._normalize_complexity(survivors)
+        # Governance flags (bias/shortcut/entropy/SHAP leakage) demote score
+        # but never reject -- computed once per survivor and reused below for
+        # both scoring and the per-model reasons list.
+        governance_flags_map: Dict[str, List[str]] = {
+            candidate.model_name: self._governance_flags(candidate) for candidate in survivors
+        }
 
         # Compute scores for survivors.
         scored: List[Tuple[float, CandidateModel]] = [
-            (self._compute_score(candidate, norm_complexity_map[candidate.model_name]), candidate)
+            (
+                self._compute_score(
+                    candidate,
+                    norm_complexity_map[candidate.model_name],
+                    governance_flag_count=len(governance_flags_map[candidate.model_name]),
+                ),
+                candidate,
+            )
             for candidate in survivors
         ]
 
@@ -250,6 +301,7 @@ class RuleEngine:
                 f"Overfitting gap={candidate.overfitting.gap:.4f}",
                 f"Complexity family_rank={candidate.complexity.family_rank}",
             ]
+            reasons.extend(governance_flags_map.get(candidate.model_name, []))
             # Build structured per-dimension findings + a ranking explanation.
             findings = self._findings_engine.build_findings(candidate)
             ranked_model = RankedModel(
@@ -319,6 +371,139 @@ class RuleEngine:
             ranked_models=ranked_models,
             decision_trace=DecisionTrace(rule_outcomes=rule_outcomes, llm_commentary=None),
             comparison_explanation=comparison_explanation,
+        )
+
+    def enforce_accuracy_reorder_guardrail(
+        self,
+        decision: JudgeDecision,
+        candidates: List[CandidateModel],
+    ) -> JudgeDecision:
+        """Clamp the LLM's reordering so it can never rank a model above
+        another whose primary metric (accuracy/r2) is more than
+        llm_ranking_max_accuracy_drop better.
+
+        The LLM may use SHAP/domain-reasoning correlation to break ties among
+        comparably-performing survivors, but it cannot override a large
+        predictive-quality gap just because a weaker model's features look
+        cleaner. Runs after the optional LLM ranking step and before
+        deterministic selection -- so selection always sees a guardrail-
+        respecting order regardless of whether the LLM ran.
+
+        Implemented as a guarded bubble pass: repeatedly swap adjacent
+        survivors whenever the one ranked below is more than
+        llm_ranking_max_accuracy_drop better by primary metric than the one
+        ranked above it. Terminates because each pass either makes no swaps
+        (done) or strictly reduces the number of such inversions.
+        """
+        primary_by_name: Dict[str, float] = {
+            candidate.model_name: (self._primary_perf(candidate) or 0.0)
+            for candidate in candidates
+        }
+        survivors = [rm for rm in decision.ranked_models if rm.verdict != "reject"]
+        rejected = [rm for rm in decision.ranked_models if rm.verdict == "reject"]
+        if len(survivors) < 2:
+            return decision
+
+        ordered = list(survivors)
+        swapped_any = False
+        changed = True
+        while changed:
+            changed = False
+            for index in range(len(ordered) - 1):
+                current_metric = primary_by_name.get(ordered[index].model_name, 0.0)
+                next_metric = primary_by_name.get(ordered[index + 1].model_name, 0.0)
+                if next_metric - current_metric > self._max_accuracy_drop:
+                    ordered[index], ordered[index + 1] = ordered[index + 1], ordered[index]
+                    changed = True
+                    swapped_any = True
+
+        if not swapped_any:
+            return decision
+
+        logger.info(
+            "=> [JUDGE] accuracy-reorder guardrail clamped LLM ranking (threshold=%.3f)",
+            self._max_accuracy_drop,
+        )
+        renumbered_survivors = [
+            ranked_model.model_copy(update={"rank": new_rank})
+            for new_rank, ranked_model in enumerate(ordered, start=1)
+        ]
+        reject_rank_start = len(renumbered_survivors) + 1
+        renumbered_rejected = [
+            ranked_model.model_copy(update={"rank": reject_rank_start + offset})
+            for offset, ranked_model in enumerate(rejected)
+        ]
+        return decision.model_copy(
+            update={
+                "ranked_models": renumbered_survivors + renumbered_rejected,
+                "selected_model": (
+                    renumbered_survivors[0].model_name if renumbered_survivors else decision.selected_model
+                ),
+            }
+        )
+
+    def apply_selection(self, decision: JudgeDecision) -> JudgeDecision:
+        """Deterministically select the top-N% (min-count floor) of eligible models.
+
+        Runs as the LAST step of JudgeAgent.judge(), after the optional LLM
+        ranking step, so it always operates on whichever order is authoritative
+        at that point (LLM-reordered survivors if ranking succeeded, rule-only
+        order otherwise). This is plain Python -- the LLM never decides
+        selection, only ranking.
+
+        "Eligible" means verdict != "reject" (already passed the deterministic
+        hard floor / bias / leakage gates in apply_hard_gates). Eligible models
+        outside the top-N% cutoff become verdict="rank_only" (ranked, not
+        selected) rather than "reject" -- they are not demoted to a quality
+        failure, just excluded from the selected set.
+        """
+        eligible = [rm for rm in decision.ranked_models if rm.verdict != "reject"]
+        eligible_count = len(eligible)
+        selected_count = 0
+        if eligible_count > 0:
+            # ceil (not floor) biases toward inclusion at rounding boundaries,
+            # consistent with the min-count floor's inclusive intent.
+            selected_count = min(
+                eligible_count,
+                max(
+                    self._selection_min_count,
+                    math.ceil(self._selection_top_pct * eligible_count),
+                ),
+            )
+        selected_names = {rm.model_name for rm in eligible[:selected_count]}
+
+        updated_ranked: List[RankedModel] = []
+        for ranked_model in decision.ranked_models:
+            if ranked_model.verdict == "reject":
+                updated_ranked.append(ranked_model)
+                continue
+            new_verdict = "select" if ranked_model.model_name in selected_names else "rank_only"
+            updated_ranked.append(
+                ranked_model.model_copy(
+                    update={
+                        "verdict": new_verdict,
+                        "decision": _VERDICT_DECISION_MAP[new_verdict],
+                    }
+                )
+            )
+
+        selected_models = [
+            ranked_model.model_name
+            for ranked_model in updated_ranked
+            if ranked_model.verdict == "select"
+        ]
+        logger.debug(
+            "=> Selection complete: eligible=%d selected=%d/%s",
+            eligible_count,
+            selected_count,
+            selected_models,
+        )
+        return decision.model_copy(
+            update={
+                "ranked_models": updated_ranked,
+                "selected_models": selected_models,
+                "selected_model": selected_models[0] if selected_models else None,
+            }
         )
 
     def _build_top_comparison(
