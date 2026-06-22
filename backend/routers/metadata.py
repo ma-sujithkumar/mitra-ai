@@ -15,6 +15,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend.activity_log import ActivityLog
+from backend.agents.domain_reasoning_agent import DomainReasoningAgentRunner
+from backend.agents.domain_reasoning_agent import DomainReasoningError
+from backend.agents.domain_reasoning_agent import DomainReasoningInput
 from backend.agents.metadata_gen_agent import LlmSettings
 from backend.agents.metadata_gen_agent import LlmSettingsResolver
 from backend.agents.metadata_gen_agent import MetadataAgentRunner
@@ -22,6 +25,7 @@ from backend.agents.metadata_gen_agent import MetadataGenerationError
 from backend.agents.metadata_gen_agent import MetadataGenerationInput
 from backend.config_loader import ConfigLoader
 from backend.dependencies import get_config_loader
+from backend.dependencies import get_domain_reasoning_agent_runner
 from backend.dependencies import get_job_registry
 from backend.dependencies import get_metadata_agent_runner
 from backend.dependencies import get_session_manager
@@ -63,6 +67,9 @@ def start_metadata(
     session_manager: SessionManager = Depends(get_session_manager),
     job_registry: JobRegistry = Depends(get_job_registry),
     metadata_agent_runner: MetadataAgentRunner = Depends(get_metadata_agent_runner),
+    domain_reasoning_agent_runner: DomainReasoningAgentRunner = Depends(
+        get_domain_reasoning_agent_runner
+    ),
 ) -> dict[str, object]:
     session_path = _get_existing_session_path(
         session_manager=session_manager,
@@ -193,6 +200,16 @@ def start_metadata(
         session_id=metadata_request.session_id,
         job_type="metadata",
     )
+
+    _generate_domain_reasoning_once(
+        session_id=metadata_request.session_id,
+        session_path=session_path,
+        llm_settings=llm_settings,
+        config_loader=config_loader,
+        domain_reasoning_agent_runner=domain_reasoning_agent_runner,
+        activity_log=activity_log,
+    )
+
     return {
         "session_id": metadata_request.session_id,
         "status": "accepted",
@@ -203,6 +220,63 @@ def start_metadata(
             "source": llm_settings.source,
         },
     }
+
+
+def _generate_domain_reasoning_once(
+    session_id: str,
+    session_path: Path,
+    llm_settings: LlmSettings,
+    config_loader: ConfigLoader,
+    domain_reasoning_agent_runner: DomainReasoningAgentRunner,
+    activity_log: ActivityLog,
+) -> None:
+    # Runs exactly once per session: skipped if domain_reasoning.json already
+    # exists (same resume-from-checkpoint pattern as metadata.json above), and
+    # non-fatal so a domain-reasoning failure never blocks metadata generation
+    # from succeeding -- the Judge tolerates a missing domain_reasoning.json.
+    domain_reasoning_path = session_path / "reports" / "domain_reasoning.json"
+    if domain_reasoning_path.is_file():
+        activity_log.record(
+            stage="domain_reasoning",
+            message="Domain reasoning skipped (cached domain_reasoning.json reused)",
+        )
+        return
+    activity_log.record(
+        stage="domain_reasoning",
+        message="Domain reasoning generation started",
+    )
+    try:
+        result = domain_reasoning_agent_runner.generate_domain_reasoning(
+            DomainReasoningInput(
+                session_id=session_id,
+                workspace_root=config_loader.paths.workspace_root,
+                llm_settings=llm_settings,
+            )
+        )
+        activity_log.record(
+            stage="domain_reasoning",
+            message=f"Domain reasoning generated ({len(result.domain_reasoning.get('column_explanations', {}))} columns explained)",
+        )
+    except DomainReasoningError as exc:
+        logger.warning(
+            "Domain reasoning failed for session %s (non-fatal): %s",
+            session_id,
+            exc,
+        )
+        activity_log.record(
+            stage="domain_reasoning",
+            message="Domain reasoning generation failed (non-fatal)",
+        )
+    except Exception as exc:  # noqa: BLE001 - non-fatal enrichment step
+        logger.warning(
+            "Domain reasoning failed unexpectedly for session %s (non-fatal): %s",
+            session_id,
+            exc,
+        )
+        activity_log.record(
+            stage="domain_reasoning",
+            message="Domain reasoning generation failed (non-fatal)",
+        )
 
 
 @router.get("/metadata/events")
