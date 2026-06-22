@@ -452,15 +452,20 @@ class JudgeLoop:
             excluded_model_names = list(set(excluded_model_names))
 
             accepted_count = len(decision.ranked_models) - len(rejected_names)
-            # Halve the new-candidate count each turn: turn 2 => N/2, turn 3 => N/4, etc.
-            # Ensures later turns add fewer models so training stays fast.
+            # Halve the NEW-candidate count each turn: turn 2 => N/2, turn 3 => N/4, etc.
+            # The effective_max passed to the selector must also include the approved carries
+            # so those don't consume the new-model slots (bug: approved ate slots causing 0 new
+            # models in turn 3 and a wasted LLM judge call on an unchanged pool).
             new_models_count = max(2, max_models // (2 ** turn_number))
+            effective_max_models = len(accumulated_approved) + new_models_count
             logger.info(
-                "=> judge feedback turn %d: %d accepted, %d rejected. Selecting %d new candidates. Excluded: %s",
+                "=> judge feedback turn %d: %d accepted, %d rejected. "
+                "Selecting %d new candidates (effective_max=%d). Excluded: %s",
                 turn_number,
                 accepted_count,
                 len(rejected_names),
                 new_models_count,
+                effective_max_models,
                 excluded_model_names,
             )
             feedback_msg = (
@@ -483,7 +488,8 @@ class JudgeLoop:
                 details={"accepted": accepted_count, "rejected": len(rejected_names)},
             )
 
-            # Re-invoke model selection with half the original count for subsequent turns.
+            # Re-invoke model selection; pass effective_max so approved carries don't consume
+            # the new-model slots (approved + new_models_count slots total).
             self._reselect_models(
                 approved_model_names=accumulated_approved,
                 rejected_model_names=accumulated_rejected,
@@ -492,8 +498,11 @@ class JudgeLoop:
                 feature_selection_path=feature_selection_path,
                 mini_data_path=mini_data_path,
                 model_library_root=model_library_root,
-                max_models=new_models_count,
+                max_models=effective_max_models,
             )
+
+            # Track model count before callback to detect the "no new models" skip path.
+            models_before_callback = len(getattr(current_training_summary, "models", []) or [])
 
             # Re-train via callback; callback merges models across turns and re-runs EvalRunner.
             callback_result = training_callback(excluded_model_names)
@@ -506,6 +515,28 @@ class JudgeLoop:
                 )
             else:
                 current_training_summary = callback_result
+
+            # Early-exit if the callback returned no new models (catalog exhausted or all
+            # reselected candidates were already trained). Re-running the judge on an
+            # identical pool would consume LLM tokens for zero new information.
+            models_after_callback = len(getattr(current_training_summary, "models", []) or [])
+            if models_after_callback <= models_before_callback:
+                logger.info(
+                    "=> judge loop: no new models after turn %d callback (before=%d, after=%d). "
+                    "Returning current decision without redundant judge call.",
+                    turn_number,
+                    models_before_callback,
+                    models_after_callback,
+                )
+                self._write_judge_status(
+                    session_dir=session_dir,
+                    turn=turn_number,
+                    max_turns=self.max_turns,
+                    status="completed",
+                    message=f"Catalog exhausted after turn {turn_number}: no new candidates available. Returning best result.",
+                    details={"selected_model": decision.selected_model, "ranked_count": len(decision.ranked_models)},
+                )
+                return decision
 
         return last_decision or decision  # type: ignore[return-value]  # decision init'd above
 
