@@ -68,3 +68,62 @@ class TestUpstreamAdapter:
         assert candidate.task_type == "classification"
         assert candidate.complexity.family_rank == 1
         assert candidate.shap_summary is not None
+
+    def test_adapt_judge_input_passes_through_domain_reasoning(
+        self, classification_judge_input_dict: dict
+    ) -> None:
+        adapter = UpstreamAdapter()
+        raw_candidate = classification_judge_input_dict["candidates"][0]
+        domain_reasoning = {
+            "session_id": "test-session",
+            "problem_summary": "Predicting match winner from pre-match conditions.",
+            "target_explanation": "winner: the team that won the match.",
+            "column_explanations": {
+                "player_of_match": {
+                    "meaning": "Player awarded best performer, decided after the match.",
+                    "timing": "post_decision",
+                    "leakage_risk": "high",
+                    "rationale": "Only known once the match has concluded.",
+                },
+            },
+            "overall_leakage_flags": ["player_of_match"],
+        }
+        judge_input = adapter.adapt_judge_input(
+            candidate_raw_list=[{
+                "model_name": raw_candidate["model_name"],
+                "task_type": raw_candidate["task_type"],
+                "metrics": raw_candidate["metrics"],
+                "overfitting_json": {
+                    "is_overfitted": raw_candidate["overfitting"]["is_overfitted"],
+                    "primary_metric": "accuracy",
+                    "gaps": {"accuracy": raw_candidate["overfitting"]["gap"]},
+                },
+                "complexity": raw_candidate["complexity"],
+                "shap_summary": raw_candidate.get("shap_summary"),
+            }],
+            domain_reasoning=domain_reasoning,
+        )
+        assert isinstance(judge_input, JudgeInput)
+        assert judge_input.domain_reasoning == domain_reasoning
+        assert judge_input.domain_reasoning["overall_leakage_flags"] == ["player_of_match"]
+
+    def test_adapt_judge_input_domain_reasoning_defaults_to_none(
+        self, classification_judge_input_dict: dict
+    ) -> None:
+        adapter = UpstreamAdapter()
+        raw_candidate = classification_judge_input_dict["candidates"][0]
+        judge_input = adapter.adapt_judge_input(
+            candidate_raw_list=[{
+                "model_name": raw_candidate["model_name"],
+                "task_type": raw_candidate["task_type"],
+                "metrics": raw_candidate["metrics"],
+                "overfitting_json": {
+                    "is_overfitted": raw_candidate["overfitting"]["is_overfitted"],
+                    "primary_metric": "accuracy",
+                    "gaps": {"accuracy": raw_candidate["overfitting"]["gap"]},
+                },
+                "complexity": raw_candidate["complexity"],
+                "shap_summary": raw_candidate.get("shap_summary"),
+            }],
+        )
+        assert judge_input.domain_reasoning is None
