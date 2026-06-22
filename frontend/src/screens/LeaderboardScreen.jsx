@@ -60,6 +60,7 @@ const FINDING_STATUS_MARKERS = {
 // Map a model decision to a pill style.
 const DECISION_PILL_STYLES = {
   APPROVED: { background: 'rgba(34,197,94,0.14)', color: 'var(--ok)', border: '1px solid rgba(34,197,94,0.3)' },
+  RANKED:   { background: 'rgba(234,179,8,0.14)', color: '#eab308', border: '1px solid rgba(234,179,8,0.3)' },
   REJECTED: { background: 'rgba(239,68,68,0.14)', color: 'var(--err)', border: '1px solid rgba(239,68,68,0.3)' },
   PENDING:  { background: 'rgba(148,163,184,0.14)', color: 'var(--muted, #888)', border: '1px solid rgba(148,163,184,0.3)' },
 };
@@ -100,7 +101,11 @@ function ModelDecisionCard({ row }) {
       </div>
       {/* Model name on its own full-width line so long names wrap cleanly. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-        {row.winner ? <Icons.trophy size={16} /> : null}
+        {row.winner && row.rank === 1 ? (
+          <Icons.trophy size={16} />
+        ) : row.winner ? (
+          <Icons.checkCircle size={16} />
+        ) : null}
         <strong style={{ fontSize: '1rem', overflowWrap: 'anywhere' }}>{row.model_name || row.model}</strong>
       </div>
 
@@ -128,10 +133,21 @@ function ModelDecisionCard({ row }) {
       {row.ranking_explanation ? (
         <details style={{ cursor: 'pointer', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 8 }}>
           <summary style={{ outline: 'none', fontWeight: 600, fontSize: '0.78rem', color: 'var(--ink)' }}>
-            Ranking justification
+            Ranking justification (rule-engine)
           </summary>
           <pre className="reasoning-block" style={{ marginTop: 8, background: 'rgba(0,0,0,0.2)', border: 'none', whiteSpace: 'pre-wrap' }}>
             {row.ranking_explanation}
+          </pre>
+        </details>
+      ) : null}
+
+      {row.llm_ranking_reasoning ? (
+        <details style={{ cursor: 'pointer', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 8 }}>
+          <summary style={{ outline: 'none', fontWeight: 600, fontSize: '0.78rem', color: 'var(--ink)' }}>
+            LLM ranking rationale (incl. SHAP / domain correlation)
+          </summary>
+          <pre className="reasoning-block" style={{ marginTop: 8, background: 'rgba(0,0,0,0.2)', border: 'none', whiteSpace: 'pre-wrap' }}>
+            {row.llm_ranking_reasoning}
           </pre>
         </details>
       ) : null}
@@ -376,6 +392,13 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
   const showEmptyState = isRealSession && !hasLiveModels;
   const displayRows = hasLiveModels ? models : showPrototype ? LEADERBOARD : [];
   const selectedModel = leaderboardData?.selected_model || null;
+  // Plural selected set (top-N% judge selection). Falls back to the singular
+  // field for older judge_decision.json payloads that predate this field.
+  const selectedModels = leaderboardData?.selected_models?.length
+    ? leaderboardData.selected_models
+    : selectedModel
+      ? [selectedModel]
+      : [];
   const decisionTrace = leaderboardData?.decision_trace || verdictData?.decision_trace || null;
   const comparisonExplanation =
     leaderboardData?.comparison_explanation || verdictData?.comparison_explanation || null;
@@ -403,6 +426,11 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
   }, [metricSchema, usingLive]);
   const winnerRow = displayRows.find((row) => row.winner) || displayRows[0];
   const winnerLabel = usingLive ? (selectedModel || winnerRow?.model_name || winnerRow?.model) : winnerRow?.model;
+  // The full selected set, in display order, for the multi-model hero copy.
+  const selectedRows = useMemo(
+    () => displayRows.filter((row) => selectedModels.includes(row.model_name || row.model)),
+    [displayRows, selectedModels],
+  );
 
   // Build a list of reasons for the selected model from the judge verdict.
   const winnerReasons = useMemo(() => {
@@ -447,7 +475,20 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
         </div>
         <div>
           <StatusPill status={heroPill.status} label={heroPill.label} spin={heroPill.status === 'running'} />
-          <h2>{winnerLabel ? `${winnerLabel} is the recommended model` : 'Awaiting judge verdict'}</h2>
+          <h2>
+            {!usingLive
+              ? winnerLabel ? `${winnerLabel} is the recommended model` : 'Awaiting judge verdict'
+              : selectedRows.length === 0
+                ? 'Awaiting judge verdict'
+                : selectedRows.length === 1
+                  ? `${selectedRows[0].model_name || selectedRows[0].model} is the recommended model`
+                  : `${selectedRows.length} models selected by the judge`}
+          </h2>
+          {usingLive && selectedRows.length > 1 ? (
+            <p className="muted" style={{ margin: '2px 0 0 0' }}>
+              Top pick: <strong>{selectedRows[0].model_name || selectedRows[0].model}</strong>
+            </p>
+          ) : null}
           <p className="muted">
             {showPrototype
               ? 'Sample leaderboard shown because no training run is active.'
@@ -890,6 +931,22 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
             </div>
             {verdictData ? <StatusPill status="done" label="Judge converged" /> : null}
           </div>
+
+          {/* Visible failure state: llm_ranking_status is always set by the
+              backend (applied/failed/skipped), so a 'failed' ranking is shown
+              explicitly instead of silently rendering an empty panel. */}
+          {decisionTrace?.llm_ranking_status === 'failed' ? (
+            <div className="inline-banner inline-banner-warn" role="alert" style={{ marginBottom: 10 }}>
+              <Icons.alert size={15} />
+              <span>LLM ranking unavailable -- showing rule-based order.</span>
+              {decisionTrace.llm_ranking_error ? (
+                <details style={{ marginLeft: 8, cursor: 'pointer' }}>
+                  <summary style={{ outline: 'none', fontSize: '0.78rem' }}>Error details</summary>
+                  <pre className="reasoning-block" style={{ marginTop: 6 }}>{decisionTrace.llm_ranking_error}</pre>
+                </details>
+              ) : null}
+            </div>
+          ) : null}
 
           {/* Full LLM commentary */}
           {decisionTrace?.llm_commentary ? (

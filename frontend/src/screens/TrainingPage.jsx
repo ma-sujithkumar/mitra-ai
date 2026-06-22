@@ -9,7 +9,7 @@ import ModelTrainingCard from '../components/training/ModelTrainingCard.jsx';
 import TrainingLogs from '../components/training/TrainingLogs.jsx';
 import TrainingProgress from '../components/training/TrainingProgress.jsx';
 import TrainingSummary from '../components/training/TrainingSummary.jsx';
-import { fetchHpt, fetchModelConfig, fetchPlots, fetchShap, fetchVerdict, plotUrl, fetchFeatureEngineering, fetchShapStatus, fetchOverfittingStatus, fetchJudgeStatus } from '../api/client.js';
+import { fetchDomainReasoning, fetchHpt, fetchModelConfig, fetchPlots, fetchShap, fetchVerdict, plotUrl, fetchFeatureEngineering, fetchShapStatus, fetchOverfittingStatus, fetchJudgeStatus } from '../api/client.js';
 import { streamTrainingEvents } from '../api/events.js';
 import { cancelTraining, fetchTrainingStatus, startTraining, resetTraining } from '../api/training.js';
 import { useBoundedPoll } from '../hooks/useBoundedPoll.js';
@@ -27,6 +27,7 @@ import {
 const judgeAgent = AGENTS.find((agent) => agent.id === 'judge');
 const hptAgent = AGENTS.find((agent) => agent.id === 'hpt');
 const featureAgent = AGENTS.find((agent) => agent.id === 'feature');
+const domainReasoningAgent = AGENTS.find((agent) => agent.id === 'domain_reasoning');
 
 // The pipeline stages this page renders a card for. SSE events for any other
 // stage (feature_engineering / metadata / validate / upload) are ignored here
@@ -102,6 +103,9 @@ function TrainingAnalyticsSection({ sessionId }) {
   const [modelConfigData, setModelConfigData] = useState(null);
   const [plots, setPlots] = useState([]);
   const [analyticsError, setAnalyticsError] = useState(null);
+  // Domain reasoning is generated once upstream (metadata stage) and never
+  // re-fetched on a loop -- a single one-shot read, same as model config.
+  const [domainReasoningData, setDomainReasoningData] = useState(null);
 
   useEffect(() => {
     if (!sessionId) return undefined;
@@ -111,7 +115,8 @@ function TrainingAnalyticsSection({ sessionId }) {
       fetchShap(sessionId),
       fetchModelConfig(sessionId),
       fetchPlots(sessionId),
-    ]).then(([shap, config, plotsResp]) => {
+      fetchDomainReasoning(sessionId).catch(() => null),
+    ]).then(([shap, config, plotsResp, domainReasoningResp]) => {
       if (cancelled) return;
       setAnalyticsError(null);
       const shapFeatures = (shap?.features || []).map((item) => ({
@@ -121,6 +126,9 @@ function TrainingAnalyticsSection({ sessionId }) {
       setShapData(shapFeatures.length ? shapFeatures : null);
       setModelConfigData(config?.status === 'complete' ? config : null);
       setPlots(plotsResp?.plots || []);
+      setDomainReasoningData(
+        domainReasoningResp?.status === 'complete' ? domainReasoningResp.domain_reasoning : null,
+      );
     }).catch((analyticsFetchError) => {
       if (!cancelled) {
         setAnalyticsError(
@@ -144,7 +152,9 @@ function TrainingAnalyticsSection({ sessionId }) {
     return models.map((modelEntry) => modelEntry.family || modelEntry.model_name || modelEntry.name).filter(Boolean);
   }, [modelConfigData]);
 
-  const hasContent = Boolean(shapData || analyticsPlots.length > 0 || modelFamilies.length > 0);
+  const hasContent = Boolean(
+    shapData || analyticsPlots.length > 0 || modelFamilies.length > 0 || domainReasoningData,
+  );
 
   if (!hasContent && !analyticsError) return null;
 
@@ -171,6 +181,50 @@ function TrainingAnalyticsSection({ sessionId }) {
               <span className="pill pill-queued" key={family}>{family}</span>
             ))}
           </div>
+        </section>
+      ) : null}
+
+      {/* Domain reasoning: problem summary, column meanings, leakage-risk flags. */}
+      {domainReasoningData ? (
+        <section className="card panel-section">
+          <div className="agent-reasoning-header">
+            {domainReasoningAgent ? <AgentAvatar agent={domainReasoningAgent} size={28} state="done" /> : null}
+            <div>
+              <p className="section-kicker">Domain Reasoning</p>
+              <h2>Problem & Column Semantics</h2>
+            </div>
+          </div>
+          {domainReasoningData.problem_summary ? (
+            <p style={{ marginTop: 4 }}>{domainReasoningData.problem_summary}</p>
+          ) : null}
+          {domainReasoningData.target_explanation ? (
+            <p className="muted" style={{ marginTop: 4 }}>{domainReasoningData.target_explanation}</p>
+          ) : null}
+
+          {domainReasoningData.overall_leakage_flags?.length > 0 ? (
+            <div className="inline-banner inline-banner-warn" role="alert" style={{ marginTop: 10 }}>
+              <Icons.alert size={15} />
+              <span>
+                Leakage-risk columns: {domainReasoningData.overall_leakage_flags.join(', ')}
+              </span>
+            </div>
+          ) : null}
+
+          {domainReasoningData.column_explanations ? (
+            <div className="rule-outcomes-table" style={{ marginTop: 10 }}>
+              {Object.entries(domainReasoningData.column_explanations).map(([columnName, columnInfo]) => (
+                <div className="rule-row" key={columnName}>
+                  <span className="rule-name mono">{columnName}</span>
+                  <span className="rule-value muted">
+                    {columnInfo.meaning}
+                    {columnInfo.leakage_risk && columnInfo.leakage_risk !== 'none'
+                      ? ` (leakage_risk: ${columnInfo.leakage_risk})`
+                      : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </section>
       ) : null}
 

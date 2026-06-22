@@ -18,6 +18,15 @@ export const AGENTS = [
     owner: 'P4',
   },
   {
+    id: 'domain_reasoning',
+    name: 'Domain Reasoner',
+    short: 'DR',
+    hue: 42,
+    type: 'LLM',
+    role: 'Column semantics and leakage-risk detection',
+    owner: 'P5',
+  },
+  {
     id: 'feature',
     name: 'Feature Selection',
     short: 'FS',
