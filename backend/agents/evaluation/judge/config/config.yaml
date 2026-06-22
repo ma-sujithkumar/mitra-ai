@@ -29,10 +29,44 @@ overfitting_gap_cap: 0.50
 # Number of top SHAP features to include when building shap_summary from a CSV.
 shap_top_n_features: 5
 
+# Deterministic post-ranking selection: applied as the LAST step of
+# JudgeAgent.judge(), after the optional LLM ranking. Selects the top
+# ceil(selection_top_pct * eligible_count) models, clamped to at least
+# selection_min_count when that many models pass the hard gate (never more
+# than eligible_count). Eligible-but-unselected models become verdict
+# "rank_only", not "reject" -- they passed the quality gate, they just didn't
+# make the selected set. This is plain Python; the LLM never decides selection.
+selection_top_pct: 0.70
+selection_min_count: 3
+
+# Deterministic clamp on the LLM ranking step: the LLM may use SHAP/domain
+# correlation as a tie-breaker among comparably-performing survivors, but it
+# can never rank a model above another whose primary metric (accuracy/r2) is
+# more than this much better -- SHAP/domain concerns cannot override a large
+# predictive-quality gap. Expressed as an absolute primary-metric difference
+# (e.g. 0.10 = 10 percentage points of accuracy/r2).
+llm_ranking_max_accuracy_drop: 0.10
+
+# Score deduction applied per governance flag (prediction-skew bias,
+# majority-baseline shortcut learning, degenerate/low-entropy predictions,
+# SHAP-leakage concentration). These checks NEVER reject a candidate -- only
+# the accuracy_floor/r2_floor above does -- they demote rank via this
+# penalty so a flagged model still competes for top-N% selection if nothing
+# cleaner is available, instead of starving the selection pool to zero.
+governance_flag_penalty: 0.5
+
 # LLM settings. Credentials are resolved via LlmSettingsResolver (reads .env:
 # LLM_TYPE, LLM_MODEL, LLM_API_KEY, LLM_GATEWAY_URL) - same as every other agent.
 use_llm: true
 prompt_template: judge_prompt.jinja2
+# Retries for the LLM ranking call (timeout/parse/validation failures only,
+# never auth errors) before falling back to rule-only order.
+llm_judge_max_retries: 2
+# Per-attempt timeout for the LLM ranking call. Raised from 30s -- the
+# get_model_evaluation_details_bulk tool call plus the final ranking
+# response routinely needs longer than 30s for larger candidate sets,
+# which was causing real timeouts on multi-class datasets like matches.csv.
+llm_judge_timeout_sec: 90.0
 # When true, sets LITELLM_LOG=DEBUG around the judge LLM call so the raw litellm
 # request/response is printed in the backend logs (same wire-level debug the
 # other agents produce). The rendered prompt + response are always logged at INFO.

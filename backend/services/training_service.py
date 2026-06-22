@@ -321,9 +321,13 @@ class TrainingService:
                 except Exception:
                     pass
             
-            # Also clear the judge decision, model config, and training summary report files if they exist.
+            # Clear training/eval OUTPUT report files so the pipeline re-runs clean.
+            # NOTE: model_config.json is deliberately preserved -- it is a feature-
+            # engineering/model-selection INPUT that training consumes, not a
+            # training output. Deleting it left a re-run with no model config and
+            # the start call failed with TRAINING_ARTIFACTS_INVALID.
             reports_dir = session_path / "reports"
-            for filename in ("judge_decision.json", "training_summary.json", "judge_status.json", "model_config.json"):
+            for filename in ("judge_decision.json", "training_summary.json", "judge_status.json"):
                 report_file = reports_dir / filename
                 if report_file.is_file():
                     try:
@@ -917,6 +921,7 @@ class TrainingService:
                 task_type=task_type,
                 target_column=request.target_column,
                 event_bus=self.event_bus,
+                shap_timeout_sec=self.config_loader.pipeline.shap_timeout_sec,
             )
             self.event_bus.emit(
                 TrainingEvent(

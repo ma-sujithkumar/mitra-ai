@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.activity_log import configure_file_logging
+from backend.agents.domain_reasoning_agent import DomainReasoningAgentRunner
 from backend.agents.llm_smoke_test import LlmSmokeTester
 from backend.agents.metadata_gen_agent import MetadataAgentRunner
 from backend.auth.db import AuthDatabase
@@ -80,6 +81,7 @@ def create_app(config_loader: ConfigLoader | None = None) -> FastAPI:
         event_bus=app.state.training_event_bus,
     )
     app.state.metadata_agent_runner = MetadataAgentRunner()
+    app.state.domain_reasoning_agent_runner = DomainReasoningAgentRunner()
     app.state.llm_smoke_tester = LlmSmokeTester()
     # Auth database is lazy: the engine/tables are created on first request so
     # the app still starts when PostgreSQL is unavailable; only auth endpoints fail then.

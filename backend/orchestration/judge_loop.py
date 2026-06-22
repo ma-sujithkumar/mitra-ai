@@ -58,6 +58,7 @@ class JudgeInputBuilder:
         session_dir: Path,
         dataset_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        domain_reasoning: Optional[Dict[str, Any]] = None,
     ) -> JudgeInput:
         """Build JudgeInput preferring HPT path; falls back to training_summary path."""
         if eval_artifacts.hpt_results_path and Path(eval_artifacts.hpt_results_path).exists():
@@ -65,6 +66,7 @@ class JudgeInputBuilder:
                 eval_artifacts=eval_artifacts,
                 dataset_id=dataset_id,
                 metadata=metadata,
+                domain_reasoning=domain_reasoning,
             )
         return self._build_from_training_summary(
             eval_artifacts=eval_artifacts,
@@ -72,6 +74,7 @@ class JudgeInputBuilder:
             session_dir=session_dir,
             dataset_id=dataset_id,
             metadata=metadata,
+            domain_reasoning=domain_reasoning,
         )
 
     def _build_from_hpt(
@@ -79,6 +82,7 @@ class JudgeInputBuilder:
         eval_artifacts: EvalArtifacts,
         dataset_id: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        domain_reasoning: Optional[Dict[str, Any]] = None,
     ) -> JudgeInput:
         """Use adapt_from_hpt_results() which already handles SHAP enrichment."""
         # Use the first non-None shap_dir as root (per-model lookup handled in adapter)
@@ -94,6 +98,7 @@ class JudgeInputBuilder:
             shap_dir=shap_root_dir,
             dataset_id=dataset_id,
             metadata=metadata,
+            domain_reasoning=domain_reasoning,
         )
 
     def _build_from_training_summary(
@@ -103,6 +108,7 @@ class JudgeInputBuilder:
         session_dir: Path,
         dataset_id: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        domain_reasoning: Optional[Dict[str, Any]] = None,
     ) -> JudgeInput:
         """Build candidates directly from training_summary + overfitting JSONs."""
         primary_metric = "accuracy" if self.task_type == "classification" else "r2"
@@ -154,6 +160,7 @@ class JudgeInputBuilder:
             candidate_raw_list=candidate_raws,
             dataset_id=dataset_id,
             metadata=metadata,
+            domain_reasoning=domain_reasoning,
         )
 
     def _infer_complexity(self, model_name: str) -> Dict[str, Any]:
@@ -238,12 +245,17 @@ class JudgeLoop:
             msg="[JUDGE] Building evaluation input from SHAP, overfitting, and training metrics...",
             pct=10,
         )
+        # Domain reasoning is generated once upstream (metadata stage) and is
+        # only ever read here, never regenerated -- a single disk read per
+        # JudgeLoop.run() call, reused as-is for this single-turn run.
+        domain_reasoning = self._load_domain_reasoning(session_dir=session_dir)
         judge_input = self.input_builder.build(
             eval_artifacts=eval_artifacts,
             training_summary=training_summary,
             session_dir=session_dir,
             dataset_id=dataset_id,
             metadata=metadata,
+            domain_reasoning=domain_reasoning,
         )
         candidate_count = len(judge_input.candidates) if judge_input else 0
         self._write_judge_status(session_dir, 1, 1, "running", f"Evaluating {candidate_count} model candidate(s) with rule engine + LLM...")
@@ -316,6 +328,9 @@ class JudgeLoop:
         # Initialize decision to None so the return below is always defined
         # even when the loop breaks before judge_agent.judge() is called.
         decision: Optional[JudgeDecision] = None
+        # Loaded exactly once for the whole feedback loop -- every turn reuses
+        # the same in-memory dict rather than re-reading or regenerating it.
+        domain_reasoning = self._load_domain_reasoning(session_dir=session_dir)
 
         for turn_number in range(1, self.max_turns + 1):
             def status_callback(msg: str, details: Optional[Dict[str, Any]] = None) -> None:
@@ -342,6 +357,7 @@ class JudgeLoop:
                 session_dir=session_dir,
                 dataset_id=dataset_id,
                 metadata=metadata,
+                domain_reasoning=domain_reasoning,
             )
 
             if not judge_input.candidates:
@@ -436,15 +452,20 @@ class JudgeLoop:
             excluded_model_names = list(set(excluded_model_names))
 
             accepted_count = len(decision.ranked_models) - len(rejected_names)
-            # Halve the new-candidate count each turn: turn 2 => N/2, turn 3 => N/4, etc.
-            # Ensures later turns add fewer models so training stays fast.
+            # Halve the NEW-candidate count each turn: turn 2 => N/2, turn 3 => N/4, etc.
+            # The effective_max passed to the selector must also include the approved carries
+            # so those don't consume the new-model slots (bug: approved ate slots causing 0 new
+            # models in turn 3 and a wasted LLM judge call on an unchanged pool).
             new_models_count = max(2, max_models // (2 ** turn_number))
+            effective_max_models = len(accumulated_approved) + new_models_count
             logger.info(
-                "=> judge feedback turn %d: %d accepted, %d rejected. Selecting %d new candidates. Excluded: %s",
+                "=> judge feedback turn %d: %d accepted, %d rejected. "
+                "Selecting %d new candidates (effective_max=%d). Excluded: %s",
                 turn_number,
                 accepted_count,
                 len(rejected_names),
                 new_models_count,
+                effective_max_models,
                 excluded_model_names,
             )
             feedback_msg = (
@@ -467,7 +488,8 @@ class JudgeLoop:
                 details={"accepted": accepted_count, "rejected": len(rejected_names)},
             )
 
-            # Re-invoke model selection with half the original count for subsequent turns.
+            # Re-invoke model selection; pass effective_max so approved carries don't consume
+            # the new-model slots (approved + new_models_count slots total).
             self._reselect_models(
                 approved_model_names=accumulated_approved,
                 rejected_model_names=accumulated_rejected,
@@ -476,8 +498,11 @@ class JudgeLoop:
                 feature_selection_path=feature_selection_path,
                 mini_data_path=mini_data_path,
                 model_library_root=model_library_root,
-                max_models=new_models_count,
+                max_models=effective_max_models,
             )
+
+            # Track model count before callback to detect the "no new models" skip path.
+            models_before_callback = len(getattr(current_training_summary, "models", []) or [])
 
             # Re-train via callback; callback merges models across turns and re-runs EvalRunner.
             callback_result = training_callback(excluded_model_names)
@@ -490,6 +515,28 @@ class JudgeLoop:
                 )
             else:
                 current_training_summary = callback_result
+
+            # Early-exit if the callback returned no new models (catalog exhausted or all
+            # reselected candidates were already trained). Re-running the judge on an
+            # identical pool would consume LLM tokens for zero new information.
+            models_after_callback = len(getattr(current_training_summary, "models", []) or [])
+            if models_after_callback <= models_before_callback:
+                logger.info(
+                    "=> judge loop: no new models after turn %d callback (before=%d, after=%d). "
+                    "Returning current decision without redundant judge call.",
+                    turn_number,
+                    models_before_callback,
+                    models_after_callback,
+                )
+                self._write_judge_status(
+                    session_dir=session_dir,
+                    turn=turn_number,
+                    max_turns=self.max_turns,
+                    status="completed",
+                    message=f"Catalog exhausted after turn {turn_number}: no new candidates available. Returning best result.",
+                    details={"selected_model": decision.selected_model, "ranked_count": len(decision.ranked_models)},
+                )
+                return decision
 
         return last_decision or decision  # type: ignore[return-value]  # decision init'd above
 
@@ -565,7 +612,11 @@ class JudgeLoop:
         if self.event_bus is None or not self.session_id:
             return
         # Map verdict => streamed verb (no if-else ladder).
-        verdict_verb_map: Dict[str, str] = {"select": "Approving", "reject": "Rejecting"}
+        verdict_verb_map: Dict[str, str] = {
+            "select": "Approving",
+            "rank_only": "Ranking",
+            "reject": "Rejecting",
+        }
         for ranked_model in decision.ranked_models:
             self._emit_judge_event(
                 turn_number=turn_number,
@@ -603,6 +654,25 @@ class JudgeLoop:
                 },
             )
 
+    @staticmethod
+    def _load_domain_reasoning(session_dir: Path) -> Optional[Dict[str, Any]]:
+        # domain_reasoning.json is generated exactly once, upstream, during
+        # metadata generation (see backend/routers/metadata.py and Stage 1.5
+        # of run_pipeline.py). It is read-only here -- the judge never
+        # triggers generation itself, and a missing file is tolerated.
+        domain_reasoning_path = session_dir / "reports" / "domain_reasoning.json"
+        if not domain_reasoning_path.is_file():
+            return None
+        try:
+            return json.loads(domain_reasoning_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(
+                "=> failed to read domain_reasoning.json at %s: %s",
+                domain_reasoning_path,
+                exc,
+            )
+            return None
+
     def _persist_decision(self, decision: JudgeDecision, session_dir: Path, turn: int) -> None:
         """Write judge_decision.json (overwritten each turn; turn N also archived)."""
         reports_dir = session_dir / "reports"
@@ -615,6 +685,20 @@ class JudgeLoop:
         turn_path = reports_dir / f"judge_decision_turn_{turn}.json"
         turn_path.write_text(json.dumps(decision_data, indent=2), encoding="utf-8")
         logger.debug("=> judge decision written: %s", canonical_path)
+        self._persist_prompt_transcript(decision, reports_dir, turn)
+
+    @staticmethod
+    def _persist_prompt_transcript(decision: JudgeDecision, reports_dir: Path, turn: int) -> None:
+        # The rendered judge prompt is already stored in decision_trace.transcript
+        # (the full audit trail); also dump it as a standalone text file in the
+        # session dir so it's directly inspectable without parsing JSON.
+        transcript = decision.decision_trace.transcript
+        if not transcript:
+            return
+        canonical_prompt_path = reports_dir / "judge_prompt.txt"
+        canonical_prompt_path.write_text(transcript, encoding="utf-8")
+        turn_prompt_path = reports_dir / f"judge_prompt_turn_{turn}.txt"
+        turn_prompt_path.write_text(transcript, encoding="utf-8")
 
     def _write_judge_status(
         self,

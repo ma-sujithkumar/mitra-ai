@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import StatusPill from '../components/StatusPill.jsx';
+import Toast from '../components/Toast.jsx';
 import { fetchPlots, plotUrl, generatePlots, fetchFEVisuals, feVisualUrl } from '../api/client.js';
 import { Icons } from '../icons.jsx';
 
@@ -341,7 +342,7 @@ function VisualizationPage({ activeSessionId }) {
         </div>
       </section>
 
-      {/* Status banners */}
+      {/* Loading spinner for in-progress operations */}
       {(isGenerating || feVisualsLoading) && (
         <div className="callout compact" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
           <div className="spinner small" />
@@ -349,12 +350,12 @@ function VisualizationPage({ activeSessionId }) {
         </div>
       )}
 
-      {generationMessage && (
-        <div className="callout success compact" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Icons.checkCircle size={16} style={{ color: 'var(--ok)' }} />
-          <span>{generationMessage}</span>
-        </div>
-      )}
+      {/* Compact auto-dismissing toast for success messages */}
+      <Toast
+        message={generationMessage}
+        tone="success"
+        onDismiss={() => setGenerationMessage(null)}
+      />
 
       {(generationError || feVisualsError) && (
         <div className="callout error compact" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>

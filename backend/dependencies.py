@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import Request
 
+from backend.agents.domain_reasoning_agent import DomainReasoningAgentRunner
 from backend.agents.llm_smoke_test import LlmSmokeTester
 from backend.agents.metadata_gen_agent import MetadataAgentRunner
 from backend.auth.service import AuthService
@@ -24,6 +25,10 @@ def get_job_registry(request: Request) -> JobRegistry:
 
 def get_metadata_agent_runner(request: Request) -> MetadataAgentRunner:
     return request.app.state.metadata_agent_runner
+
+
+def get_domain_reasoning_agent_runner(request: Request) -> DomainReasoningAgentRunner:
+    return request.app.state.domain_reasoning_agent_runner
 
 
 def get_llm_smoke_tester(request: Request) -> LlmSmokeTester:

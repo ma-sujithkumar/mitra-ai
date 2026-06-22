@@ -64,6 +64,10 @@ class JudgeInput(BaseModel):
     # Dataset-level context-only inputs.
     minidata: Optional[Dict[str, Any]] = None
     metadata: Optional[Dict[str, Any]] = None
+    # Domain-reasoning agent output (column meanings, problem summary, leakage
+    # flags). Generated once per session, attached unchanged to every turn's
+    # JudgeInput. None when the domain-reasoning agent did not run or failed.
+    domain_reasoning: Optional[Dict[str, Any]] = None
 
 
 class Finding(BaseModel):
@@ -85,13 +89,20 @@ class RankedModel(BaseModel):
     model_name: str
     rank: int
     score: float
-    verdict: str = Field(..., description="'select' or 'reject'.")
+    verdict: str = Field(
+        ...,
+        description=(
+            "'select' (passed hard gate, in top-N% selection), 'rank_only' "
+            "(passed hard gate, ranked but outside the top-N% cutoff), or "
+            "'reject' (failed the deterministic hard gate)."
+        ),
+    )
     reasons: List[str]
     llm_flags: List[str] = Field(default_factory=list)
     # Governance-dashboard additions (deterministic, rule-derived):
     decision: str = Field(
         default="PENDING",
-        description="'APPROVED' or 'REJECTED', derived from verdict.",
+        description="'APPROVED', 'RANKED', or 'REJECTED', derived from verdict.",
     )
     findings: List[Finding] = Field(
         default_factory=list,
@@ -99,7 +110,16 @@ class RankedModel(BaseModel):
     )
     ranking_explanation: Optional[str] = Field(
         default=None,
-        description="Why this model ranked where it did (approved models only).",
+        description="Why this model ranked where it did (rule-engine-authored).",
+    )
+    llm_ranking_reasoning: Optional[str] = Field(
+        default=None,
+        description=(
+            "LLM-authored reasoning for this model's rank, including SHAP/"
+            "domain-reasoning correlation. Distinct from ranking_explanation, "
+            "which is rule-engine-authored. None when the LLM ranking step "
+            "did not run or failed."
+        ),
     )
 
 
@@ -109,13 +129,33 @@ class DecisionTrace(BaseModel):
     rule_outcomes: Dict[str, Any]
     llm_commentary: Optional[str] = None
     transcript: Optional[str] = None
+    llm_ranking_status: Optional[str] = Field(
+        default=None,
+        description=(
+            "'applied' (LLM ranking succeeded and reordered survivors), "
+            "'failed' (LLM ranking was attempted but exhausted retries), or "
+            "'skipped' (use_llm was False). Never silently missing -- a null "
+            "value here only ever means the LLM step was never attempted."
+        ),
+    )
+    llm_ranking_error: Optional[str] = Field(
+        default=None,
+        description="Error message when llm_ranking_status == 'failed'.",
+    )
 
 
 class JudgeDecision(BaseModel):
     """Final output written to judge_decision.json and returned to the orchestrator."""
 
     dataset_id: Optional[str]
-    selected_model: Optional[str]
+    selected_model: Optional[str] = Field(
+        default=None,
+        description="Deprecated: use selected_models[0] when present. Kept for backward compatibility.",
+    )
+    selected_models: List[str] = Field(
+        default_factory=list,
+        description="Deterministic top-N% (min-3-floor) selection among eligible ranked models.",
+    )
     ranked_models: List[RankedModel]
     decision_trace: DecisionTrace
     comparison_explanation: Optional[str] = Field(

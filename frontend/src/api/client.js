@@ -106,6 +106,10 @@ export async function fetchVerdict(sessionId) {
   return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/verdict`);
 }
 
+export async function fetchDomainReasoning(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/domain-reasoning`);
+}
+
 export async function fetchShap(sessionId, modelName = null) {
   const query = modelName ? `?model_name=${encodeURIComponent(modelName)}` : '';
   return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/shap${query}`);
