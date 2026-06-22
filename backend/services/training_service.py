@@ -922,6 +922,7 @@ class TrainingService:
                 target_column=request.target_column,
                 event_bus=self.event_bus,
                 shap_timeout_sec=self.config_loader.pipeline.shap_timeout_sec,
+                shap_skip_model_classes=self.config_loader.pipeline.shap_skip_model_classes,
             )
             self.event_bus.emit(
                 TrainingEvent(

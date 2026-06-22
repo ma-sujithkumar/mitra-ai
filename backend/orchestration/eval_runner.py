@@ -251,6 +251,7 @@ class EvalRunner:
         verbose: bool = False,
         event_bus: Optional[TrainingEventBus] = None,
         shap_timeout_sec: int = 180,
+        shap_skip_model_classes: Optional[list[str]] = None,
     ) -> None:
         self.session_id = session_id
         self.session_dir = session_dir
@@ -260,6 +261,8 @@ class EvalRunner:
         self.verbose = verbose
         self.event_bus = event_bus
         self.shap_timeout_sec = shap_timeout_sec
+        # Use a set for O(1) membership checks in the launch loop.
+        self.shap_skip_model_classes: set[str] = set(shap_skip_model_classes or [])
 
     def run(
         self,
@@ -349,6 +352,27 @@ class EvalRunner:
                             level="warn",
                             status="running",
                             msg=f"[SHAP EXPLAINER] Skipping SHAP for model {model_result.model_name} (failed to train, no model path)",
+                            pct=10,
+                        )
+                    )
+                continue
+            # Skip models whose class is in the configured skip list (e.g. SVC, NuSVC).
+            # These use KernelExplainer which consistently exceeds SHAP_TIMEOUT_SEC and
+            # produces no output. Skipping upfront avoids the full timeout wait.
+            if model_result.model_name in self.shap_skip_model_classes:
+                logger.info(
+                    "=> SHAP skip: model=%s is in shap_skip_model_classes, skipping SHAP",
+                    model_result.model_name,
+                )
+                shap_dirs[model_result.model_name] = None
+                if self.event_bus:
+                    self.event_bus.emit(
+                        TrainingEvent(
+                            session_id=self.session_id,
+                            stage="shap",
+                            level="info",
+                            status="running",
+                            msg=f"[SHAP EXPLAINER] SHAP skipped for model {model_result.model_name} (KernelSVM - not supported efficiently, skipped per configuration)",
                             pct=10,
                         )
                     )

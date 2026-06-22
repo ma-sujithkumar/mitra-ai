@@ -49,6 +49,7 @@ class PipelineConfig:
     run_post_training_eval: bool
     max_judge_turns: int
     shap_timeout_sec: int
+    shap_skip_model_classes: list[str]
 
 
 @dataclass(frozen=True)
@@ -237,6 +238,9 @@ class ConfigLoader:
             ),
             shap_timeout_sec=self.parser.getint(
                 "pipeline", "SHAP_TIMEOUT_SEC", fallback=180
+            ),
+            shap_skip_model_classes=self._parse_csv_list(
+                self.parser.get("pipeline", "SHAP_SKIP_MODEL_CLASSES", fallback="")
             ),
         )
         self.llm_models = LlmModelsConfig(
