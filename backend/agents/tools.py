@@ -144,3 +144,84 @@ class MetadataTools:
             session_id=session_id,
             metadata_path=metadata_path,
         )
+
+
+@dataclass(frozen=True)
+class DomainReasoningWriteResult:
+    session_id: str
+    domain_reasoning_path: Path
+
+
+class DomainReasoningTools:
+    def __init__(
+        self,
+        workspace_root: Path,
+        schema_path: Path | None = None,
+    ) -> None:
+        self.session_manager = SessionManager(workspace_root=workspace_root)
+        self.schema_path = (
+            schema_path
+            or Path(__file__).resolve().parents[1]
+            / "schemas"
+            / "domain_reasoning_schema.json"
+        )
+        schema_payload = json.loads(self.schema_path.read_text(encoding="utf-8"))
+        self.validator = Draft7Validator(schema_payload)
+
+    def read_metadata(self, session_id: str) -> dict[str, Any]:
+        metadata_path = self._metadata_path(session_id=session_id)
+        return json.loads(metadata_path.read_text(encoding="utf-8"))
+
+    def write_domain_reasoning(
+        self,
+        session_id: str,
+        domain_reasoning: dict[str, Any],
+    ) -> DomainReasoningWriteResult:
+        normalized_domain_reasoning = self._coerce_domain_reasoning_dict(
+            domain_reasoning=domain_reasoning
+        )
+        normalized_domain_reasoning["session_id"] = session_id
+        session_path = self.session_manager.get_session_path(session_id=session_id)
+        reports_dir = session_path / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        self.validator.validate(normalized_domain_reasoning)
+
+        domain_reasoning_path = reports_dir / "domain_reasoning.json"
+        domain_reasoning_path.write_text(
+            json.dumps(normalized_domain_reasoning, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        return DomainReasoningWriteResult(
+            session_id=session_id,
+            domain_reasoning_path=domain_reasoning_path,
+        )
+
+    def _metadata_path(self, session_id: str) -> Path:
+        session_path = self.session_manager.get_session_path(session_id=session_id)
+        metadata_path = session_path / "reports" / "metadata.json"
+        if not metadata_path.is_file():
+            raise FileNotFoundError(
+                f"metadata.json not found for session: {session_id}"
+            )
+        return metadata_path
+
+    @staticmethod
+    def _coerce_domain_reasoning_dict(
+        domain_reasoning: dict[str, Any] | str,
+    ) -> dict[str, Any]:
+        # Some models return the structured argument as a JSON-encoded string
+        # instead of a structured object (same quirk handled for write_metadata).
+        if isinstance(domain_reasoning, dict):
+            return domain_reasoning
+        if isinstance(domain_reasoning, str):
+            parsed_domain_reasoning = json.loads(domain_reasoning)
+            if not isinstance(parsed_domain_reasoning, dict):
+                raise ValueError(
+                    "domain_reasoning tool argument must decode to a JSON object, "
+                    f"got {type(parsed_domain_reasoning).__name__}"
+                )
+            return parsed_domain_reasoning
+        raise ValueError(
+            "domain_reasoning tool argument must be an object, got "
+            f"{type(domain_reasoning).__name__}"
+        )

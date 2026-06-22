@@ -127,6 +127,7 @@ class UpstreamAdapter:
         dataset_id: Optional[str] = None,
         minidata: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        domain_reasoning: Optional[Dict[str, Any]] = None,
     ) -> JudgeInput:
         """Build a full JudgeInput from a list of raw per-model dicts.
 
@@ -154,6 +155,7 @@ class UpstreamAdapter:
             candidates=candidates,
             minidata=minidata,
             metadata=metadata,
+            domain_reasoning=domain_reasoning,
         )
 
     def build_shap_summary_from_csv(
@@ -220,6 +222,7 @@ class UpstreamAdapter:
         dataset_id: Optional[str] = None,
         minidata: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        domain_reasoning: Optional[Dict[str, Any]] = None,
     ) -> JudgeInput:
         """Build a JudgeInput directly from an hpt_results.json file.
 
@@ -323,4 +326,5 @@ class UpstreamAdapter:
             candidates=candidates,
             minidata=minidata,
             metadata=metadata,
+            domain_reasoning=domain_reasoning,
         )
