@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import StatusPill from '../components/StatusPill.jsx';
+import Toast from '../components/Toast.jsx';
 import { fetchPlots, plotUrl, generatePlots } from '../api/client.js';
 import { Icons } from '../icons.jsx';
 
@@ -162,19 +163,12 @@ function VisualizationPage({ activeSessionId }) {
         </div>
       </section>
 
-      {isGenerating && (
-        <div className="callout compact" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div className="spinner small" />
-          <span>Generating visualizations...</span>
-        </div>
-      )}
-
-      {generationMessage && (
-        <div className="callout success compact" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Icons.checkCircle size={16} style={{ color: 'var(--ok)' }} />
-          <span>{generationMessage}</span>
-        </div>
-      )}
+      {/* Compact auto-dismissing toast instead of a full-width inline banner. */}
+      <Toast
+        message={generationMessage}
+        tone="success"
+        onDismiss={() => setGenerationMessage(null)}
+      />
 
       {generationError && (
         <div className="callout error compact" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>

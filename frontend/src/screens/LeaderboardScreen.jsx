@@ -77,7 +77,9 @@ function ModelDecisionCard({ row }) {
       className="decision-card"
       style={{
         background: 'rgba(255,255,255,0.02)',
-        border: row.winner ? '1px solid rgba(34,197,94,0.35)' : '1px solid rgba(255,255,255,0.06)',
+        // Border colour mirrors the decision: green = APPROVED, red = REJECTED,
+        // neutral = PENDING (reuses the pill's per-decision border colour).
+        border: pillStyle.border || '1px solid rgba(255,255,255,0.06)',
         borderRadius: 8,
         padding: 16,
         display: 'flex',
@@ -85,15 +87,21 @@ function ModelDecisionCard({ row }) {
         gap: 10,
       }}
     >
+      {/* Top row: rank on the left, decision pill on the right. Keeping these on
+          their own line stops a long model name from squeezing them off-card. */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {row.winner ? <Icons.trophy size={16} /> : null}
-          <strong style={{ fontSize: '1rem' }}>{row.model_name || row.model}</strong>
-          <span className="mono muted" style={{ fontSize: '0.75rem' }}>rank #{row.rank}</span>
-        </div>
-        <span className="pill" style={{ ...pillStyle, fontWeight: 700, fontSize: '0.72rem', padding: '2px 10px', borderRadius: 5 }}>
+        <span className="mono" style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--ink)' }}>Rank #{row.rank}</span>
+        <span
+          className="pill"
+          style={{ ...pillStyle, fontWeight: 700, fontSize: '0.72rem', padding: '2px 10px', borderRadius: 5, whiteSpace: 'nowrap', flexShrink: 0 }}
+        >
           {decision}
         </span>
+      </div>
+      {/* Model name on its own full-width line so long names wrap cleanly. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        {row.winner ? <Icons.trophy size={16} /> : null}
+        <strong style={{ fontSize: '1rem', overflowWrap: 'anywhere' }}>{row.model_name || row.model}</strong>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -403,16 +411,6 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
     const winnerRecord = ranked.find((m) => m.model_name === selectedModel) || ranked[0];
     return winnerRecord?.reasons || [];
   }, [verdictData, selectedModel]);
-
-  // Per-agent token totals for the token usage panel.
-  const agentTokenRows = useMemo(() => {
-    if (!tokenData?.agents) return [];
-    return Object.entries(tokenData.agents).map(([agentName, usage]) => ({
-      name: agentName,
-      input: usage?.input_tokens ?? 0,
-      output: usage?.output_tokens ?? 0,
-    }));
-  }, [tokenData]);
 
   // Hero status pill reflects the real state instead of always claiming the
   // judge converged.
@@ -952,33 +950,6 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
             </div>
           ) : null}
         </section>
-
-        {/* Token usage panel */}
-        {tokenData || loadState === 'done' ? (
-          <section className="card panel-section">
-            <div className="section-head">
-              <div>
-                <p className="section-kicker">Resources</p>
-                <h2>Token Usage</h2>
-              </div>
-              <Icons.spark size={18} />
-            </div>
-            {agentTokenRows.length > 0 ? (
-              <div className="rule-outcomes-table">
-                {agentTokenRows.map(({ name, input, output }) => (
-                  <div className="rule-row" key={name}>
-                    <span className="rule-name mono">{name}</span>
-                    <span className="rule-value muted">
-                      {input.toLocaleString()} in / {output.toLocaleString()} out
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="muted">No token usage data available.</p>
-            )}
-          </section>
-        ) : null}
       </div>
     </div>
   );

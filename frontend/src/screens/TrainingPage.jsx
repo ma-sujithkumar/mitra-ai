@@ -598,21 +598,47 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     }
   }, [connectedSessionId]);
 
+  // Backend status strings that mean a stage is finished (raw endpoint values,
+  // before the stage-status mapping that turns 'completed' into 'complete').
+  const EVAL_TERMINAL_STATUSES = ['completed', 'all_completed', 'complete', 'failed'];
+
+  // These polls are deliberately NOT gated on connectionStatus. The backend
+  // closes the SSE session the instant the pipeline finishes (and replayed
+  // history can be trimmed on reconnect), so gating on the live stream stopped
+  // these polls right when they were still needed -- leaving SHAP/overfitting/
+  // judge stuck on "awaiting" and the evaluation event stream empty even though
+  // the artifacts were already on disk. Instead each poll runs until its own
+  // stage reaches a terminal state (stopWhen) and is bounded on errors.
   useBoundedPoll(pollShapStatus, {
-    enabled: Boolean(connectedSessionId) && verdictData?.status !== 'complete' && connectionStatus !== 'closed',
+    enabled:
+      Boolean(connectedSessionId) &&
+      verdictData?.status !== 'complete' &&
+      !['complete', 'failed'].includes(stageStatuses.shap.status),
     intervalMs: 2000,
+    maxErrorAttempts: 6,
+    stopWhen: (data) => EVAL_TERMINAL_STATUSES.includes(data?.status),
     resetKey: `${connectedSessionId}-${runToken}`,
   });
 
   useBoundedPoll(pollOverfittingStatus, {
-    enabled: Boolean(connectedSessionId) && verdictData?.status !== 'complete' && connectionStatus !== 'closed',
+    enabled:
+      Boolean(connectedSessionId) &&
+      verdictData?.status !== 'complete' &&
+      !['complete', 'failed'].includes(stageStatuses.overfitting.status),
     intervalMs: 2000,
+    maxErrorAttempts: 6,
+    stopWhen: (data) => EVAL_TERMINAL_STATUSES.includes(data?.status),
     resetKey: `${connectedSessionId}-${runToken}`,
   });
 
   useBoundedPoll(pollJudgeStatus, {
-    enabled: Boolean(connectedSessionId) && verdictData?.status !== 'complete' && connectionStatus !== 'closed',
+    enabled:
+      Boolean(connectedSessionId) &&
+      verdictData?.status !== 'complete' &&
+      !['complete', 'failed'].includes(stageStatuses.judge.status),
     intervalMs: 2000,
+    maxErrorAttempts: 6,
+    stopWhen: (data) => EVAL_TERMINAL_STATUSES.includes(data?.status),
     resetKey: `${connectedSessionId}-${runToken}`,
   });
 
@@ -697,13 +723,18 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
   // re-replay history. Close it explicitly so the stream stops cleanly.
   useEffect(() => {
     const verdictDone = verdictData?.status === 'complete';
-    const runEnded = ['failed', 'cancelled'].includes(backendStatus?.status);
+    // Include 'completed'/'partial_failure': the backend sets these only AFTER
+    // post-training evaluation (SHAP + overfitting + judge) has fully finished,
+    // so by then the SSE session is already closed server-side. Closing the
+    // client stream here stops the "connecting/reconnecting" spinner from
+    // looping forever when the verdict poll lags behind the terminal status.
+    const runEnded = ['completed', 'partial_failure', 'failed', 'cancelled'].includes(backendStatus?.status);
     if ((verdictDone || runEnded) && sourceRef.current) {
       sourceRef.current.close();
       sourceRef.current = null;
       setConnectionStatus('closed');
       setConnectionMessage(
-        verdictDone
+        verdictDone || backendStatus?.status === 'completed'
           ? 'Pipeline complete. Live stream closed.'
           : 'Run ended. Live stream closed.',
       );

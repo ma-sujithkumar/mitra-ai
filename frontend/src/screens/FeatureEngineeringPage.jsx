@@ -7,7 +7,7 @@ import {
   fetchFeatureEngineering,
   fetchFeatureEngineeringJobStatus,
 } from '../api/client.js';
-import { startTraining } from '../api/training.js';
+import { fetchTrainingStatus, resetTraining, startTraining } from '../api/training.js';
 import { AGENTS } from '../data.js';
 import { Icons } from '../icons.jsx';
 
@@ -283,6 +283,11 @@ function FeatureEngineeringPage({ activeSessionId, startRun }) {
   const [polling, setPolling] = useState(false);
   const [startingTraining, setStartingTraining] = useState(false);
   const [trainingError, setTrainingError] = useState(null);
+  // Whether a training run already exists for this session. Drives the CTA
+  // label ("Continue to Training" vs "Re-run Training") and whether we must
+  // wipe prior artifacts before starting, so revisiting a completed session no
+  // longer hits the backend 409 "Training already exists" error.
+  const [trainingExists, setTrainingExists] = useState(false);
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -351,6 +356,22 @@ function FeatureEngineeringPage({ activeSessionId, startRun }) {
     };
   }, [activeSessionId]);
 
+  // Detect whether a training run already exists for this session. A 404 means
+  // no run yet (first-time "Continue to Training"); any successful status means
+  // a run exists and the CTA becomes "Re-run Training".
+  useEffect(() => {
+    const sessionId = String(activeSessionId || '').trim();
+    if (!sessionId) {
+      setTrainingExists(false);
+      return undefined;
+    }
+    let cancelled = false;
+    fetchTrainingStatus(sessionId)
+      .then(() => { if (!cancelled) setTrainingExists(true); })
+      .catch(() => { if (!cancelled) setTrainingExists(false); });
+    return () => { cancelled = true; };
+  }, [activeSessionId]);
+
   async function handleContinueToTraining() {
     const sessionId = String(activeSessionId || '').trim();
     if (!sessionId) return;
@@ -358,14 +379,31 @@ function FeatureEngineeringPage({ activeSessionId, startRun }) {
     setStartingTraining(true);
     try {
       const summary = feData?.summary || {};
-      await startTraining({
+      const startPayload = {
         sessionId,
         targetColumn: summary.target_column || null,
         problemType: summary.task || null,
         executionMode: 'ray',
         // Hard-fail: FE must have produced model_config.json; never fall back.
         allowFallbackArtifacts: false,
-      });
+      };
+      // Re-run: wipe prior training artifacts first so the pipeline starts clean
+      // (the backend rejects /start with 409 while a run already exists).
+      if (trainingExists) {
+        await resetTraining(sessionId);
+      }
+      try {
+        await startTraining(startPayload);
+      } catch (startError) {
+        // Safety net: if a run still exists (e.g. trainingExists was stale),
+        // reset once and retry instead of surfacing the 409 to the user.
+        if (startError.status === 409) {
+          await resetTraining(sessionId);
+          await startTraining(startPayload);
+        } else {
+          throw startError;
+        }
+      }
       startRun?.(sessionId);
     } catch (continueError) {
       setTrainingError(continueError.message);
@@ -415,9 +453,12 @@ function FeatureEngineeringPage({ activeSessionId, startRun }) {
             disabled={startingTraining}
             onClick={handleContinueToTraining}
             type="button"
+            title={trainingExists ? 'Deletes existing training artifacts and restarts the pipeline' : undefined}
           >
-            {startingTraining ? <span className="spinner" /> : <Icons.play size={16} />}
-            {startingTraining ? 'Starting training...' : 'Continue to Training'}
+            {startingTraining ? <span className="spinner" /> : trainingExists ? <Icons.activity size={16} /> : <Icons.play size={16} />}
+            {startingTraining
+              ? (trainingExists ? 'Restarting training...' : 'Starting training...')
+              : (trainingExists ? 'Re-run Training' : 'Continue to Training')}
           </button>
         ) : null}
       </section>

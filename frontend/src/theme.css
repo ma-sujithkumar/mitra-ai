@@ -26,7 +26,8 @@
   --sans: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   /* Variables for elements that previously used hardcoded color literals */
-  --topbar-bg: rgba(255, 255, 255, 0.82);
+  /* Opaque so scrolled content never bleeds through the sticky topbar. */
+  --topbar-bg: rgb(255, 255, 255);
   --hero-bg: linear-gradient(120deg, #fff 0%, #fbfbff 58%, #f0f2ff 100%);
   --dropzone-bg: linear-gradient(180deg, #fbfbff, #fff);
   --dropzone-hover-bg: linear-gradient(180deg, #f5f6ff, #fff);
@@ -60,7 +61,8 @@
   --error-bg: #2a0e0e;
   --error-line: #3d1515;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-  --topbar-bg: rgba(22, 24, 32, 0.88);
+  /* Opaque so scrolled content never bleeds through the sticky topbar. */
+  --topbar-bg: rgb(22, 24, 32);
   --hero-bg: linear-gradient(120deg, #161820 0%, #1a1c27 58%, #1e2040 100%);
   --dropzone-bg: linear-gradient(180deg, #1b1d28, #161820);
   --dropzone-hover-bg: linear-gradient(180deg, #1e2040, #1b1d28);

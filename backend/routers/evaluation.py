@@ -71,23 +71,36 @@ class EvaluationArtifactReader:
     def shap_status(self) -> dict[str, Any]:
         status_path = self.evaluation_dir / "shap_status.json"
         data = self._read_json_or_none(status_path)
-        if data is None:
-            return {"status": "pending", "progress": 0, "message": "Awaiting SHAP analysis..."}
-        return data
+        if data is not None:
+            return data
+        # Fallback: report completed when SHAP artifacts already exist on disk
+        # even though the status file is missing/stale (older runs, or a crash
+        # between the artifact write and the status write). Without this the UI
+        # shows "awaiting" for analysis that is actually done.
+        if self._default_shap_model() is not None:
+            return {"status": "completed", "progress": 100, "message": "SHAP analysis completed."}
+        return {"status": "pending", "progress": 0, "message": "Awaiting SHAP analysis..."}
 
     def overfitting_status(self) -> dict[str, Any]:
         status_path = self.evaluation_dir / "overfitting_status.json"
         data = self._read_json_or_none(status_path)
-        if data is None:
-            return {"status": "pending", "progress": 0, "message": "Awaiting Overfitting analysis..."}
-        return data
+        if data is not None:
+            return data
+        # Fallback to artifact presence when the status file is missing/stale.
+        if self._index_overfitting():
+            return {"status": "completed", "progress": 100, "message": "Overfitting analysis completed."}
+        return {"status": "pending", "progress": 0, "message": "Awaiting Overfitting analysis..."}
 
     def judge_status(self) -> dict[str, Any]:
         status_path = self.reports_dir / "judge_status.json"
         data = self._read_json_or_none(status_path)
-        if data is None:
-            return {"status": "pending", "progress": 0, "message": "Awaiting Judge Agent..."}
-        return data
+        if data is not None:
+            return data
+        # Fallback to artifact presence: a written judge decision means the
+        # judge converged, so verdict()/the UI should treat it as completed.
+        if self.judge_decision() is not None:
+            return {"status": "completed", "progress": 100, "message": "Judge verdict complete."}
+        return {"status": "pending", "progress": 0, "message": "Awaiting Judge Agent..."}
 
     def build_leaderboard(self) -> dict[str, Any]:
         """Merge judge ranking with training metrics, overfitting, and HPT results."""
