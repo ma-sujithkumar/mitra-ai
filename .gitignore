@@ -18,3 +18,22 @@ frontend/node_modules/
 frontend/dist/
 .env.example
 auth.db
+
+# Hugging Face Space deployment excludes binary docs, local OS files, runtime
+# outputs, and dataset2vec benchmark fixtures so pushes do not require Xet.
+.DS_Store
+CLAUDE.md
+design_plan.pdf
+catboost_info/
+backend/agents/dataset2vec/test_datasets/
+docs/*
+!docs/huggingface-deployment/
+!docs/huggingface-deployment/README.md
+*.npz
+*.pdf
+*.docx
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
