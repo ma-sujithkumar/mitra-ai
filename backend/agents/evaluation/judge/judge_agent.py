@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -63,6 +64,10 @@ def _render_prompt(
         dataset_id=judge_input.dataset_id,
         minidata=judge_input.minidata,
         metadata=judge_input.metadata,
+        # Injected directly into the prompt text (not a tool call) -- it's
+        # already available server-side, so fetching it via a round-trip tool
+        # call only adds LLM latency for no benefit.
+        domain_reasoning=judge_input.domain_reasoning,
         ranked_models=decision.ranked_models,
         candidates_detail=candidates_detail,
         max_accuracy_drop_pct=max_accuracy_drop_pct,
@@ -83,16 +88,22 @@ class JudgeTools:
         """Retrieve descriptive statistics (minidata / pd.describe metrics) of the validation dataset."""
         return self._judge_input.minidata or {}
 
-    def get_domain_reasoning(self) -> dict[str, Any]:
-        """Retrieve the domain-reasoning agent's problem/column explanations and leakage-risk flags.
-
-        Returns an empty dict (never raises, never hallucinated) when the
-        domain-reasoning agent did not run or failed for this session.
-        """
-        return self._judge_input.domain_reasoning or {}
-
     def get_model_evaluation_details(self, model_name: str) -> dict[str, Any]:
         """Retrieve detailed validation metrics, overfitting checks, CV results, diagnostics, complexity, and SHAP features for a specific model candidate."""
+        return self._evaluation_details_for(model_name)
+
+    def get_model_evaluation_details_bulk(self, model_names: List[str]) -> dict[str, Any]:
+        """Retrieve evaluation details for MULTIPLE model candidates in a single call.
+
+        Prefer this over calling get_model_evaluation_details once per model --
+        each individual tool call is a full LLM round-trip, so looping over N
+        candidates one at a time multiplies latency by N. Pass the full list
+        of candidate model names at once; returns a dict keyed by model_name,
+        each value identical in shape to get_model_evaluation_details's return.
+        """
+        return {model_name: self._evaluation_details_for(model_name) for model_name in model_names}
+
+    def _evaluation_details_for(self, model_name: str) -> dict[str, Any]:
         for candidate in self._judge_input.candidates:
             if candidate.model_name == model_name:
                 res = {
@@ -143,18 +154,21 @@ async def _invoke_llm_agent(
             "passed a deterministic hard floor and bias/leakage gate -- that filtering "
             "is fixed. Your job is to RANK the survivors by judgment, grounded in their "
             "metrics, overfitting behavior, complexity, and SHAP feature importance "
-            "correlated against domain reasoning. You do NOT decide which models are "
-            "selected -- a separate deterministic step picks the top percentage of your "
-            "ranking. To construct your response, you MUST call the tools to retrieve "
-            "dataset metadata, statistics, domain reasoning, and model evaluation "
-            "details for every candidate. Do not assume or guess. Respond only with the "
-            "requested JSON ranking schema."
+            "correlated against the domain reasoning already given to you in this "
+            "prompt (it is not a tool -- it is inline text below). You do NOT decide "
+            "which models are selected -- a separate deterministic step picks the top "
+            "percentage of your ranking. To construct your response, you MUST call the "
+            "tools to retrieve dataset metadata, statistics, and model evaluation "
+            "details. For model evaluation details, call "
+            "get_model_evaluation_details_bulk EXACTLY ONCE with the full list of "
+            "candidate model names -- do not call it once per model, that is much "
+            "slower. Do not assume or guess. Respond only with the requested JSON "
+            "ranking schema."
         ),
         tools=[
             tools_instance.get_dataset_metadata,
             tools_instance.get_dataset_statistics,
-            tools_instance.get_domain_reasoning,
-            tools_instance.get_model_evaluation_details,
+            tools_instance.get_model_evaluation_details_bulk,
         ],
     )
     runner = InMemoryRunner(agent=agent, app_name="judge_agent")
@@ -192,6 +206,31 @@ async def _invoke_llm_agent(
 # not retried -- retrying won't fix it.
 _RETRYABLE_LLM_RANKING_EXCEPTIONS = (asyncio.TimeoutError, json.JSONDecodeError, ValueError)
 
+# Matches a fenced ```json ... ``` or ``` ... ``` block anywhere in the
+# response, not just at the very start -- the model sometimes prefaces the
+# JSON with prose analysis ("Now I'll analyze...") despite being told not to.
+_JSON_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _extract_json_payload(raw_response: str) -> str:
+    """Pull the JSON object out of an LLM response that may carry a prose
+    preamble and/or markdown fences around the actual JSON payload.
+
+    Tries, in order: a fenced ```json``` block anywhere in the text; then the
+    substring from the first '{' to the last '}' (tolerates leading prose);
+    then the raw stripped text as a last resort (so json.loads still raises a
+    clear JSONDecodeError if nothing JSON-shaped is present at all).
+    """
+    text = raw_response.strip()
+    fence_match = _JSON_FENCE_PATTERN.search(text)
+    if fence_match:
+        return fence_match.group(1)
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        return text[first_brace : last_brace + 1]
+    return text
+
 
 def _parse_llm_ranking_response(
     raw_response: str,
@@ -210,15 +249,8 @@ def _parse_llm_ranking_response(
     never touched by the LLM and keep their original verdict/rank ordering
     relative to each other, renumbered to continue after the survivors.
     """
-    raw_stripped = raw_response.strip()
-    # Strip markdown code fences if the model wrapped the JSON.
-    if raw_stripped.startswith("```"):
-        lines = raw_stripped.splitlines()
-        raw_stripped = "\n".join(
-            line for line in lines if not line.startswith("```")
-        ).strip()
-
-    parsed: Dict[str, Any] = json.loads(raw_stripped)
+    json_payload = _extract_json_payload(raw_response)
+    parsed: Dict[str, Any] = json.loads(json_payload)
     ranking_entries: List[Dict[str, Any]] = parsed.get("ranking", [])
     overall_commentary = parsed.get("overall_commentary", "")
 
@@ -410,6 +442,7 @@ class JudgeAgent:
                     )
 
             max_attempts = int(self._config.get("llm_judge_max_retries", 2)) + 1
+            timeout_sec = float(self._config.get("llm_judge_timeout_sec", 90.0))
             last_exc: Optional[Exception] = None
             for attempt in range(1, max_attempts + 1):
                 try:
@@ -422,7 +455,7 @@ class JudgeAgent:
                                 tools_instance=tools_instance,
                                 tool_call_callback=tool_call_callback,
                             ),
-                            timeout=30.0,
+                            timeout=timeout_sec,
                         )
                     )
                     llm_elapsed_sec = time.monotonic() - llm_call_started

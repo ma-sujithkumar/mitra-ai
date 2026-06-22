@@ -62,6 +62,11 @@ prompt_template: judge_prompt.jinja2
 # Retries for the LLM ranking call (timeout/parse/validation failures only,
 # never auth errors) before falling back to rule-only order.
 llm_judge_max_retries: 2
+# Per-attempt timeout for the LLM ranking call. Raised from 30s -- the
+# get_model_evaluation_details_bulk tool call plus the final ranking
+# response routinely needs longer than 30s for larger candidate sets,
+# which was causing real timeouts on multi-class datasets like matches.csv.
+llm_judge_timeout_sec: 90.0
 # When true, sets LITELLM_LOG=DEBUG around the judge LLM call so the raw litellm
 # request/response is printed in the backend logs (same wire-level debug the
 # other agents produce). The rendered prompt + response are always logged at INFO.

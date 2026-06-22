@@ -654,6 +654,20 @@ class JudgeLoop:
         turn_path = reports_dir / f"judge_decision_turn_{turn}.json"
         turn_path.write_text(json.dumps(decision_data, indent=2), encoding="utf-8")
         logger.debug("=> judge decision written: %s", canonical_path)
+        self._persist_prompt_transcript(decision, reports_dir, turn)
+
+    @staticmethod
+    def _persist_prompt_transcript(decision: JudgeDecision, reports_dir: Path, turn: int) -> None:
+        # The rendered judge prompt is already stored in decision_trace.transcript
+        # (the full audit trail); also dump it as a standalone text file in the
+        # session dir so it's directly inspectable without parsing JSON.
+        transcript = decision.decision_trace.transcript
+        if not transcript:
+            return
+        canonical_prompt_path = reports_dir / "judge_prompt.txt"
+        canonical_prompt_path.write_text(transcript, encoding="utf-8")
+        turn_prompt_path = reports_dir / f"judge_prompt_turn_{turn}.txt"
+        turn_prompt_path.write_text(transcript, encoding="utf-8")
 
     def _write_judge_status(
         self,

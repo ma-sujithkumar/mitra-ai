@@ -482,3 +482,21 @@ class TestJudgeTools:
         assert "error" in missing_details
         assert "NonExistentModel" in missing_details["error"]
 
+    def test_bulk_evaluation_details_matches_individual_calls(
+        self, classification_judge_input_dict: dict
+    ) -> None:
+        from backend.agents.evaluation.judge.judge_agent import JudgeTools
+        from backend.agents.evaluation.judge.schemas import JudgeInput
+
+        judge_input = JudgeInput.model_validate(classification_judge_input_dict)
+        tools = JudgeTools(judge_input)
+        all_names = [candidate.model_name for candidate in judge_input.candidates]
+
+        bulk_details = tools.get_model_evaluation_details_bulk(all_names + ["NonExistentModel"])
+        assert isinstance(bulk_details, dict)
+        assert set(bulk_details.keys()) == set(all_names) | {"NonExistentModel"}
+
+        for model_name in all_names:
+            assert bulk_details[model_name] == tools.get_model_evaluation_details(model_name)
+        assert "error" in bulk_details["NonExistentModel"]
+

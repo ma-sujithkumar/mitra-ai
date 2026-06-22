@@ -10,8 +10,8 @@ HARD LIMIT ON REORDERING BY ACCURACY:
 - Domain-SHAP correlation and complexity may only break ties among models that are comparably performant. You MUST NOT rank a model above another model whose primary metric (accuracy/F1/r2) is more than {{ max_accuracy_drop_pct }} percentage points higher than its own -- a deterministic guardrail enforces this limit regardless, so do not attempt it. A clean-looking SHAP profile or favorable domain correlation can move a model up only within that {{ max_accuracy_drop_pct }}-point band of its higher-scoring peers.
 
 MANDATORY GROUNDING:
-- You MUST call `get_model_evaluation_details(model_name)` for EVERY model listed below before ranking it -- do not rank a model you have not inspected.
-- You MUST call `get_domain_reasoning()` at least once. If it returns an empty object, domain reasoning was unavailable for this session -- proceed on metrics/SHAP alone and do not invent column meanings.
+- You MUST call `get_model_evaluation_details_bulk(model_names)` EXACTLY ONCE, passing the full list of candidate model names below in a single call -- this returns every model's metrics, overfitting, complexity, and SHAP details in one response. Do NOT call it once per model; that is much slower and unnecessary. Do not rank a model you have not inspected via this call.
+- Domain reasoning is given to you directly below (DOMAIN REASONING CONTEXT) -- it is NOT a tool call. If it is an empty object, domain reasoning was unavailable for this session -- proceed on metrics/SHAP alone and do not invent column meanings.
 - You MUST call `get_dataset_metadata()` and `get_dataset_statistics()` for dataset-level context.
 - Account for class count: with many target classes, evaluate accuracy relative to the random baseline (1 / num_classes), not against an absolute threshold.
 - Detect shortcut learning: if a model predicts one class dominantly, or merely matches the majority-class baseline, flag it.
@@ -25,16 +25,20 @@ IMPORTANT CONSTRAINTS:
 
 DATASET CONTEXT:
 {% if dataset_id %}Dataset ID: {{ dataset_id }}{% endif %}
-You do NOT have the dataset statistics, user metadata, or domain reasoning in this prompt.
+You do NOT have the dataset statistics or user metadata in this prompt.
 You MUST call the tool `get_dataset_metadata()` to retrieve the metadata for this run.
 You MUST call the tool `get_dataset_statistics()` to retrieve statistical summaries of the validation dataset.
-You MUST call the tool `get_domain_reasoning()` to retrieve the domain-reasoning agent's column explanations and leakage-risk flags (returns `{}` if unavailable).
+
+---
+
+DOMAIN REASONING CONTEXT (given directly -- not a tool call):
+{{ (domain_reasoning | tojson) if domain_reasoning else "{} (domain reasoning was unavailable for this session -- proceed on metrics/SHAP alone)" }}
 
 ---
 
 CANDIDATES TO RANK (order below is a provisional rule-engine score order -- yours may differ):
 You do NOT have the performance metrics, overfitting checks, complexity details, or SHAP feature importance for the candidates in this prompt.
-You MUST call the tool `get_model_evaluation_details(model_name)` for each model below to retrieve its detailed metrics, overfitting gaps, CV results, diagnostics, complexity, and SHAP features.
+You MUST call the tool `get_model_evaluation_details_bulk(model_names)` ONCE with ALL of the model names below (as a list) to retrieve every model's detailed metrics, overfitting gaps, CV results, diagnostics, complexity, and SHAP features in a single response.
 
 {% for model in ranked_models if model.verdict == "select" %}
 - {{ model.model_name }} (rule-engine score={{ model.score }})
@@ -42,7 +46,7 @@ You MUST call the tool `get_model_evaluation_details(model_name)` for each model
 
 ---
 
-Respond ONLY with valid JSON in this exact schema (no markdown, no extra text):
+Your final response MUST be ONLY the JSON object below -- no prose before or after it, no "Now I'll analyze..." preamble, no markdown fences, no explanation outside the JSON fields themselves. Put all of your analysis INSIDE the `reasoning`/`shap_domain_correlation`/`overall_commentary` fields. The very first character of your final response must be `{` and the very last character must be `}`.
 {
   "ranking": [
     {
