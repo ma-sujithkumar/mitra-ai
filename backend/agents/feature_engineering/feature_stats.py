@@ -36,31 +36,46 @@ class FeatureStatsComputer:
         self.cfg = cfg
         self.seed = cfg.pipeline.random_state
 
-    def compute(self, X: pd.DataFrame, y: np.ndarray, task: str) -> dict:
-        """Return a dict of named stat artifacts. X must be all-numeric."""
+    def compute(self, X: pd.DataFrame, y: np.ndarray | None, task: str) -> dict:
+        """Return a dict of named stat artifacts. X must be all-numeric.
+
+        For clustering (task=='clustering' or y is None), supervised stats
+        (MI-with-target, mRMR, linear baseline) are skipped; variance is used
+        as an unsupervised relevance proxy and PCA is always included.
+        """
         fs = self.cfg.feature_selection
-        n_cols = X.shape[1]
 
-        # Mutual information and RF importance (reuse selector estimators).
-        mi_scores = FeatureSelector._mi_scores(X, y, task, seed=self.seed)
-        rf_scores = FeatureSelector._rf_importances(X, y, task, self.cfg, seed=self.seed)
-        mrmr_ranked = FeatureSelector._mrmr(X, y, task, k=n_cols, seed=self.seed)
-
-        # Variance + low-variance flags (honors the previously-unused threshold).
+        # Task-independent stats computed for all modes.
         variances = {c: float(X[c].var()) for c in X.columns}
         low_variance = [c for c, v in variances.items() if v < fs.variance_threshold]
-
-        # Correlation high-pairs above threshold (compact; full matrices are large).
         pearson_pairs = self._high_corr_pairs(X, method="pearson", threshold=fs.correlation_threshold)
         spearman_pairs = self._high_corr_pairs(X, method="spearman", threshold=fs.correlation_threshold)
-
         clusters = compute_correlation_clusters(X, cut_threshold=fs.cluster_cut_threshold)
-        baseline = compute_linear_baseline(X, y, task, k=fs.linear_baseline_k, seed=self.seed)
         pca = self._pca_stats(X, fs.pca_variance_retained)
+
+        if task == "clustering" or y is None:
+            # Clustering: no supervision signal — use variance as MI proxy.
+            return {
+                "mutual_info": {"scores": variances, "ranked": _ranked(variances)},
+                "rf_importance": {"scores": {}, "ranked": []},
+                "mrmr_ranking": {"ranked": []},
+                "variance": {"scores": variances, "low_variance": low_variance, "threshold": fs.variance_threshold},
+                "correlation_pearson": {"high_pairs": pearson_pairs, "threshold": fs.correlation_threshold},
+                "correlation_spearman": {"high_pairs": spearman_pairs, "threshold": fs.correlation_threshold},
+                "clusters": {str(cid): members for cid, members in clusters.items()},
+                "linear_baseline": {"score": None, "task": task},
+                "pca": pca,
+            }
+
+        # Supervised path: MI with target, mRMR, linear baseline.
+        n_cols = X.shape[1]
+        mi_scores = FeatureSelector._mi_scores(X, y, task, seed=self.seed)
+        mrmr_ranked = FeatureSelector._mrmr(X, y, task, k=n_cols, seed=self.seed)
+        baseline = compute_linear_baseline(X, y, task, k=fs.linear_baseline_k, seed=self.seed)
 
         return {
             "mutual_info": {"scores": mi_scores, "ranked": _ranked(mi_scores)},
-            "rf_importance": {"scores": rf_scores, "ranked": _ranked(rf_scores)},
+            "rf_importance": {"scores": {}, "ranked": []},
             "mrmr_ranking": {"ranked": list(mrmr_ranked)},
             "variance": {"scores": variances, "low_variance": low_variance, "threshold": fs.variance_threshold},
             "correlation_pearson": {"high_pairs": pearson_pairs, "threshold": fs.correlation_threshold},
@@ -124,11 +139,12 @@ def compute_and_write_stats(state: PipelineState, stats_dir: Path) -> dict:
     """Compute the stat artifacts for the current pipeline state and persist them.
 
     Operates on the post-encode/post-scale feature matrix (target excluded).
+    For clustering tasks, target (y) is None and supervised stats are skipped.
     """
     df = state.df
     feature_cols = [c for c in df.columns if c != state.target_column]
     X = df[feature_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
-    y = state.target.to_numpy()
+    y = state.target.to_numpy() if state.target is not None else None
     computer = FeatureStatsComputer(state.config)
     stats = computer.compute(X, y, state.task)
     computer.write(stats, stats_dir)
@@ -141,8 +157,10 @@ def main() -> int:
         description="Compute feature-selection statistics over an already-numeric CSV.",
     )
     parser.add_argument("--data", type=str, required=True, help="Path to a numeric/encoded CSV")
-    parser.add_argument("--target", type=str, required=True, help="Target column name")
-    parser.add_argument("--task", type=str, required=False, default=None, choices=["classification", "regression"])
+    parser.add_argument("--target", type=str, required=False, default=None,
+                        help="Target column name (omit for clustering mode)")
+    parser.add_argument("--task", type=str, required=False, default=None,
+                        choices=["classification", "regression", "clustering"])
     parser.add_argument("--config", type=str, default="config/config.yaml")
     parser.add_argument("--out", type=str, required=False, default=None,
                         help="Output stats dir. Defaults to <workspace_root>/feature_stats/stats")
@@ -150,16 +168,24 @@ def main() -> int:
 
     cfg = load_config(args.config)
     df = pd.read_csv(args.data)
-    if args.target not in df.columns:
-        raise ValueError(f"target column {args.target!r} not in dataset columns {list(df.columns)}")
-    target = df[args.target]
-    features = df.drop(columns=[args.target])
-    X = features.apply(pd.to_numeric, errors="coerce").fillna(0.0)
-    y = target.to_numpy()
 
-    # Resolve task if omitted (numeric target with many uniques => regression).
+    if args.target is not None:
+        if args.target not in df.columns:
+            raise ValueError(f"target column {args.target!r} not in dataset columns {list(df.columns)}")
+        target = df[args.target]
+        features = df.drop(columns=[args.target])
+    else:
+        target = None
+        features = df
+
+    X = features.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    y = target.to_numpy() if target is not None else None
+
+    # Resolve task: explicit arg > no-target => clustering > numeric infer.
     if args.task is not None:
         task = args.task
+    elif target is None:
+        task = "clustering"
     else:
         threshold = cfg.pipeline.task_infer_nunique_threshold
         task = "regression" if (pd.api.types.is_numeric_dtype(target) and target.nunique(dropna=True) > threshold) else "classification"

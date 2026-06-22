@@ -13,8 +13,8 @@ class DataProfiler(BaseTool):
     def precondition(self, state: PipelineState) -> None:
         if state.df is None:
             raise PreconditionError("DataProfiler: state.df is None")
-        # Unsupervised runs have no target; mutual-information-with-target is
-        # simply skipped below.
+        if state.target is None and state.task != "clustering":
+            raise PreconditionError("DataProfiler: state.target is None (non-clustering task requires a target)")
 
     def run(self, state: PipelineState) -> None:
         df = state.df
@@ -24,27 +24,28 @@ class DataProfiler(BaseTool):
         results = run_parallel(_univariate_stats, items)
         profile: dict = {name: stats for name, stats in results}
 
-        # mutual-information-with-target is target-dependent; skip it (set to 0.0)
-        # for unsupervised runs where there is no target.
-        target_arr = state.target.to_numpy() if state.target is not None else None
-        for col in df.columns:
-            if target_arr is None:
-                profile[col]["mi_with_target"] = 0.0
-                continue
-            col_data = pd.to_numeric(df[col], errors="coerce")
-            mask = ~col_data.isna()
-            if mask.sum() < 5:
-                profile[col]["mi_with_target"] = 0.0
-                continue
-            try:
-                X = col_data[mask].to_numpy().reshape(-1, 1)
-                y = target_arr[mask.to_numpy()]
-                if state.task == "classification":
-                    mi = float(mutual_info_classif(X, y, random_state=seed)[0])
-                else:
-                    mi = float(mutual_info_regression(X, y, random_state=seed)[0])
-                profile[col]["mi_with_target"] = mi
-            except Exception:
+        # MI with target is only meaningful for supervised tasks.
+        if state.task != "clustering" and state.target is not None:
+            target_arr = state.target.to_numpy()
+            for col in df.columns:
+                col_data = pd.to_numeric(df[col], errors="coerce")
+                mask = ~col_data.isna()
+                if mask.sum() < 5:
+                    profile[col]["mi_with_target"] = 0.0
+                    continue
+                try:
+                    X = col_data[mask].to_numpy().reshape(-1, 1)
+                    y = target_arr[mask.to_numpy()]
+                    if state.task == "classification":
+                        mi = float(mutual_info_classif(X, y, random_state=seed)[0])
+                    else:
+                        mi = float(mutual_info_regression(X, y, random_state=seed)[0])
+                    profile[col]["mi_with_target"] = mi
+                except Exception:
+                    profile[col]["mi_with_target"] = 0.0
+        else:
+            # Clustering: no supervision signal; MI with target is not applicable.
+            for col in df.columns:
                 profile[col]["mi_with_target"] = 0.0
 
         # Correlation matrix kept (cheap, vectorised) for any downstream consumer.

@@ -27,8 +27,8 @@ class Encoder(BaseTool):
                     "classes": [str(c) for c in encoder.classes_.tolist()],
                 })
 
-        # Target encoding if classification with string target
-        if state.task == "classification" and not pd.api.types.is_numeric_dtype(state.target):
+        # Target encoding if classification with string target (skip for clustering)
+        if state.task == "classification" and state.target is not None and not pd.api.types.is_numeric_dtype(state.target):
             encoder = LabelEncoder()
             state.target = pd.Series(
                 encoder.fit_transform(state.target.astype(str)), index=state.target.index, name=state.target_column

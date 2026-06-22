@@ -103,8 +103,11 @@ class OutlierHandler(BaseTool):
                 hist = [int(c) for c in counts.tolist()]
             mi = state.profile.get(col, {}).get("mi_with_target") or 0.0
             try:
-                tcorr = float(series.corr(pd.to_numeric(state.target, errors="coerce")))
-                if np.isnan(tcorr):
+                if state.target is not None:
+                    tcorr = float(series.corr(pd.to_numeric(state.target, errors="coerce")))
+                    if np.isnan(tcorr):
+                        tcorr = 0.0
+                else:
                     tcorr = 0.0
             except Exception:
                 tcorr = 0.0
@@ -194,7 +197,6 @@ class OutlierHandler(BaseTool):
         if drop_indices:
             keep_mask = ~df.index.isin(drop_indices)
             state.df = df[keep_mask].reset_index(drop=True)
-            # No target to subset for unsupervised runs.
             if state.target is not None:
                 state.target = state.target[keep_mask].reset_index(drop=True)
 

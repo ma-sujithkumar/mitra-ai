@@ -114,8 +114,7 @@ class MissingValueHandler(BaseTool):
         cfg = state.config
         drop_threshold = cfg.imputation.null_drop_threshold
 
-        # Target imputation first (code only; not a model decision). Skipped for
-        # unsupervised runs that have no target.
+        # Target imputation (skip for clustering — no supervision signal).
         if state.target is not None and state.target.isna().any():
             if state.task == "classification":
                 fill = state.target.mode().iloc[0]
@@ -157,7 +156,7 @@ class MissingValueHandler(BaseTool):
         for col in cols_with_nulls:
             p = state.profile.get(col, {})
             null_mask = df[col].isna()
-            rate_null, rate_present = _target_rates(state.target, null_mask, state.task)
+            rate_null, rate_present = _target_rates(state.target, null_mask, state.task) if state.target is not None else (None, None)
             present_values = df[col].dropna().sample(
                 n=min(10, df[col].dropna().shape[0]),
                 random_state=cfg.pipeline.random_state,

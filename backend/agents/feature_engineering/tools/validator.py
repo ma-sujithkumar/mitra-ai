@@ -30,8 +30,8 @@ class FeatureValidator(BaseTool):
             state.warnings.append("Residual NaNs in selected columns filled with 0.0")
 
         state.df = df[keep_cols].copy()
-        # Unsupervised runs have no target column to re-attach.
-        if state.target is not None and state.target_column is not None:
+        # Append target as the last column for supervised tasks only.
+        if state.task != "clustering" and state.target is not None and state.target_column is not None:
             state.df[state.target_column] = state.target.to_numpy()
         state.selected_columns = keep_cols
 
@@ -56,8 +56,7 @@ class FeatureValidator(BaseTool):
             return False
 
     def postcondition(self, state: PipelineState) -> None:
-        # Target-column placement checks only apply to supervised runs.
-        if state.target is not None and state.target_column is not None:
+        if state.task != "clustering":
             if state.target_column not in state.df.columns:
                 raise PostconditionError("FeatureValidator: target column missing from output df")
             if state.df.columns[-1] != state.target_column:

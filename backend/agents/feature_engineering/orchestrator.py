@@ -101,10 +101,8 @@ class FeatureEngineerOrchestrator:
         output_dir: str | Path | None = None,
         llm_settings: LlmSettings | None = None,
     ):
-        if task is not None and task not in {"classification", "regression", "unsupervised"}:
-            raise ValueError(
-                f"task must be 'classification', 'regression' or 'unsupervised', got {task!r}"
-            )
+        if task is not None and task not in {"classification", "regression", "clustering"}:
+            raise ValueError(f"task must be 'classification', 'regression', or 'clustering', got {task!r}")
         if not model_string:
             raise ValueError("model_string is required (e.g., 'gemini/gemini-2.0-flash', 'openai/gpt-4o')")
         self.data_path = Path(data_path)
@@ -151,28 +149,27 @@ class FeatureEngineerOrchestrator:
         # plain strings so they can be assigned as legitimate category labels
         # on categorical/binary columns.
         df = pd.read_csv(self.data_path, keep_default_na=False, na_values=[""])
-        # Unsupervised runs have no target column: keep every column as a feature
-        # and skip the target-dependent pipeline steps (stats, selection).
-        is_unsupervised = self.task == "unsupervised" or self.target_column is None
-        if is_unsupervised:
+
+        # When no target is given, treat the run as unsupervised clustering.
+        if self.target_column is None or self.task == "clustering":
             target = None
             features = df
-            resolved_task = "unsupervised"
-            task_source = "supplied"
+            resolved_task = "clustering"
+            task_source = "clustering (no target)"
         else:
             if self.target_column not in df.columns:
                 raise ValueError(f"target column {self.target_column!r} not in dataset columns {list(df.columns)}")
             target = df[self.target_column].copy()
             features = df.drop(columns=[self.target_column])
-            # Resolve task: inference if not supplied
             if self.task is None:
                 resolved_task = self._infer_task(target)
                 task_source = "inferred"
             else:
                 resolved_task = self.task
                 task_source = "supplied"
-        # Original input columns. Used at artifact time to report columns removed
-        # by feature selection, not just by imputation.
+
+        # Original input columns (target excluded). Used at artifact time to
+        # report columns removed by feature selection, not just by imputation.
         original_input_columns = list(features.columns)
 
         if not ray.is_initialized():
@@ -195,10 +192,14 @@ class FeatureEngineerOrchestrator:
         )
 
         # Log task resolution at startup plus any env-var override.
-        target_nunique = target.nunique(dropna=True) if target is not None else "n/a"
+        target_info = (
+            f"target={self.target_column} nunique={target.nunique(dropna=True)}"
+            if target is not None
+            else "target=None (clustering)"
+        )
         log_lines = [
             f"[{datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')}] startup task={resolved_task} ({task_source}) "
-            f"target={self.target_column} nunique={target_nunique}\n",
+            f"{target_info}\n",
         ]
         if env_var_override_msg:
             log_lines.append(
@@ -208,11 +209,11 @@ class FeatureEngineerOrchestrator:
 
         state = PipelineState(
             df=features,
-            target=target,
             task=resolved_task,
-            target_column=self.target_column,
             run_id=run_id,
             config=self.config,
+            target=target,
+            target_column=self.target_column,
             output_dir=output_dir,
         )
 
@@ -252,9 +253,8 @@ class FeatureEngineerOrchestrator:
         # selection drops when selection actually ran (selected_columns is not
         # None); otherwise an empty/failed selection would mislabel every input
         # as dropped. Dedup while preserving order (imputation drops first).
-        # Unsupervised runs skip selection entirely, so only imputation drops count.
         dropped_columns = list(state.dropped_columns)
-        if state.selected_columns is not None and not is_unsupervised:
+        if state.selected_columns is not None:
             selected = set(state.selected_columns)
             dropped_columns.extend(
                 column for column in original_input_columns if column not in selected
@@ -271,11 +271,39 @@ class FeatureEngineerOrchestrator:
             "selected_columns": state.selected_columns or [],
             "selection_method": state.selection_method,
             "warnings": state.warnings,
+            "stats_dir": str(state.stats_dir) if state.stats_dir else None,
         }
         (output_dir / "feature_artifact.json").write_text(json.dumps(artifact, indent=2, default=str), encoding="utf-8")
 
+        # Write profile.json so the standalone visualizer can show per-column stats
+        # (null_rate, skewness, outlier_rate) that drove deterministic decisions.
+        profile_export = {
+            col: {key: val for key, val in col_stats.items() if not key.startswith("_")}
+            for col, col_stats in (state.profile or {}).items()
+        }
+        (output_dir / "profile.json").write_text(json.dumps(profile_export, indent=2, default=str), encoding="utf-8")
+
         # Write engineered_dataset.csv
         state.df.to_csv(output_dir / "engineered_dataset.csv", index=False)
+
+        # Generate interactive HTML visualizations (non-fatal: errors are logged only).
+        try:
+            from backend.agents.feature_engineering.visuals.dashboard import VisualDashboard
+            dashboard_path = VisualDashboard(output_dir, verbose=False).run()
+            self._log_step(
+                output_dir / "execution_log.txt",
+                "generate_visuals",
+                "ok",
+                f"=> {dashboard_path}",
+            )
+        except Exception as visual_error:
+            self._log_step(
+                output_dir / "execution_log.txt",
+                "generate_visuals",
+                "error",
+                str(visual_error),
+            )
+            state.warnings.append(f"generate_visuals failed: {visual_error}")
 
         return output_dir, run_id
 
@@ -304,20 +332,6 @@ class FeatureEngineerOrchestrator:
             ("validate_features", lambda: FeatureValidator()(state)),
             ("write_report", lambda: FeatureReporter(use_report_llm)(state)),
         ]
-
-        # Unsupervised runs have no target, so the target-dependent steps
-        # (feature-target stats and target-driven selection) are dropped. A
-        # "select_all_features" step replaces selection so every engineered column
-        # is kept and the validator still runs (coercion + NaN fill).
-        if state.task == "unsupervised":
-            drop_steps = {"compute_feature_stats", "select_features"}
-            steps = [step for step in steps if step[0] not in drop_steps]
-            select_all_step = ("select_all_features", lambda: self._step_select_all(state))
-            insert_at = next(
-                (i for i, (name, _) in enumerate(steps) if name == "validate_features"),
-                len(steps),
-            )
-            steps.insert(insert_at, select_all_step)
 
         log_path = state.output_dir / "execution_log.txt"
         for name, fn in steps:
@@ -353,12 +367,6 @@ class FeatureEngineerOrchestrator:
     @staticmethod
     def _step_stats(state: PipelineState) -> None:
         compute_and_write_stats(state, state.stats_dir)
-
-    @staticmethod
-    def _step_select_all(state: PipelineState) -> None:
-        # Unsupervised selection: keep every engineered feature column.
-        state.selected_columns = list(state.df.columns)
-        state.selection_method = "unsupervised_all"
 
     @staticmethod
     def _log_step(log_path: Path, name: str, status: str, detail: str) -> None:

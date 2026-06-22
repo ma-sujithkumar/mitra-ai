@@ -1,14 +1,15 @@
 """FeatureSelector — single-LLM-call selection over precomputed stat artifacts.
 
 The deterministic stat phase (pipeline/feature_stats.py) writes mutual information,
-RF importance, mRMR ranking, variance, correlation pairs, clusters, linear baseline
+information gain, mRMR ranking, variance, correlation pairs, clusters, linear baseline
 and PCA artifacts to `.mitra/<run_id>/stats/`. This tool reads those artifacts,
 makes ONE LLM call to decide which columns to keep/drop, and applies the result
 deterministically. If the LLM call fails (or no model is configured), it falls back
 to mRMR over all features at top_k_features.
 
-The per-estimator helpers (_mrmr, _pca, _lasso, _rf, _top_mi, _mi_scores,
-_rf_importances) are reused by feature_stats.py so the math lives in one place.
+The per-estimator helpers (_mrmr, _pca, _lasso, _laplacian_score, _top_mi,
+_mi_scores, _information_gain) are reused by feature_stats.py so the math lives in
+one place.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
-from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
+from sklearn.feature_selection import VarianceThreshold, mutual_info_classif, mutual_info_regression
 
 from backend.agents.feature_engineering.base import BaseTool, PostconditionError, PreconditionError
 from backend.agents.feature_engineering.responses import FeatureSelectionResponse, call_with_revision
@@ -40,7 +41,7 @@ SELECT_PROMPT = """You are a feature selection expert. Choose which feature colu
 
 ## GOAL
 Keep the most predictive, non-redundant features. Keep AT MOST {top_k} columns.
-- Prefer columns with high mutual information and high RF importance.
+- Prefer columns with high mutual information and high information gain.
 - Respect the mRMR ranking (minimum-redundancy maximum-relevance order).
 - Drop near-zero-variance columns.
 - For each high-correlation pair keep only ONE column (drop the redundant twin).
@@ -66,8 +67,8 @@ linear_baseline_score: {linear_baseline}
 Mutual information (column: score), highest first:
 {mi_block}
 
-RandomForest importance (column: score), highest first:
-{rf_block}
+Information gain (column: H(Y) - H(Y|X) in bits), highest first:
+{ig_block}
 
 mRMR ranking (best first):
 {mrmr_block}
@@ -113,9 +114,14 @@ class FeatureSelector(BaseTool):
             return
 
         X = df[feature_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
-        y = state.target.to_numpy()
         top_k = min(cfg.feature_selection.top_k_features, len(feature_cols))
 
+        # Clustering mode: no target, use variance-based selection (sklearn only, no LLM).
+        if state.task == "clustering":
+            self._clustering_select(state, X, feature_cols, top_k)
+            return
+
+        y = state.target.to_numpy()
         stats = self._load_stats(state)
         if self.model_call is None or stats is None:
             self._fallback(state, X, y, feature_cols, top_k,
@@ -150,6 +156,33 @@ class FeatureSelector(BaseTool):
             state.selected_columns = selected
             state.selection_method = "llm_select"
 
+    def _clustering_select(self, state: PipelineState, X: pd.DataFrame, feature_cols: list[str], top_k: int) -> None:
+        """Select features for clustering: VarianceThreshold filter then top-k by variance score."""
+        cfg = state.config
+        state.last_llm_source = "deterministic"
+
+        var_selector = VarianceThreshold(threshold=cfg.feature_selection.variance_threshold)
+        try:
+            var_selector.fit(X.to_numpy())
+            support_mask = var_selector.get_support()
+            surviving_cols = [col for col, keep in zip(feature_cols, support_mask) if keep]
+        except Exception:
+            surviving_cols = list(feature_cols)
+
+        if not surviving_cols:
+            surviving_cols = list(feature_cols)
+
+        # Rank survivors by variance descending — highest variance = most spread = most informative proxy.
+        col_variances = {col: float(X[col].var()) for col in surviving_cols}
+        ranked_by_variance = sorted(col_variances, key=lambda col: col_variances[col], reverse=True)
+        selected = ranked_by_variance[:top_k]
+
+        state.selected_columns = selected
+        state.selection_method = "clustering:variance_ranking"
+        state.warnings.append(
+            f"Clustering mode: selected {len(selected)} of {len(feature_cols)} features by variance ranking"
+        )
+
     def _apply_pca(self, state: PipelineState, X_sub: pd.DataFrame, requested_n, stats: dict, top_k: int) -> None:
         """Replace the kept raw columns with PCA components. Component count is the
         agent's pca_n_components when valid, else the #components reaching
@@ -174,7 +207,7 @@ class FeatureSelector(BaseTool):
             return None
         loaded: dict = {}
         for name in (
-            "mutual_info", "rf_importance", "mrmr_ranking", "variance",
+            "mutual_info", "information_gain", "mrmr_ranking", "variance",
             "correlation_pearson", "linear_baseline", "pca",
         ):
             path = state.stats_dir / f"{name}.json"
@@ -193,7 +226,7 @@ class FeatureSelector(BaseTool):
     def _build_prompt(self, state: PipelineState, feature_cols: list[str], stats: dict, top_k: int) -> str:
         cfg = state.config
         mi = (stats.get("mutual_info") or {}).get("scores", {})
-        rf = (stats.get("rf_importance") or {}).get("scores", {})
+        ig = (stats.get("information_gain") or {}).get("scores", {})
         mrmr = (stats.get("mrmr_ranking") or {}).get("ranked", [])
         low_var = (stats.get("variance") or {}).get("low_variance", [])
         corr_pairs = (stats.get("correlation_pearson") or {}).get("high_pairs", [])
@@ -219,7 +252,7 @@ class FeatureSelector(BaseTool):
             features_per_row=features_per_row,
             linear_baseline=f"{baseline:.4f}",
             mi_block=self._top_items(mi, 40),
-            rf_block=self._top_items(rf, 40),
+            ig_block=self._top_items(ig, 40),
             mrmr_block="\n".join(f"- {c}" for c in mrmr[:40]) if mrmr else "(none)",
             low_var_block=("\n".join(f"- {c}" for c in low_var) if low_var else "(none)"),
             corr_block=corr_block,
@@ -285,17 +318,32 @@ class FeatureSelector(BaseTool):
             return X.columns.tolist()[:k]
 
     @staticmethod
-    def _rf_importances(X: pd.DataFrame, y, task: str, cfg, seed: int = 42) -> dict[str, float]:
-        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+    def _information_gain(X: pd.DataFrame, y, task: str, cfg, seed: int = 42) -> dict[str, float]:
+        """Per-feature information gain (entropy-based mutual information).
+
+        Continuous features — and, for regression, the target — are first
+        discretized via sklearn's ``KBinsDiscretizer`` (quantile strategy, n_bins
+        from ``cfg.feature_selection.ig_n_bins``). Information gain is then
+        sklearn's ``mutual_info_classif`` with ``discrete_features=True`` against
+        the discretized target, which reduces to H(Y) - H(Y|X) over the empirical
+        distribution.
+        """
+        from sklearn.preprocessing import KBinsDiscretizer
         if X.shape[1] == 0:
             return {}
+        n_bins = cfg.feature_selection.ig_n_bins
         try:
-            if task == "classification":
-                model = RandomForestClassifier(n_estimators=cfg.feature_selection.rf_n_estimators, random_state=seed)
+            x_disc = KBinsDiscretizer(
+                n_bins=n_bins, encode="ordinal", strategy="quantile", subsample=None
+            ).fit_transform(X.to_numpy())
+            if task == "regression":
+                y_disc = KBinsDiscretizer(
+                    n_bins=n_bins, encode="ordinal", strategy="quantile", subsample=None
+                ).fit_transform(np.asarray(y).reshape(-1, 1)).ravel()
             else:
-                model = RandomForestRegressor(n_estimators=cfg.feature_selection.rf_n_estimators, random_state=seed)
-            model.fit(X.to_numpy(), y)
-            return {c: float(i) for c, i in zip(X.columns, model.feature_importances_)}
+                y_disc = np.asarray(y)
+            ig = mutual_info_classif(x_disc, y_disc, discrete_features=True, random_state=seed)
+            return {c: float(s) for c, s in zip(X.columns, ig)}
         except Exception:
             return {c: 0.0 for c in X.columns}
 
@@ -340,12 +388,55 @@ class FeatureSelector(BaseTool):
         return [X.columns[i] for i in order]
 
     @staticmethod
-    def _rf(X: pd.DataFrame, y, task: str, k: int, cfg, state) -> list[str]:
-        scores = FeatureSelector._rf_importances(X, y, task, cfg, seed=cfg.pipeline.random_state)
-        if not scores:
+    def _laplacian_score(X: pd.DataFrame, y, task: str, k: int, cfg, state) -> list[str]:
+        """Top-k features by Laplacian Score (He, Cai, Niyogi 2005).
+
+        Builds a symmetric k-NN affinity graph over rows via sklearn's
+        ``kneighbors_graph``; the degree vector ``d`` gives D and the Laplacian is
+        L = D - W. Each feature ``f`` is D-weighted mean-centred to ``f~`` and
+        scored by ``L_r = (f~^T L f~) / (f~^T D f~)``. Lower is better — features
+        that vary smoothly across neighbouring samples preserve local manifold
+        structure. Falls through to top-IG if sklearn raises.
+        """
+        from sklearn.neighbors import kneighbors_graph
+        if X.shape[1] == 0 or k <= 0:
             return []
-        order = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[: min(k, X.shape[1])]
-        return [c for c, _ in order]
+        k_eff = min(k, X.shape[1])
+        if k_eff >= X.shape[1]:
+            return list(X.columns)
+        n_neighbors = min(cfg.feature_selection.laplacian_k_neighbors, X.shape[0] - 1)
+        if n_neighbors < 1:
+            return list(X.columns[:k_eff])
+        try:
+            W = kneighbors_graph(
+                X.to_numpy(), n_neighbors=n_neighbors,
+                mode="connectivity", include_self=False,
+            )
+            W = 0.5 * (W + W.T)  # symmetrize
+            d = np.asarray(W.sum(axis=1)).ravel()
+            d_total = float(d.sum())
+            if d_total <= 0:
+                return list(X.columns[:k_eff])
+            scores: dict[str, float] = {}
+            for col in X.columns:
+                f = X[col].to_numpy(dtype=float)
+                f_centered = f - float((d * f).sum()) / d_total
+                denom = float((d * f_centered * f_centered).sum())
+                if denom <= 0:
+                    scores[col] = float("inf")
+                    continue
+                wf = np.asarray(W @ f_centered).ravel()
+                numer = denom - float(f_centered @ wf)
+                scores[col] = numer / denom
+            order = sorted(scores.items(), key=lambda kv: kv[1])[:k_eff]
+            return [c for c, _ in order]
+        except Exception as e:
+            if state is not None:
+                state.warnings.append(f"laplacian_score unavailable: {e}; using top-IG proxy")
+            seed = cfg.pipeline.random_state
+            ig_scores = FeatureSelector._information_gain(X, y, task, cfg, seed=seed)
+            order = sorted(ig_scores.items(), key=lambda kv: kv[1], reverse=True)[:k_eff]
+            return [c for c, _ in order]
 
     def postcondition(self, state: PipelineState) -> None:
         if state.selected_columns is None:

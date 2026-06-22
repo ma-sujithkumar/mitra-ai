@@ -10,12 +10,13 @@ from backend.agents.feature_engineering.config import ConfigSchema
 @dataclass
 class PipelineState:
     df: pd.DataFrame
-    # target / target_column are None for unsupervised runs (no target column).
-    target: pd.Series | None
     task: str
-    target_column: str | None
     run_id: str
     config: ConfigSchema
+
+    # Both are None when task == "clustering" (no supervision signal)
+    target: pd.Series | None = None
+    target_column: str | None = None
 
     profile: dict[str, Any] | None = None
     column_types: dict[str, str] | None = None
@@ -29,7 +30,7 @@ class PipelineState:
     selection_method: str | None = None
 
     output_dir: Path | None = None
-    stats_dir: Path | None = None  # .mitra/<run_id>/stats — precomputed feature-selection artifacts
+    stats_dir: Path | None = None
 
     pre_encoding_done: bool = False
     row_count_after_outlier: int | None = None

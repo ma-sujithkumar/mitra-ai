@@ -38,6 +38,7 @@ mrmr-selection>=0.2.0
 # --- Explainability / evaluation / tuning ---
 shap>=0.50.0
 matplotlib>=3.7.0
+plotly>=5.0.0
 joblib>=1.3.0
 optuna>=3.6.0
 

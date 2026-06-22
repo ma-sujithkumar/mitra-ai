@@ -23,7 +23,13 @@ def main() -> int:
         choices=["classification", "regression"],
         help="Optional. If omitted, the pipeline infers from the target column using task_infer_nunique_threshold from config.",
     )
-    run.add_argument("--target", type=str, required=True, help="Target column name")
+    run.add_argument(
+        "--target",
+        type=str,
+        required=False,
+        default=None,
+        help="Target column name. Omit to run unsupervised clustering mode.",
+    )
     run.add_argument(
         "--model",
         type=str,
