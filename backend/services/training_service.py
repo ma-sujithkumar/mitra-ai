@@ -917,6 +917,7 @@ class TrainingService:
                 task_type=task_type,
                 target_column=request.target_column,
                 event_bus=self.event_bus,
+                shap_timeout_sec=self.config_loader.pipeline.shap_timeout_sec,
             )
             self.event_bus.emit(
                 TrainingEvent(

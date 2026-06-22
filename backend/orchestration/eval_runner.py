@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
 import sys
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from queue import Empty
 from typing import Any, Optional
 
 from backend.orchestration.events import TrainingEvent, TrainingEventBus
@@ -46,6 +49,23 @@ def _run_shap_for_model(
         max_shap_samples=max_shap_samples,
     )
     return str(result_dir) if result_dir else None
+
+
+def _run_shap_for_model_mp(
+    result_queue: "multiprocessing.Queue",
+    model_name: str,
+    **kwargs: Any,
+) -> None:
+    """Process target: runs _run_shap_for_model and posts the outcome to the
+    queue. Used (instead of ProcessPoolExecutor) so the parent can forcibly
+    terminate a hung worker via Process.terminate()/kill() -- a stuck
+    KernelExplainer otherwise blocks the pool's shutdown(wait=True) forever.
+    """
+    try:
+        result_dir = _run_shap_for_model(model_name=model_name, **kwargs)
+        result_queue.put((model_name, "ok", result_dir))
+    except Exception as exc:
+        result_queue.put((model_name, "error", str(exc)))
 
 
 def _run_overfitting_for_model(
@@ -230,6 +250,7 @@ class EvalRunner:
         max_shap_samples: int = 1000,
         verbose: bool = False,
         event_bus: Optional[TrainingEventBus] = None,
+        shap_timeout_sec: int = 180,
     ) -> None:
         self.session_id = session_id
         self.session_dir = session_dir
@@ -238,6 +259,7 @@ class EvalRunner:
         self.max_shap_samples = max_shap_samples
         self.verbose = verbose
         self.event_bus = event_bus
+        self.shap_timeout_sec = shap_timeout_sec
 
     def run(
         self,
@@ -307,28 +329,48 @@ class EvalRunner:
 
         models = getattr(training_summary, "models", []) or []
 
-        # Launch SHAP workers (one per model, in subprocess pool)
+        # Launch SHAP workers (one per model, each its own subprocess). A plain
+        # ProcessPoolExecutor is not used here: its shutdown(wait=True) joins
+        # every worker unconditionally, so one hung KernelExplainer (observed
+        # with SVC multiclass) would block the pipeline forever. Process gives
+        # us terminate()/kill() so a model that exceeds shap_timeout_sec is
+        # killed and skipped instead of stalling everything after it.
         shap_dirs: dict[str, Optional[str]] = {}
-        with ProcessPoolExecutor() as pool:
-            futures = {}
-            for model_result in models:
-                if not model_result.model_path:
-                    logger.warning("=> no model_path for %s, skipping SHAP", model_result.model_name)
-                    shap_dirs[model_result.model_name] = None
-                    if self.event_bus:
-                        self.event_bus.emit(
-                            TrainingEvent(
-                                session_id=self.session_id,
-                                stage="shap",
-                                level="warn",
-                                status="running",
-                                msg=f"[SHAP EXPLAINER] Skipping SHAP for model {model_result.model_name} (failed to train, no model path)",
-                                pct=10,
-                            )
+        queued_models = []
+        for model_result in models:
+            if not model_result.model_path:
+                logger.warning("=> no model_path for %s, skipping SHAP", model_result.model_name)
+                shap_dirs[model_result.model_name] = None
+                if self.event_bus:
+                    self.event_bus.emit(
+                        TrainingEvent(
+                            session_id=self.session_id,
+                            stage="shap",
+                            level="warn",
+                            status="running",
+                            msg=f"[SHAP EXPLAINER] Skipping SHAP for model {model_result.model_name} (failed to train, no model path)",
+                            pct=10,
                         )
-                    continue
-                future = pool.submit(
-                    _run_shap_for_model,
+                    )
+                continue
+            queued_models.append(model_result)
+
+        total_models = len(queued_models)
+        completed_count = 0
+        heartbeat_interval_sec = 10.0
+        max_concurrent = max(1, os.cpu_count() or 4)
+
+        self._write_shap_status(completed_count, total_models or 1, "running", "Starting SHAP analysis...")
+
+        result_queue: "multiprocessing.Queue" = multiprocessing.Queue()
+        running_processes: dict[str, multiprocessing.Process] = {}
+        start_times: dict[str, float] = {}
+
+        def _launch(model_result: Any) -> None:
+            process = multiprocessing.Process(
+                target=_run_shap_for_model_mp,
+                kwargs=dict(
+                    result_queue=result_queue,
                     model_name=model_result.model_name,
                     model_path=model_result.model_path,
                     dataset_path=str(engineered_dataset_path),
@@ -336,74 +378,122 @@ class EvalRunner:
                     shap_output_dir=str(shap_output_dir),
                     session_id=self.session_id,
                     max_shap_samples=self.max_shap_samples,
-                )
-                futures[future] = model_result.model_name
+                ),
+            )
+            process.start()
+            running_processes[model_result.model_name] = process
+            start_times[model_result.model_name] = time.monotonic()
 
-            # Poll for completed SHAP futures with timeout so we can emit
-            # heartbeat events every 10 seconds during long computations.
-            # Without this, the SSE stream is silent for the full SHAP duration.
-            pending_futures = set(futures.keys())
-            total_models = len(futures)
-            completed_count = 0
-            heartbeat_interval_sec = 10.0
-            
-            # Initialize shap_status.json
-            self._write_shap_status(completed_count, total_models or 1, "running", "Starting SHAP analysis...")
+        while queued_models and len(running_processes) < max_concurrent:
+            _launch(queued_models.pop(0))
 
-            while pending_futures:
-                done, pending_futures = wait(
-                    pending_futures,
-                    timeout=heartbeat_interval_sec,
-                    return_when=FIRST_COMPLETED,
+        last_heartbeat = time.monotonic()
+        while running_processes:
+            try:
+                model_name, outcome, payload = result_queue.get(timeout=heartbeat_interval_sec)
+            except Empty:
+                model_name = None
+                outcome = None
+                payload = None
+
+            now = time.monotonic()
+            progress_pct = 10 + int(80 * (completed_count / max(1, total_models)))
+
+            if model_name is not None:
+                process = running_processes.pop(model_name, None)
+                if process is not None:
+                    process.join()
+                start_times.pop(model_name, None)
+                completed_count += 1
+                progress_pct = 10 + int(80 * (completed_count / max(1, total_models)))
+                if outcome == "ok":
+                    shap_dirs[model_name] = payload
+                    logger.info("=> SHAP done: model=%s", model_name)
+                    if self.event_bus:
+                        self.event_bus.emit(
+                            TrainingEvent(
+                                session_id=self.session_id,
+                                stage="shap",
+                                level="info",
+                                status="running",
+                                msg=f"[SHAP EXPLAINER] Finished SHAP value computation for model: {model_name} ({completed_count}/{total_models})",
+                                pct=progress_pct,
+                            )
+                        )
+                    self._write_shap_status(completed_count, total_models, "running", f"Finished SHAP value computation for model: {model_name} ({completed_count}/{total_models})")
+                else:
+                    shap_dirs[model_name] = None
+                    logger.warning("=> SHAP failed for %s: %s", model_name, payload)
+                    if self.event_bus:
+                        self.event_bus.emit(
+                            TrainingEvent(
+                                session_id=self.session_id,
+                                stage="shap",
+                                level="warn",
+                                status="running",
+                                msg=f"[SHAP EXPLAINER] SHAP analysis failed for model {model_name}: {payload}",
+                                pct=progress_pct,
+                            )
+                        )
+                    self._write_shap_status(completed_count, total_models, "running", f"SHAP analysis failed for model {model_name}: {payload}")
+                if queued_models:
+                    _launch(queued_models.pop(0))
+
+            # Kill any model whose SHAP run has exceeded the hard timeout.
+            for timed_out_name in [
+                name for name, started_at in start_times.items()
+                if now - started_at > self.shap_timeout_sec
+            ]:
+                process = running_processes.pop(timed_out_name, None)
+                start_times.pop(timed_out_name, None)
+                if process is not None:
+                    process.terminate()
+                    process.join(timeout=5)
+                    if process.is_alive():
+                        process.kill()
+                        process.join()
+                completed_count += 1
+                progress_pct = 10 + int(80 * (completed_count / max(1, total_models)))
+                shap_dirs[timed_out_name] = None
+                logger.warning(
+                    "=> SHAP timed out for %s after %ds, process killed",
+                    timed_out_name, self.shap_timeout_sec,
                 )
-                # Emit heartbeat if nothing completed in the window
-                if not done and self.event_bus and pending_futures:
-                    still_running_names = [futures[future_key] for future_key in pending_futures]
+                if self.event_bus:
                     self.event_bus.emit(
                         TrainingEvent(
                             session_id=self.session_id,
                             stage="shap",
-                            level="info",
+                            level="warn",
                             status="running",
-                            msg=f"[SHAP EXPLAINER] Still computing SHAP values... ({completed_count}/{total_models} done, running: {', '.join(still_running_names[:3])})",
-                            pct=10 + int(80 * (completed_count / max(1, total_models))),
+                            msg=f"[SHAP EXPLAINER] SHAP analysis for model {timed_out_name} exceeded {self.shap_timeout_sec}s timeout, skipped",
+                            pct=progress_pct,
                         )
                     )
-                    self._write_shap_status(completed_count, total_models, "running", f"Still computing SHAP values... ({completed_count}/{total_models} done)")
-                for completed_future in done:
-                    model_name = futures[completed_future]
-                    completed_count += 1
-                    progress_pct = 10 + int(80 * (completed_count / max(1, total_models)))
-                    try:
-                        shap_dirs[model_name] = completed_future.result()
-                        logger.info("=> SHAP done: model=%s", model_name)
-                        if self.event_bus:
-                            self.event_bus.emit(
-                                TrainingEvent(
-                                    session_id=self.session_id,
-                                    stage="shap",
-                                    level="info",
-                                    status="running",
-                                    msg=f"[SHAP EXPLAINER] Finished SHAP value computation for model: {model_name} ({completed_count}/{total_models})",
-                                    pct=progress_pct,
-                                )
-                            )
-                        self._write_shap_status(completed_count, total_models, "running", f"Finished SHAP value computation for model: {model_name} ({completed_count}/{total_models})")
-                    except Exception as exc:
-                        logger.warning("=> SHAP failed for %s: %s", model_name, exc)
-                        shap_dirs[model_name] = None
-                        if self.event_bus:
-                            self.event_bus.emit(
-                                TrainingEvent(
-                                    session_id=self.session_id,
-                                    stage="shap",
-                                    level="warn",
-                                    status="running",
-                                    msg=f"[SHAP EXPLAINER] SHAP analysis failed for model {model_name}: {exc}",
-                                    pct=progress_pct,
-                                )
-                            )
-                        self._write_shap_status(completed_count, total_models, "running", f"SHAP analysis failed for model {model_name}: {exc}")
+                self._write_shap_status(completed_count, total_models, "running", f"SHAP analysis for model {timed_out_name} timed out, skipped")
+                if queued_models:
+                    _launch(queued_models.pop(0))
+
+            if (
+                model_name is None
+                and not any(now - started_at > self.shap_timeout_sec for started_at in start_times.values())
+                and self.event_bus
+                and running_processes
+                and now - last_heartbeat >= heartbeat_interval_sec
+            ):
+                still_running_names = list(running_processes.keys())
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=self.session_id,
+                        stage="shap",
+                        level="info",
+                        status="running",
+                        msg=f"[SHAP EXPLAINER] Still computing SHAP values... ({completed_count}/{total_models} done, running: {', '.join(still_running_names[:3])})",
+                        pct=10 + int(80 * (completed_count / max(1, total_models))),
+                    )
+                )
+                self._write_shap_status(completed_count, total_models, "running", f"Still computing SHAP values... ({completed_count}/{total_models} done)")
+                last_heartbeat = now
 
         self._write_shap_status(completed_count, total_models or 1, "completed", "SHAP explanation analysis completed successfully.")
 

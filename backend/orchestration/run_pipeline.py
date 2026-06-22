@@ -232,6 +232,7 @@ class PipelineRunner:
             task_type=task_type,
             target_column=target_column,
             verbose=self.verbose,
+            shap_timeout_sec=self.config_loader.pipeline.shap_timeout_sec,
         )
         # HPT is excluded from the pipeline: run_hpt=False so the Judge evaluates
         # without waiting for HPT. HPT is triggered on-demand from the leaderboard.

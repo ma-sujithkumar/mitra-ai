@@ -48,6 +48,7 @@ class PipelineConfig:
     max_hpt_trials: int
     run_post_training_eval: bool
     max_judge_turns: int
+    shap_timeout_sec: int
 
 
 @dataclass(frozen=True)
@@ -233,6 +234,9 @@ class ConfigLoader:
             ),
             max_judge_turns=self.parser.getint(
                 "pipeline", "MAX_JUDGE_TURNS", fallback=3
+            ),
+            shap_timeout_sec=self.parser.getint(
+                "pipeline", "SHAP_TIMEOUT_SEC", fallback=180
             ),
         )
         self.llm_models = LlmModelsConfig(
