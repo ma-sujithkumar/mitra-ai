@@ -6,7 +6,7 @@ from pathlib import Path
 import plotly.graph_objects as go
 
 from backend.agents.feature_engineering.visuals.artifact_reader import ArtifactReader
-from backend.agents.feature_engineering.visuals.base import BaseVisualizer
+from backend.agents.feature_engineering.visuals.base import BaseVisualizer, MAX_VISUAL_ROWS
 
 
 class PCAVarianceVisualizer(BaseVisualizer):
@@ -21,6 +21,8 @@ class PCAVarianceVisualizer(BaseVisualizer):
         variance_threshold = float(pca_data.get("variance_retained", 0.95))
         n_components_at_threshold = int(pca_data.get("n_components_for_threshold", 0))
 
+        # Cap at MAX_VISUAL_ROWS components; first N already explain the most variance
+        explained_variance_ratios = explained_variance_ratios[:MAX_VISUAL_ROWS]
         component_indices = list(range(1, len(explained_variance_ratios) + 1))
         cumulative_variance = []
         running_sum = 0.0

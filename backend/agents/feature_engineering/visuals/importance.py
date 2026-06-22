@@ -1,12 +1,13 @@
-"""Feature importance visualization: MI, RF importance, mRMR rank as grouped bar chart."""
+"""Feature importance visualization: MI, Information Gain, mRMR rank, and Laplacian Score."""
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import plotly.graph_objects as go
 
 from backend.agents.feature_engineering.visuals.artifact_reader import ArtifactReader
-from backend.agents.feature_engineering.visuals.base import BaseVisualizer
+from backend.agents.feature_engineering.visuals.base import BaseVisualizer, MAX_VISUAL_ROWS
 
 COLOR_SELECTED = "#2ca02c"
 COLOR_DROPPED = "#d62728"
@@ -22,15 +23,38 @@ def _normalize_scores(scores: dict[str, float]) -> dict[str, float]:
     return {col: val / max_value for col, val in scores.items()}
 
 
+def _invert_and_normalize_laplacian(scores: dict[str, float]) -> dict[str, float]:
+    """Invert Laplacian scores so higher bar = more important (lower raw score = more important).
+
+    Inf values (zero-variance features) are treated as worst (score 0 after inversion).
+    """
+    if not scores:
+        return {}
+    finite_values = [v for v in scores.values() if not math.isinf(v) and not math.isnan(v)]
+    if not finite_values:
+        return {col: 0.0 for col in scores}
+    max_finite = max(finite_values)
+    # Inverted: best feature (lowest laplacian) gets max_finite, worst (inf) gets 0.
+    inverted = {
+        col: (max_finite - val) if (not math.isinf(val) and not math.isnan(val)) else 0.0
+        for col, val in scores.items()
+    }
+    max_inverted = max(inverted.values()) if inverted else 1.0
+    if max_inverted == 0:
+        return {col: 0.0 for col in inverted}
+    return {col: val / max_inverted for col, val in inverted.items()}
+
+
 class FeatureImportanceVisualizer(BaseVisualizer):
-    """Grouped horizontal bar chart comparing MI, RF importance, and mRMR rank per feature."""
+    """Grouped horizontal bar chart: MI, Information Gain, mRMR rank, Laplacian Score per feature."""
 
     def build(self) -> go.Figure | None:
         mi_scores = self.reader.mi_scores
         if not mi_scores:
             return None
 
-        rf_scores = self.reader.rf_scores
+        ig_scores = self.reader.information_gain_scores
+        laplacian_scores = self.reader.laplacian_scores
         mrmr_ranked = self.reader.mrmr_ranked
         selected_set = set(self.reader.selected_columns)
         baseline_score = self.reader.linear_baseline.get("score", None)
@@ -46,16 +70,19 @@ class FeatureImportanceVisualizer(BaseVisualizer):
 
         # Normalize each metric independently so bars are on the same [0,1] axis
         mi_norm = _normalize_scores(mi_scores)
-        rf_norm = _normalize_scores(rf_scores)
+        ig_norm = _normalize_scores(ig_scores)
         mrmr_norm = _normalize_scores(mrmr_scores)
+        # Laplacian: lower raw score = more important, so invert before normalizing
+        laplacian_norm = _invert_and_normalize_laplacian(laplacian_scores)
 
-        # Sort features by raw MI score descending
-        sorted_features = sorted(mi_scores.keys(), key=lambda col: mi_scores[col], reverse=True)
+        # Sort features by raw MI score descending, cap at top MAX_VISUAL_ROWS
+        sorted_features = sorted(mi_scores.keys(), key=lambda col: mi_scores[col], reverse=True)[:MAX_VISUAL_ROWS]
         bar_colors = [COLOR_SELECTED if col in selected_set else COLOR_DROPPED for col in sorted_features]
 
         hover_mi = [
             f"<b>{col}</b><br>MI: {mi_scores.get(col, 0):.4f}<br>"
-            f"RF: {rf_scores.get(col, 0):.4f}<br>"
+            f"IG: {ig_scores.get(col, 0):.4f}<br>"
+            f"Laplacian: {laplacian_scores.get(col, 0):.4f} (lower=better)<br>"
             f"mRMR rank: {mrmr_ranked.index(col) + 1 if col in mrmr_ranked else 'N/A'}<br>"
             f"Status: {'SELECTED' if col in selected_set else 'DROPPED'}"
             for col in sorted_features
@@ -72,15 +99,18 @@ class FeatureImportanceVisualizer(BaseVisualizer):
             hovertemplate="%{customdata}<extra></extra>",
             opacity=0.9,
         ))
-        figure.add_trace(go.Bar(
-            name="RF Importance (norm)",
-            x=[rf_norm.get(col, 0) for col in sorted_features],
-            y=sorted_features,
-            orientation="h",
-            marker_color="#1f77b4",
-            opacity=0.6,
-            hovertemplate="RF (norm): %{x:.4f}<extra></extra>",
-        ))
+
+        if ig_scores:
+            figure.add_trace(go.Bar(
+                name="Info Gain (norm)",
+                x=[ig_norm.get(col, 0) for col in sorted_features],
+                y=sorted_features,
+                orientation="h",
+                marker_color="#ff7f0e",
+                opacity=0.6,
+                hovertemplate="IG (norm): %{x:.4f}<extra></extra>",
+            ))
+
         figure.add_trace(go.Bar(
             name="mRMR Rank Score (norm)",
             x=[mrmr_norm.get(col, 0) for col in sorted_features],
@@ -91,12 +121,23 @@ class FeatureImportanceVisualizer(BaseVisualizer):
             hovertemplate="mRMR score (norm): %{x:.4f}<extra></extra>",
         ))
 
+        if laplacian_scores:
+            figure.add_trace(go.Bar(
+                name="Laplacian Score (inv norm, higher=better)",
+                x=[laplacian_norm.get(col, 0) for col in sorted_features],
+                y=sorted_features,
+                orientation="h",
+                marker_color="#17becf",
+                opacity=0.4,
+                hovertemplate="Laplacian (inv norm): %{x:.4f}<extra></extra>",
+            ))
+
         baseline_annotation_text = (
             f"Linear baseline: {baseline_score:.4f}" if baseline_score is not None else ""
         )
 
         figure.update_layout(
-            title="Feature Importance - MI / RF / mRMR (green=selected, red=dropped)",
+            title="Feature Importance - MI / Info Gain / mRMR / Laplacian (green=selected, red=dropped)",
             xaxis_title="Normalized Score [0-1]",
             yaxis_title="Feature",
             barmode="overlay",

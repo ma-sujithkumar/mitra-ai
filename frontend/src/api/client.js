@@ -225,3 +225,11 @@ export async function fetchJudgeStatus(sessionId) {
   return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/evaluation/judge/status`);
 }
 
+export async function fetchFEVisuals(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/feature-engineering/visuals`);
+}
+
+export function feVisualUrl(sessionId, filename) {
+  return `/api/runs/${encodeURIComponent(sessionId)}/feature-engineering/visuals/${encodeURIComponent(filename)}`;
+}
+

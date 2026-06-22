@@ -46,12 +46,12 @@ class PipelinePlotGenerator:
     DEFAULT_IMAGE_FORMAT: str = "png"
     DEFAULT_MAX_FEATURES: int = 20
 
-    # Cap on the number of standalone feature histograms drawn in the EDA stage.
-    FEATURE_HISTOGRAM_LIMIT: int = 8
-    # Maximum numeric columns included in the correlation heatmap to keep it legible.
-    CORRELATION_COLUMN_LIMIT: int = 30
     # Number of histogram bins used across distribution plots.
     HISTOGRAM_BINS: int = 30
+    # Maximum SHAP features shown per model (keeps charts readable).
+    SHAP_TOP_FEATURES: int = 10
+    # Gap threshold above which overfitting is flagged on the chart.
+    OVERFITTING_GAP_WARN_THRESHOLD: float = 0.10
 
     # Color mapping for judge verdicts (avoids if-else ladder per CLAUDE.md #4/#23).
     VERDICT_COLOR_MAP: dict[str, str] = {
@@ -198,7 +198,6 @@ class PipelinePlotGenerator:
 
         # Stage dispatch map (avoids an if-else ladder; each entry is a thunk).
         stage_builders: dict[str, Callable[[], list[str]]] = {
-            "eda": lambda: self._build_eda(target_column, task_type),
             "training": self._build_training,
             "overfitting": self._build_overfitting,
             "hpt": self._build_hpt,
@@ -228,51 +227,18 @@ class PipelinePlotGenerator:
         stage_dir = self._ensure_stage_dir("eda")
         written: list[str] = []
 
-        numeric_dataframe = dataframe.select_dtypes(include=[numpy.number])
-
         plot_jobs: list[tuple[str, Callable[[], Optional[str]]]] = [
-            ("correlation_heatmap",
-             lambda: self._plot_correlation_heatmap(numeric_dataframe, stage_dir)),
             ("target_distribution",
              lambda: self._plot_target_distribution(
                  dataframe, target_column, task_type, stage_dir)),
             ("missingness",
              lambda: self._plot_missingness(dataframe, stage_dir)),
-            ("feature_histograms",
-             lambda: self._plot_feature_histograms(
-                 numeric_dataframe, target_column, stage_dir)),
-            ("feature_count_note",
-             lambda: self._plot_feature_count_note(dataframe, target_column, stage_dir)),
         ]
         for plot_label, plot_callable in plot_jobs:
             result_path = self._guarded(plot_callable, f"eda/{plot_label}")
             if result_path is not None:
                 written.append(result_path)
         return written
-
-    def _plot_correlation_heatmap(
-        self, numeric_dataframe: "pandas.DataFrame", stage_dir: Path
-    ) -> Optional[str]:
-        """Draw a correlation heatmap over numeric columns (capped count)."""
-        if numeric_dataframe.shape[1] < 2:
-            return None
-        capped = numeric_dataframe.iloc[:, : self.CORRELATION_COLUMN_LIMIT]
-        correlation_matrix = capped.corr()
-
-        figure, axis = pyplot.subplots(
-            figsize=(max(6, correlation_matrix.shape[1] * 0.5),
-                     max(5, correlation_matrix.shape[1] * 0.5))
-        )
-        heatmap_image = axis.imshow(
-            correlation_matrix.values, cmap="coolwarm", vmin=-1.0, vmax=1.0
-        )
-        axis.set_xticks(range(correlation_matrix.shape[1]))
-        axis.set_yticks(range(correlation_matrix.shape[0]))
-        axis.set_xticklabels(correlation_matrix.columns, rotation=90, fontsize=7)
-        axis.set_yticklabels(correlation_matrix.index, fontsize=7)
-        axis.set_title("Feature Correlation Heatmap")
-        figure.colorbar(heatmap_image, ax=axis, fraction=0.046, pad=0.04)
-        return self._save_figure(figure, self._output_path(stage_dir, "correlation_heatmap"))
 
     def _plot_target_distribution(
         self,
@@ -291,11 +257,23 @@ class PipelinePlotGenerator:
             axis.hist(target_series.values, bins=self.HISTOGRAM_BINS, color="#1f77b4")
             axis.set_xlabel(target_column)
             axis.set_ylabel("count")
-            axis.set_title("Target Distribution (regression)")
+            axis.set_title("Target Value Distribution (regression)")
         else:
             value_counts = target_series.value_counts().sort_index()
-            axis.bar([str(label) for label in value_counts.index],
-                     value_counts.values, color="#1f77b4")
+            bars = axis.bar(
+                [str(label) for label in value_counts.index],
+                value_counts.values,
+                color="#1f77b4",
+            )
+            total_count = int(value_counts.sum())
+            for bar_rect, sample_count in zip(bars, value_counts.values):
+                percentage = sample_count / total_count
+                axis.text(
+                    bar_rect.get_x() + bar_rect.get_width() / 2,
+                    bar_rect.get_height() + total_count * 0.005,
+                    f"{percentage:.1%}",
+                    ha="center", va="bottom", fontsize=9,
+                )
             axis.set_xlabel(target_column)
             axis.set_ylabel("count")
             axis.set_title("Target Class Balance (classification)")
@@ -318,71 +296,10 @@ class PipelinePlotGenerator:
         axis.set_title("Per-Feature Missingness")
         return self._save_figure(figure, self._output_path(stage_dir, "missingness"))
 
-    def _plot_feature_histograms(
-        self,
-        numeric_dataframe: "pandas.DataFrame",
-        target_column: Optional[str],
-        stage_dir: Path,
-    ) -> Optional[str]:
-        """Grid of histograms for a capped number of numeric features."""
-        feature_columns = [
-            column for column in numeric_dataframe.columns if column != target_column
-        ]
-        feature_columns = feature_columns[: self.FEATURE_HISTOGRAM_LIMIT]
-        if not feature_columns:
-            return None
-
-        column_count = min(3, len(feature_columns))
-        row_count = int(numpy.ceil(len(feature_columns) / column_count))
-        figure, axes = pyplot.subplots(
-            row_count, column_count, figsize=(column_count * 4, row_count * 3)
-        )
-        axes_flat = numpy.atleast_1d(axes).ravel()
-        for axis_index, feature_name in enumerate(feature_columns):
-            axis = axes_flat[axis_index]
-            axis.hist(
-                numeric_dataframe[feature_name].dropna().values,
-                bins=self.HISTOGRAM_BINS, color="#1f77b4",
-            )
-            axis.set_title(feature_name, fontsize=9)
-        # Hide any unused subplot axes in the grid.
-        for unused_index in range(len(feature_columns), len(axes_flat)):
-            axes_flat[unused_index].axis("off")
-        figure.suptitle("Feature Histograms")
-        return self._save_figure(figure, self._output_path(stage_dir, "feature_histograms"))
-
-    def _plot_feature_count_note(
-        self,
-        dataframe: "pandas.DataFrame",
-        target_column: Optional[str],
-        stage_dir: Path,
-    ) -> Optional[str]:
-        """Small text-card plot summarizing dataset shape and feature counts."""
-        total_columns = dataframe.shape[1]
-        feature_count = total_columns - (1 if target_column in dataframe.columns else 0)
-        numeric_count = dataframe.select_dtypes(include=[numpy.number]).shape[1]
-        non_numeric_count = total_columns - numeric_count
-
-        note_lines = [
-            f"rows: {dataframe.shape[0]}",
-            f"total columns: {total_columns}",
-            f"features (excl. target): {feature_count}",
-            f"numeric columns: {numeric_count}",
-            f"non-numeric columns: {non_numeric_count}",
-        ]
-        figure, axis = pyplot.subplots(figsize=(6, 4))
-        axis.axis("off")
-        axis.set_title("Dataset Summary")
-        axis.text(
-            0.05, 0.95, "\n".join(note_lines),
-            transform=axis.transAxes, fontsize=12, va="top", family="monospace",
-        )
-        return self._save_figure(figure, self._output_path(stage_dir, "feature_count_note"))
-
     # ------------------------------------------------------------- training
 
     def _build_training(self) -> list[str]:
-        """Generate the model metric leaderboard from training_summary.json."""
+        """Generate training plots from training_summary.json."""
         summary = self._load_json(self.training_summary_path)
         if summary is None:
             return []
@@ -390,13 +307,11 @@ class PipelinePlotGenerator:
         written: list[str] = []
 
         result_path = self._guarded(
-            lambda: self._plot_metric_leaderboard(summary, stage_dir),
-            "training/metric_leaderboard",
+            lambda: self._plot_multi_metric_comparison(summary, stage_dir),
+            "training/multi_metric_comparison",
         )
         if result_path is not None:
             written.append(result_path)
-        # Confusion-matrix plots require per-row predictions which are not
-        # persisted by the pipeline; intentionally skipped (do not fabricate).
         return written
 
     def _plot_metric_leaderboard(
@@ -419,20 +334,127 @@ class PipelinePlotGenerator:
         if not scored:
             return None
 
-        scored.sort(key=lambda pair: pair[1])
+        scored.sort(key=lambda pair: pair[1])  # ascending: winner is last
         model_names = [name for name, _ in scored]
         metric_values = [value for _, value in scored]
 
+        # Highlight the top-scoring model in green; others in steel blue.
+        bar_colors = ["#4c78a8"] * len(scored)
+        bar_colors[-1] = "#2ca02c"
+
         figure, axis = pyplot.subplots(figsize=(8, max(3, len(scored) * 0.45)))
-        axis.barh(model_names, metric_values, color="#2ca02c")
+        bars = axis.barh(model_names, metric_values, color=bar_colors)
+
+        # Value labels on each bar.
+        value_range = max(metric_values) - min(metric_values) if len(metric_values) > 1 else metric_values[0]
+        label_offset = value_range * 0.01 if value_range > 0 else 0.001
+        for bar_rect, metric_value in zip(bars, metric_values):
+            axis.text(
+                bar_rect.get_width() + label_offset,
+                bar_rect.get_y() + bar_rect.get_height() / 2,
+                f"{metric_value:.4f}",
+                va="center", ha="left", fontsize=9,
+            )
+
         axis.set_xlabel(metric_label)
-        axis.set_title(f"Model Leaderboard ({metric_label})")
+        axis.set_title(f"Model Performance ({metric_label})  |  green = top scorer")
+        axis.set_xlim(right=max(metric_values) * 1.15)
         return self._save_figure(figure, self._output_path(stage_dir, "metric_leaderboard"))
+
+    def _plot_multi_metric_comparison(
+        self, summary: dict[str, Any], stage_dir: Path
+    ) -> Optional[str]:
+        """One subplot per validation metric showing all models side by side.
+
+        Unlike the leaderboard (single primary metric), this shows every persisted
+        validation metric so users can see trade-offs across MAE, RMSE, R2, etc.
+        Best model per metric is highlighted green.
+        """
+        models = summary.get("models") or []
+        completed_models = [
+            model_entry for model_entry in models
+            if model_entry.get("status") == "completed"
+        ]
+        if not completed_models:
+            return None
+
+        # Gather metric names present in validation dicts across all models.
+        metric_names_set: set[str] = set()
+        for model_entry in completed_models:
+            val_metrics = (model_entry.get("metrics") or {}).get("validation") or {}
+            for metric_key, metric_val in val_metrics.items():
+                if isinstance(metric_val, (int, float)) and metric_key != "task_type":
+                    metric_names_set.add(metric_key)
+
+        metric_names = sorted(metric_names_set)
+        if not metric_names:
+            return None
+
+        model_names = [
+            model_entry.get("model_name", f"model_{idx}")
+            for idx, model_entry in enumerate(completed_models)
+        ]
+
+        # Metrics where lower is better (errors).
+        error_metric_names = {"mse", "rmse", "mae", "loss", "error"}
+
+        n_metrics = len(metric_names)
+        n_cols = min(3, n_metrics)
+        n_rows = (n_metrics + n_cols - 1) // n_cols
+
+        figure, axes_grid = pyplot.subplots(
+            n_rows, n_cols,
+            figsize=(5 * n_cols, 4 * n_rows),
+        )
+        # Normalise axes_grid to a 2-D list regardless of shape.
+        if n_metrics == 1:
+            axes_grid = [[axes_grid]]
+        elif n_rows == 1:
+            axes_grid = [list(axes_grid)]
+        else:
+            axes_grid = [list(row) for row in axes_grid]
+
+        for metric_idx, metric_name in enumerate(metric_names):
+            row_idx = metric_idx // n_cols
+            col_idx = metric_idx % n_cols
+            axis = axes_grid[row_idx][col_idx]
+
+            values: list[float] = []
+            for model_entry in completed_models:
+                val_metrics = (model_entry.get("metrics") or {}).get("validation") or {}
+                raw_val = val_metrics.get(metric_name)
+                values.append(float(raw_val) if raw_val is not None else 0.0)
+
+            lower_is_better = metric_name.lower() in error_metric_names
+            best_idx = values.index(min(values) if lower_is_better else max(values))
+            bar_colors = [
+                "#2ca02c" if idx == best_idx else "#4c78a8"
+                for idx in range(len(values))
+            ]
+
+            axis.barh(model_names, values, color=bar_colors)
+            axis.set_title(
+                f"{metric_name}  ({'lower' if lower_is_better else 'higher'} = better)",
+                fontsize=10,
+            )
+            axis.tick_params(axis="y", labelsize=8)
+
+        # Hide any unused subplot cells in the last row.
+        for extra_idx in range(n_metrics, n_rows * n_cols):
+            axes_grid[extra_idx // n_cols][extra_idx % n_cols].set_visible(False)
+
+        figure.suptitle(
+            "Multi-Metric Comparison (green = best model per metric)", fontsize=12
+        )
+        figure.tight_layout()
+        return self._save_figure(
+            figure, self._output_path(stage_dir, "multi_metric_comparison")
+        )
 
     # ---------------------------------------------------------- overfitting
 
     def _build_overfitting(self) -> list[str]:
-        """Generate train-vs-validation gap bars from overfitting analyses."""
+        """Generate overfitting and CV stability plots from per-model analyses."""
         if not self.overfitting_dir.exists():
             return []
         analysis_paths = sorted(self.overfitting_dir.glob("*/overfitting_analysis.json"))
@@ -483,29 +505,114 @@ class PipelinePlotGenerator:
                  label="train", color="#1f77b4")
         axis.bar(bar_positions + bar_width / 2, test_scores, bar_width,
                  label="validation/test", color="#ff7f0e")
+
+        # Annotate pairs with a large gap to flag potential overfitting.
+        for position, (train_score, test_score) in enumerate(zip(train_scores, test_scores)):
+            gap = train_score - test_score
+            if abs(gap) >= self.OVERFITTING_GAP_WARN_THRESHOLD:
+                annotation_y = max(train_score, test_score) + 0.01
+                axis.text(
+                    position, annotation_y,
+                    f"gap {gap:+.2f}",
+                    ha="center", va="bottom", fontsize=8, color="#d62728",
+                    fontweight="bold",
+                )
+
         axis.set_xticks(bar_positions)
         axis.set_xticklabels(model_names, rotation=45, ha="right")
         axis.set_ylabel("primary metric")
-        axis.set_title("Train vs Validation Gap per Model")
+        axis.set_title("Overfitting Analysis: Train vs Validation Score")
         axis.legend()
         return self._save_figure(figure, self._output_path(stage_dir, "train_vs_validation_gap"))
+
+    def _plot_cv_fold_stability(
+        self, analysis_paths: list[Path], stage_dir: Path
+    ) -> Optional[str]:
+        """Per-fold CV scores per model shown as scatter + mean line.
+
+        Dots represent individual fold scores; the horizontal bar marks the mean.
+        A tight cluster means the model is stable across data splits; wide spread
+        indicates variance / sensitivity to the particular fold composition.
+        """
+        fold_data: dict[str, dict[str, Any]] = {}
+        for analysis_path in analysis_paths:
+            analysis = self._load_json(analysis_path)
+            if analysis is None:
+                continue
+            cv_results = analysis.get("k_fold_cross_validation_results") or {}
+            per_fold_scores = cv_results.get("per_fold_scores")
+            if not per_fold_scores:
+                continue
+            model_name = analysis.get("model_name", analysis_path.parent.name)
+            fold_data[model_name] = {
+                "scores": per_fold_scores,
+                "mean": float(cv_results.get("mean", 0.0)),
+                "std": float(cv_results.get("std", 0.0)),
+            }
+
+        if not fold_data:
+            return None
+
+        model_names = list(fold_data.keys())
+        n_models = len(model_names)
+        positions = numpy.arange(n_models)
+
+        figure, axis = pyplot.subplots(figsize=(max(8, n_models * 1.5), 5))
+
+        for model_idx, model_name in enumerate(model_names):
+            model_info = fold_data[model_name]
+            fold_scores = model_info["scores"]
+            n_folds = len(fold_scores)
+            fold_x_positions = numpy.linspace(
+                model_idx - 0.3, model_idx + 0.3, n_folds
+            )
+            axis.scatter(
+                fold_x_positions, fold_scores,
+                zorder=3, s=55, alpha=0.85, color="#1f77b4",
+            )
+            # Mean line spanning the model column.
+            axis.hlines(
+                model_info["mean"],
+                model_idx - 0.35, model_idx + 0.35,
+                linewidth=2.5, colors="#333333", zorder=4,
+            )
+            # Annotate with std deviation below the model label area.
+            axis.text(
+                model_idx, axis.get_ylim()[0] if axis.get_ylim()[0] != 0 else min(fold_scores) - 0.02,
+                f"std={model_info['std']:.3f}",
+                ha="center", va="top", fontsize=8, color="#555555",
+            )
+
+        axis.set_xticks(positions)
+        axis.set_xticklabels(model_names, rotation=45, ha="right")
+        axis.set_ylabel("CV fold score")
+        axis.set_title(
+            "Cross-Validation Fold Stability  (dots = per-fold score, line = mean)"
+        )
+        return self._save_figure(
+            figure, self._output_path(stage_dir, "cv_fold_stability")
+        )
 
     # ----------------------------------------------------------------- hpt
 
     def _build_hpt(self) -> list[str]:
-        """Generate optimization-history line if per-trial scores are present."""
+        """Generate HPT optimization history and sensitivity charts."""
         hpt_data = self._load_json(self.hpt_results_path)
         if hpt_data is None:
             return []
         stage_dir = self._ensure_stage_dir("hpt")
         written: list[str] = []
 
-        result_path = self._guarded(
-            lambda: self._plot_hpt_optimization_history(hpt_data, stage_dir),
-            "hpt/optimization_history",
-        )
-        if result_path is not None:
-            written.append(result_path)
+        plot_jobs: list[tuple[str, Callable[[], Optional[str]]]] = [
+            ("hpt/optimization_history",
+             lambda: self._plot_hpt_optimization_history(hpt_data, stage_dir)),
+            ("hpt/sensitivity_analysis",
+             lambda: self._plot_hpt_sensitivity(hpt_data, stage_dir)),
+        ]
+        for plot_label, plot_callable in plot_jobs:
+            result_path = self._guarded(plot_callable, plot_label)
+            if result_path is not None:
+                written.append(result_path)
         return written
 
     def _plot_hpt_optimization_history(
@@ -557,22 +664,87 @@ class PipelinePlotGenerator:
         axis.legend(fontsize=8)
         return self._save_figure(figure, self._output_path(stage_dir, "optimization_history"))
 
+    def _plot_hpt_sensitivity(
+        self, hpt_data: dict[str, Any], stage_dir: Path
+    ) -> Optional[str]:
+        """Bar chart of hyperparameter impact (score range) per model.
+
+        score_range = max_val_score - min_val_score observed across trials when
+        that parameter varied. A large range means the hyperparameter strongly
+        influences model quality; near-zero means the model is insensitive to it.
+        """
+        model_results = hpt_data.get("hpt_results") or []
+        models_with_sensitivity = [
+            model_result for model_result in model_results
+            if isinstance(model_result.get("hyperparam_sensitivity"), dict)
+        ]
+        if not models_with_sensitivity:
+            return None
+
+        n_models = len(models_with_sensitivity)
+        figure, axes_list = pyplot.subplots(
+            1, n_models,
+            figsize=(max(5, n_models * 4), 5),
+        )
+        # Normalise to list regardless of whether subplots returns an Axes or array.
+        if n_models == 1:
+            axes_list = [axes_list]
+
+        for axis, model_result in zip(axes_list, models_with_sensitivity):
+            sensitivity_dict = model_result.get("hyperparam_sensitivity") or {}
+            # Only entries with a nested dict containing score_range are params.
+            param_ranges: dict[str, float] = {
+                param_name: float(param_info["score_range"])
+                for param_name, param_info in sensitivity_dict.items()
+                if isinstance(param_info, dict) and "score_range" in param_info
+            }
+            if not param_ranges:
+                axis.set_visible(False)
+                continue
+
+            sorted_params = sorted(
+                param_ranges.keys(), key=lambda param: param_ranges[param]
+            )
+            score_range_values = [param_ranges[param] for param in sorted_params]
+            bar_colors = pyplot.cm.Blues(
+                numpy.linspace(0.35, 0.85, len(sorted_params))
+            )
+
+            axis.barh(sorted_params, score_range_values, color=bar_colors)
+            axis.set_xlabel("score range")
+            axis.set_title(
+                model_result.get("model_name", "model"), fontsize=10
+            )
+
+        figure.suptitle(
+            "HPT Sensitivity: Hyperparameter Impact  (larger bar = stronger influence on score)",
+            fontsize=11,
+        )
+        figure.tight_layout()
+        return self._save_figure(
+            figure, self._output_path(stage_dir, "sensitivity_analysis")
+        )
+
     # --------------------------------------------------------------- judge
 
     def _build_judge(self) -> list[str]:
-        """Generate the ranked-models verdict bar from judge_decision.json."""
+        """Generate judge verdict and dimension scorecard from judge_decision.json."""
         judge_decision = self._load_json(self.judge_decision_path)
         if judge_decision is None:
             return []
         stage_dir = self._ensure_stage_dir("judge")
         written: list[str] = []
 
-        result_path = self._guarded(
-            lambda: self._plot_judge_ranking(judge_decision, stage_dir),
-            "judge/ranked_models",
-        )
-        if result_path is not None:
-            written.append(result_path)
+        plot_jobs: list[tuple[str, Callable[[], Optional[str]]]] = [
+            ("judge/ranked_models",
+             lambda: self._plot_judge_ranking(judge_decision, stage_dir)),
+            ("judge/dimension_scorecard",
+             lambda: self._plot_judge_dimension_scorecard(judge_decision, stage_dir)),
+        ]
+        for plot_label, plot_callable in plot_jobs:
+            result_path = self._guarded(plot_callable, plot_label)
+            if result_path is not None:
+                written.append(result_path)
         return written
 
     def _plot_judge_ranking(
@@ -600,6 +772,85 @@ class PipelinePlotGenerator:
         axis.set_xlabel("judge score")
         axis.set_title("Judge Ranked Models (green=select, red=reject)")
         return self._save_figure(figure, self._output_path(stage_dir, "ranked_models"))
+
+    def _plot_judge_dimension_scorecard(
+        self, judge_decision: dict[str, Any], stage_dir: Path
+    ) -> Optional[str]:
+        """Heatmap of per-dimension judge evaluation across all ranked models.
+
+        Each cell shows PASS (green), FAIL (red), or INFO (yellow) for one of
+        the 6 evaluation dimensions. This reveals which specific dimension caused
+        a model to be penalised, which is not visible from the aggregate score.
+        """
+        # Numeric encoding for imshow: pass=1, info=0, fail=-1
+        status_numeric_map: dict[str, int] = {"pass": 1, "info": 0, "fail": -1}
+        status_label_map: dict[int, str] = {1: "PASS", 0: "INFO", -1: "FAIL"}
+
+        ranked_models = judge_decision.get("ranked_models") or []
+        models_with_findings = [
+            model_entry for model_entry in ranked_models
+            if model_entry.get("findings")
+        ]
+        if not models_with_findings:
+            return None
+
+        sorted_models = sorted(
+            models_with_findings, key=lambda entry: entry.get("rank", 999)
+        )
+        model_names: list[str] = []
+        dimension_labels: list[str] = []
+        status_rows: list[list[int]] = []
+
+        for model_entry in sorted_models:
+            findings = model_entry.get("findings") or []
+            model_names.append(model_entry.get("model_name", "unknown"))
+            if not dimension_labels:
+                dimension_labels = [
+                    finding.get("label") or finding.get("dimension", "")
+                    for finding in findings
+                ]
+            status_row = [
+                status_numeric_map.get(finding.get("status", "info"), 0)
+                for finding in findings
+            ]
+            status_rows.append(status_row)
+
+        if not model_names or not dimension_labels:
+            return None
+
+        # Map -1/0/1 to 0/0.5/1 for the RdYlGn colormap (red/yellow/green).
+        status_matrix = numpy.array(status_rows, dtype=float)
+        normalized_matrix = (status_matrix + 1.0) / 2.0
+
+        n_models = len(model_names)
+        n_dimensions = len(dimension_labels)
+        figure, axis = pyplot.subplots(
+            figsize=(max(8, n_dimensions * 1.6), max(3, n_models * 0.65))
+        )
+        axis.imshow(normalized_matrix, cmap="RdYlGn", vmin=0.0, vmax=1.0, aspect="auto")
+
+        # Annotate every cell with its text label.
+        for row_idx in range(n_models):
+            for col_idx in range(n_dimensions):
+                numeric_val = int(status_matrix[row_idx, col_idx])
+                cell_label = status_label_map.get(numeric_val, "?")
+                text_color = "white" if numeric_val != 0 else "#333333"
+                axis.text(
+                    col_idx, row_idx, cell_label,
+                    ha="center", va="center",
+                    fontsize=9, fontweight="bold", color=text_color,
+                )
+
+        axis.set_xticks(range(n_dimensions))
+        axis.set_xticklabels(dimension_labels, rotation=30, ha="right", fontsize=9)
+        axis.set_yticks(range(n_models))
+        axis.set_yticklabels(model_names, fontsize=9)
+        axis.set_title(
+            "Judge Dimension Scorecard  (green=PASS, red=FAIL, yellow=INFO)"
+        )
+        return self._save_figure(
+            figure, self._output_path(stage_dir, "dimension_scorecard")
+        )
 
     # ---------------------------------------------------------------- shap
 
@@ -640,18 +891,24 @@ class PipelinePlotGenerator:
             return None
         top_features = importance_dataframe.sort_values(
             "mean_absolute_shap_value", ascending=False
-        ).head(self.max_features)
+        ).head(self.SHAP_TOP_FEATURES)
         if top_features.empty:
             return None
 
-        figure, axis = pyplot.subplots(figsize=(8, max(3, len(top_features) * 0.35)))
+        # Reversed so highest-importance feature appears at the top.
+        reversed_features = top_features.iloc[::-1].reset_index(drop=True)
+        feature_count = len(reversed_features)
+        # Gradient from light (low importance) to dark (high importance) purple.
+        bar_colors = pyplot.cm.Purples(numpy.linspace(0.35, 0.9, feature_count))
+
+        figure, axis = pyplot.subplots(figsize=(8, max(3, feature_count * 0.38)))
         axis.barh(
-            top_features["feature_name"][::-1],
-            top_features["mean_absolute_shap_value"][::-1],
-            color="#9467bd",
+            reversed_features["feature_name"],
+            reversed_features["mean_absolute_shap_value"],
+            color=bar_colors,
         )
         axis.set_xlabel("mean |SHAP value|")
-        axis.set_title(f"SHAP Global Importance: {model_name}")
+        axis.set_title(f"Key Predictors: {model_name} (top {feature_count})")
         return self._save_figure(
             figure, self._output_path(stage_dir, f"shap_global_importance_{model_name}")
         )

@@ -467,6 +467,7 @@ function FeatureEngineeringPage({ activeSessionId, startRun }) {
           <D2VPanel d2vData={d2vData} />
         </div>
       </div>
+
     </div>
   );
 }

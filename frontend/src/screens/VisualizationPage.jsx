@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react';
 
 import StatusPill from '../components/StatusPill.jsx';
-import { fetchPlots, plotUrl, generatePlots } from '../api/client.js';
+import { fetchPlots, plotUrl, generatePlots, fetchFEVisuals, feVisualUrl } from '../api/client.js';
 import { Icons } from '../icons.jsx';
 
-// Bounded polling so the gallery syncs as plots are generated.
-const VISUALIZATION_POLL_MS = 4000;
-const VISUALIZATION_MAX_POLLS = 60;
 
-// Stage labels shown as section headers in the gallery.
+const VIZ_TYPE_TRAINING = 'training';
+const VIZ_TYPE_FEATURE_ENGINEERING = 'feature_engineering';
+
+const VIZ_TYPE_OPTIONS = [
+  { value: VIZ_TYPE_TRAINING, label: 'Training & Evaluation' },
+  { value: VIZ_TYPE_FEATURE_ENGINEERING, label: 'Feature Engineering' },
+];
+
+// Stage labels shown as section headers in the training gallery.
 const STAGE_LABELS = {
   'plots/eda':         'Exploratory Data Analysis',
   'plots/training':    'Training',
@@ -34,6 +39,54 @@ function groupPlotsByStage(plots) {
   }
   return groups;
 }
+
+// ---- Feature Engineering visual groupings ----
+// Maps chart filenames into logical sections, matching the dashboard categories.
+const FE_CATEGORY_GROUPS = [
+  {
+    key: 'importance',
+    kicker: 'Selection',
+    label: 'Feature Importance & Selection',
+    filenames: new Set(['01_feature_importance.html', '07_selection_rationale.html']),
+  },
+  {
+    key: 'preprocessing',
+    kicker: 'Data Quality',
+    label: 'Preprocessing Decisions',
+    filenames: new Set(['03_imputation_decisions.html', '04_outlier_decisions.html', '05_scaling_decisions.html']),
+  },
+  {
+    key: 'structure',
+    kicker: 'Statistics',
+    label: 'Feature Structure & Engineering',
+    filenames: new Set(['02_correlation_clusters.html', '06_created_features.html', '08_pca_variance.html']),
+  },
+  {
+    key: 'pipeline',
+    kicker: 'Execution',
+    label: 'Pipeline Overview',
+    filenames: new Set(['09_pipeline_timeline.html']),
+  },
+];
+
+function groupFEVisuals(visuals) {
+  const grouped = [];
+  for (const group of FE_CATEGORY_GROUPS) {
+    const matching = visuals.filter((visual) => group.filenames.has(visual.filename));
+    if (matching.length > 0) {
+      grouped.push({ ...group, visuals: matching });
+    }
+  }
+  // Any chart not belonging to a category group lands in an "Other" section.
+  const categorised = new Set(FE_CATEGORY_GROUPS.flatMap((group) => [...group.filenames]));
+  const uncategorised = visuals.filter((visual) => !categorised.has(visual.filename));
+  if (uncategorised.length > 0) {
+    grouped.push({ key: 'other', kicker: 'Misc', label: 'Other Charts', filenames: new Set(), visuals: uncategorised });
+  }
+  return grouped;
+}
+
+// ---- Shared components ----
 
 function LightboxOverlay({ src, name, onClose }) {
   return (
@@ -66,7 +119,69 @@ function PlotCard({ sessionId, plot }) {
   );
 }
 
+// ---- Feature Engineering gallery with category sections ----
+
+function FEVisualCard({ sessionId, visual }) {
+  return (
+    <div className="fe-visual-card">
+      <iframe
+        src={feVisualUrl(sessionId, visual.filename)}
+        style={{ width: '100%', height: visual.height, border: 'none', display: 'block' }}
+        title={visual.title}
+        loading="lazy"
+      />
+    </div>
+  );
+}
+
+function FEVisualsGallery({ sessionId, visuals, dashboardAvailable }) {
+  if (!visuals.length) return null;
+
+  const groups = groupFEVisuals(visuals);
+
+  return (
+    <div className="screen-stack" style={{ marginTop: 4 }}>
+      {dashboardAvailable ? (
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <a
+            className="btn btn-ghost"
+            href={feVisualUrl(sessionId, 'dashboard.html')}
+            rel="noopener noreferrer"
+            style={{ fontSize: 13 }}
+            target="_blank"
+          >
+            <Icons.spark size={14} style={{ marginRight: 6 }} />
+            Open Full Dashboard
+          </a>
+        </div>
+      ) : null}
+
+      {groups.map((group) => (
+        <section className="card panel-section" key={group.key} style={{ marginTop: 16 }}>
+          <div className="section-head">
+            <div>
+              <p className="section-kicker">{group.kicker}</p>
+              <h2>{group.label}</h2>
+            </div>
+            <span className="pill pill-queued">{group.visuals.length}</span>
+          </div>
+          <div className="fe-visuals-stack" style={{ marginTop: 12 }}>
+            {group.visuals.map((visual) => (
+              <FEVisualCard key={visual.filename} sessionId={sessionId} visual={visual} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+// ---- Main page ----
+
 function VisualizationPage({ activeSessionId }) {
+  const [vizType, setVizType] = useState(VIZ_TYPE_TRAINING);
+
+  // --- Training / Evaluation plots state ---
   const [plots, setPlots] = useState([]);
   const [loadState, setLoadState] = useState('idle');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -74,45 +189,61 @@ function VisualizationPage({ activeSessionId }) {
   const [generationMessage, setGenerationMessage] = useState(null);
   const [generationError, setGenerationError] = useState(null);
 
+  // --- Feature Engineering visuals state ---
+  const [feVisuals, setFeVisuals] = useState([]);
+  const [feDashboardAvailable, setFeDashboardAvailable] = useState(false);
+  const [feVisualsLoaded, setFeVisualsLoaded] = useState(false);
+  const [feVisualsLoading, setFeVisualsLoading] = useState(false);
+  const [feVisualsError, setFeVisualsError] = useState(null);
+
+  // Reset per-type state when the session changes.
   useEffect(() => {
-    if (!activeSessionId) {
-      setLoadState('idle');
-      setPlots([]);
-      return undefined;
-    }
+    setPlots([]);
+    setLoadState('idle');
+    setRefreshTrigger(0);
+    setFeVisuals([]);
+    setFeDashboardAvailable(false);
+    setFeVisualsLoaded(false);
+    setFeVisualsError(null);
+    setGenerationMessage(null);
+    setGenerationError(null);
+  }, [activeSessionId]);
+
+  // Fetch training/evaluation plots once on mount and after each refresh trigger.
+  // Plots are pre-generated during the pipeline run, so a single fetch suffices.
+  useEffect(() => {
+    if (!activeSessionId || vizType !== VIZ_TYPE_TRAINING) return undefined;
 
     let cancelled = false;
-    let timeoutId = null;
-    let attempts = 0;
     setLoadState('loading');
 
-    // Bounded poll so new plots appear as the pipeline produces them. Plots
-    // arrive incrementally (eda -> training -> overfitting -> hpt -> judge/shap),
-    // so keep refreshing for a while rather than fetching once on mount.
-    async function pollOnce() {
-      attempts += 1;
-      try {
-        const data = await fetchPlots(activeSessionId);
-        if (cancelled) return;
-        setPlots(data?.plots || []);
-        setLoadState('done');
-        if (attempts < VISUALIZATION_MAX_POLLS) {
-          timeoutId = setTimeout(pollOnce, VISUALIZATION_POLL_MS);
+    fetchPlots(activeSessionId)
+      .then((data) => {
+        if (!cancelled) {
+          setPlots(data?.plots || []);
+          setLoadState('done');
         }
-      } catch (pollError) {
+      })
+      .catch(() => {
         if (!cancelled) setLoadState('error');
-      }
+      });
+
+    return () => { cancelled = true; };
+  }, [activeSessionId, vizType, refreshTrigger]);
+
+  // Reset FE state when switching away from FE tab so a fresh generate is needed.
+  useEffect(() => {
+    if (vizType !== VIZ_TYPE_FEATURE_ENGINEERING) {
+      setFeVisuals([]);
+      setFeDashboardAvailable(false);
+      setFeVisualsLoaded(false);
+      setFeVisualsError(null);
     }
+    setGenerationMessage(null);
+    setGenerationError(null);
+  }, [vizType]);
 
-    pollOnce();
-
-    return () => {
-      cancelled = true;
-      if (timeoutId) clearTimeout(timeoutId);
-    };
-  }, [activeSessionId, refreshTrigger]);
-
-  const handleGenerate = async () => {
+  const handleGenerateTraining = async () => {
     setGenerationMessage(null);
     setGenerationError(null);
     setIsGenerating(true);
@@ -127,6 +258,26 @@ function VisualizationPage({ activeSessionId }) {
     }
   };
 
+  const handleGenerateFE = async () => {
+    setFeVisualsError(null);
+    setGenerationMessage(null);
+    setGenerationError(null);
+    setFeVisualsLoading(true);
+    try {
+      const result = await fetchFEVisuals(activeSessionId);
+      setFeVisuals(result?.visuals || []);
+      setFeDashboardAvailable(result?.dashboard_available || false);
+      setFeVisualsLoaded(true);
+      if (!result?.visuals?.length) {
+        setFeVisualsError('No feature engineering visuals found. Run the Feature Engineering pipeline first.');
+      }
+    } catch (err) {
+      setFeVisualsError(err.message || 'Failed to load feature engineering visuals.');
+    } finally {
+      setFeVisualsLoading(false);
+    }
+  };
+
   if (!activeSessionId) {
     return (
       <div className="screen-stack">
@@ -138,34 +289,63 @@ function VisualizationPage({ activeSessionId }) {
     );
   }
 
+  const isFeTab = vizType === VIZ_TYPE_FEATURE_ENGINEERING;
   const groupedPlots = groupPlotsByStage(plots);
+
+  const buttonBusy = isFeTab ? feVisualsLoading : isGenerating;
+  const buttonLabel = isFeTab
+    ? (feVisualsLoaded ? 'Refresh Visuals' : 'Generate Visuals')
+    : (plots.length > 0 ? 'Refresh Visualizations' : 'Generate Visualizations');
+  const handleButtonClick = isFeTab ? handleGenerateFE : handleGenerateTraining;
+
+  // Count shown in hero StatusPill
+  const feChartCount = feVisuals.length;
+  const heroPillStatus = isFeTab
+    ? (feVisualsLoaded && feChartCount > 0 ? 'done' : 'queued')
+    : (plots.length > 0 ? 'done' : 'queued');
+  const heroPillLabel = isFeTab ? `${feChartCount} charts` : `${plots.length} plots`;
 
   return (
     <div className="screen-stack">
+      {/* Hero panel */}
       <section className="card hero-panel" style={{ paddingBottom: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 15 }}>
         <div>
-          <StatusPill status={plots.length > 0 ? 'done' : 'queued'} label={`${plots.length} plots`} />
-          <h2>All Generated Visualizations</h2>
-          <p className="muted">Generate or refresh visual analytics for the current top 10 models.</p>
+          <StatusPill status={heroPillStatus} label={heroPillLabel} />
+          <h2>Visualizations</h2>
+          <p className="muted">
+            {isFeTab
+              ? 'Interactive charts from the feature engineering pipeline grouped by analysis category.'
+              : 'Visual analytics generated at the end of the pipeline. Click the button if plots are not showing.'}
+          </p>
         </div>
-        <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <select
+            className="viz-type-select"
+            onChange={(event) => setVizType(event.target.value)}
+            value={vizType}
+          >
+            {VIZ_TYPE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
           <button
             className="btn btn-primary"
-            onClick={handleGenerate}
-            disabled={isGenerating}
+            disabled={buttonBusy}
+            onClick={handleButtonClick}
             style={{ display: 'flex', alignItems: 'center', gap: 8 }}
             type="button"
           >
-            {isGenerating ? <div className="spinner small" /> : <Icons.spark size={15} />}
-            {isGenerating ? 'Generating...' : plots.length > 0 ? 'Refresh Visualizations' : 'Generate Visualizations'}
+            {buttonBusy ? <div className="spinner small" /> : <Icons.spark size={15} />}
+            {buttonBusy ? 'Loading...' : buttonLabel}
           </button>
         </div>
       </section>
 
-      {isGenerating && (
+      {/* Status banners */}
+      {(isGenerating || feVisualsLoading) && (
         <div className="callout compact" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
           <div className="spinner small" />
-          <span>Generating visualizations...</span>
+          <span>{isFeTab ? 'Loading feature engineering visuals...' : 'Generating visualizations...'}</span>
         </div>
       )}
 
@@ -176,49 +356,84 @@ function VisualizationPage({ activeSessionId }) {
         </div>
       )}
 
-      {generationError && (
+      {(generationError || feVisualsError) && (
         <div className="callout error compact" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
           <Icons.x size={16} style={{ color: 'var(--error)' }} />
-          <span>{generationError}</span>
+          <span>{generationError || feVisualsError}</span>
         </div>
       )}
 
-      {loadState === 'loading' && plots.length === 0 && (
-        <div style={{ marginTop: 20 }}>
-          <StatusPill status="running" spin label="Loading plots..." />
-        </div>
+      {/* Feature Engineering visuals — grouped sections */}
+      {isFeTab && !feVisualsLoading && feVisualsLoaded && (
+        <FEVisualsGallery
+          dashboardAvailable={feDashboardAvailable}
+          sessionId={activeSessionId}
+          visuals={feVisuals}
+        />
       )}
 
-      {loadState === 'error' && plots.length === 0 && (
-        <div className="callout error compact" style={{ marginTop: 20 }}>
-          <strong>Failed to load plots.</strong>
-          <span>Check that the session has completed at least one pipeline stage.</span>
-        </div>
-      )}
-
-      {plots.length === 0 && loadState !== 'loading' && (
-        <div className="callout compact" style={{ marginTop: 20 }}>
-          <strong>No plots yet</strong>
-          <span>Plots are generated during training and evaluation. Click 'Generate Visualizations' above to generate plots now.</span>
-        </div>
-      )}
-
-      {plots.length > 0 && Array.from(groupedPlots.entries()).map(([stage, stagePlots]) => (
-        <section className="card panel-section" key={stage} style={{ marginTop: 20 }}>
+      {isFeTab && !feVisualsLoaded && !feVisualsLoading && !feVisualsError && (
+        <section className="card panel-section" style={{ marginTop: 20 }}>
           <div className="section-head">
             <div>
-              <p className="section-kicker">{stage}</p>
-              <h2>{stageLabelFor(stage)}</h2>
+              <p className="section-kicker">Feature Engineering</p>
+              <h2>Pipeline Charts</h2>
             </div>
-            <span className="pill pill-queued">{stagePlots.length}</span>
           </div>
-          <div className="plot-gallery">
-            {stagePlots.map((plot) => (
-              <PlotCard key={plot.path} plot={plot} sessionId={activeSessionId} />
-            ))}
+          <div className="callout compact" style={{ marginTop: 12 }}>
+            <span>Click <strong>Generate Visuals</strong> to load the feature engineering pipeline charts for this session.</span>
           </div>
         </section>
-      ))}
+      )}
+
+      {/* Training / Evaluation plots — stage sections */}
+      {!isFeTab && (
+        <>
+          {loadState === 'loading' && plots.length === 0 && (
+            <div style={{ marginTop: 20 }}>
+              <StatusPill status="running" spin label="Loading plots..." />
+            </div>
+          )}
+
+          {loadState === 'error' && plots.length === 0 && (
+            <div className="callout error compact" style={{ marginTop: 20 }}>
+              <strong>Failed to load plots.</strong>
+              <span>Check that the session has completed at least one pipeline stage.</span>
+            </div>
+          )}
+
+          {plots.length === 0 && loadState !== 'loading' && (
+            <section className="card panel-section" style={{ marginTop: 20 }}>
+              <div className="section-head">
+                <div>
+                  <p className="section-kicker">Training & Evaluation</p>
+                  <h2>Visual Analytics</h2>
+                </div>
+              </div>
+              <div className="callout compact" style={{ marginTop: 12 }}>
+                <span>Plots are generated automatically at the end of the training pipeline. Click <strong>Generate Visualizations</strong> if the pipeline has completed and no plots appear yet.</span>
+              </div>
+            </section>
+          )}
+
+          {plots.length > 0 && Array.from(groupedPlots.entries()).map(([stage, stagePlots]) => (
+            <section className="card panel-section" key={stage} style={{ marginTop: 20 }}>
+              <div className="section-head">
+                <div>
+                  <p className="section-kicker">{stage}</p>
+                  <h2>{stageLabelFor(stage)}</h2>
+                </div>
+                <span className="pill pill-queued">{stagePlots.length}</span>
+              </div>
+              <div className="plot-gallery">
+                {stagePlots.map((plot) => (
+                  <PlotCard key={plot.path} plot={plot} sessionId={activeSessionId} />
+                ))}
+              </div>
+            </section>
+          ))}
+        </>
+      )}
     </div>
   );
 }

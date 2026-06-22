@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
@@ -123,7 +124,11 @@ class PipelinePrep:
         )
         logger.info("=> feature engineering complete: run_id=%s dir=%s", run_id, feature_output_dir)
 
-        engineered_csv = feature_output_dir / "engineered_dataset.csv"
+        # Copy engineered_dataset.csv to the canonical data/ location so that
+        # training, eval, and plotting all find it at session_dir/data/engineered_dataset.csv.
+        engineered_csv = self.data_dir / "engineered_dataset.csv"
+        shutil.move(str(feature_output_dir / "engineered_dataset.csv"), engineered_csv)
+        logger.info("=> engineered_dataset.csv moved to data/: %s", engineered_csv)
         feature_artifact_path = feature_output_dir / "feature_artifact.json"
 
         # Step 1b: persist structured feature_run.json so the UI can read status.

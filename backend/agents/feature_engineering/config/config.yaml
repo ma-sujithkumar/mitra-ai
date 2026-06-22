@@ -23,11 +23,12 @@ feature_creation:
   quantile_bins: 5
 
 feature_selection:
-  correlation_threshold: 0.90
+  correlation_threshold: 0.70
   mi_threshold: 0.01
   variance_threshold: 0.01
   lasso_alpha: 0.01
-  rf_n_estimators: 100
+  ig_n_bins: 10
+  laplacian_k_neighbors: 5
   pca_variance_retained: 0.95
   top_k_features: 20
   cluster_cut_threshold: 0.30

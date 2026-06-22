@@ -6,12 +6,15 @@ from pathlib import Path
 import plotly.graph_objects as go
 
 from backend.agents.feature_engineering.visuals.artifact_reader import ArtifactReader
-from backend.agents.feature_engineering.visuals.base import BaseVisualizer
+from backend.agents.feature_engineering.visuals.base import BaseVisualizer, MAX_VISUAL_ROWS
 
 # Amber fill for deterministic (rule-based) rows
 COLOR_DETERMINISTIC_FILL = "#fff3cd"
 COLOR_HEADER_FILL = "#343a40"
 COLOR_HEADER_FONT = "#ffffff"
+
+# Strategies applied to numeric columns (knn/iterative are LLM-selected but operate on numeric data)
+NUMERIC_IMPUTATION_STRATEGIES = {"median", "knn", "iterative"}
 
 
 def _imputation_rule_text(strategy: str, null_rate: float, drop_threshold: float = 0.5) -> str:
@@ -59,6 +62,12 @@ class DecisionTableVisualizer(BaseVisualizer):
             transformer for transformer in self.reader.transformers
             if transformer.get("step") == "imputation"
         ]
+        # Top MAX_VISUAL_ROWS by null rate descending (most missing columns first)
+        imputation_rows = sorted(
+            imputation_rows,
+            key=lambda transformer: float(self.reader.profile.get(transformer.get("column", ""), {}).get("null_rate", 0.0)),
+            reverse=True,
+        )[:MAX_VISUAL_ROWS]
         if not imputation_rows:
             return None
 
@@ -77,7 +86,7 @@ class DecisionTableVisualizer(BaseVisualizer):
             col_profile = profile.get(col, {})
             null_rate = float(col_profile.get("null_rate", 0.0))
 
-            semantic_type = "numeric" if strategy == "median" else "non-numeric"
+            semantic_type = "numeric" if strategy in NUMERIC_IMPUTATION_STRATEGIES else "non-numeric"
             fill_str = f"{fill_val:.4f}" if isinstance(fill_val, float) else str(fill_val or "N/A")
 
             columns_list.append(col)
@@ -118,6 +127,12 @@ class DecisionTableVisualizer(BaseVisualizer):
             transformer for transformer in self.reader.transformers
             if transformer.get("step") == "outlier_scale"
         ]
+        # Top MAX_VISUAL_ROWS by IQR scale descending (most extreme outlier columns first)
+        outlier_rows = sorted(
+            outlier_rows,
+            key=lambda transformer: float(transformer.get("scale") or 0.0),
+            reverse=True,
+        )[:MAX_VISUAL_ROWS]
         if not outlier_rows:
             return None
 
@@ -165,6 +180,12 @@ class DecisionTableVisualizer(BaseVisualizer):
             transformer for transformer in self.reader.transformers
             if transformer.get("step") == "scaling"
         ]
+        # Top MAX_VISUAL_ROWS by outlier rate descending (most extreme scaling decisions first)
+        scaling_rows = sorted(
+            scaling_rows,
+            key=lambda transformer: float(self.reader.profile.get(transformer.get("column", ""), {}).get("outlier_rate", 0.0)),
+            reverse=True,
+        )[:MAX_VISUAL_ROWS]
         if not scaling_rows:
             return None
 

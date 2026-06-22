@@ -349,9 +349,10 @@ function UploadScreen({ go, startRun, enterFeatureEngineering, resumeSession, ro
       }
     } catch (flowError) {
       setError(flowError.message);
-      if (validationPhase === 'running') {
-        setValidationPhase('error');
-      }
+      // Use functional update to read current state rather than the stale closure
+      // value — validationPhase in this closure still reflects the pre-setValidationPhase
+      // snapshot, so a direct comparison would always miss the 'running' transition.
+      setValidationPhase((currentPhase) => currentPhase === 'running' ? 'error' : currentPhase);
     }
   }
 

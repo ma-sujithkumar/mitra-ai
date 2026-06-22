@@ -1,9 +1,9 @@
 """Deterministic feature-selection statistics — computed ONCE, written to disk.
 
 Phase B of the pipeline. Computes every statistic the feature-selection LLM needs
-(mutual information, RandomForest importance, mRMR ranking, variance, Pearson +
-Spearman correlation pairs, correlation clusters, linear baseline, PCA explained
-variance) and writes them as JSON artifacts under `.mitra/<run_id>/stats/`.
+(mutual information, information gain, Laplacian score, mRMR ranking, variance,
+Pearson + Spearman correlation pairs, correlation clusters, linear baseline, PCA
+explained variance) and writes them as JSON artifacts under `.mitra/<run_id>/stats/`.
 
 The estimators are reused from backend.agents.feature_engineering.tools.selector and pipeline.parallel so the
 math lives in one place (no duplicate compute with the profiler/selector).
@@ -53,11 +53,15 @@ class FeatureStatsComputer:
         clusters = compute_correlation_clusters(X, cut_threshold=fs.cluster_cut_threshold)
         pca = self._pca_stats(X, fs.pca_variance_retained)
 
+        # Laplacian score is unsupervised — computed for all tasks including clustering.
+        laplacian_scores = FeatureSelector._laplacian_scores_dict(X, self.cfg, state=None)
+
         if task == "clustering" or y is None:
-            # Clustering: no supervision signal — use variance as MI proxy.
+            # Clustering: no supervision signal — use variance as MI proxy; skip IG/mRMR/baseline.
             return {
                 "mutual_info": {"scores": variances, "ranked": _ranked(variances)},
-                "rf_importance": {"scores": {}, "ranked": []},
+                "information_gain": {"scores": {}, "ranked": []},
+                "laplacian_score": {"scores": laplacian_scores, "ranked": _ranked_ascending(laplacian_scores)},
                 "mrmr_ranking": {"ranked": []},
                 "variance": {"scores": variances, "low_variance": low_variance, "threshold": fs.variance_threshold},
                 "correlation_pearson": {"high_pairs": pearson_pairs, "threshold": fs.correlation_threshold},
@@ -67,15 +71,17 @@ class FeatureStatsComputer:
                 "pca": pca,
             }
 
-        # Supervised path: MI with target, mRMR, linear baseline.
+        # Supervised path: MI, information gain, mRMR, Laplacian score, linear baseline.
         n_cols = X.shape[1]
         mi_scores = FeatureSelector._mi_scores(X, y, task, seed=self.seed)
+        ig_scores = FeatureSelector._information_gain(X, y, task, cfg=self.cfg, seed=self.seed)
         mrmr_ranked = FeatureSelector._mrmr(X, y, task, k=n_cols, seed=self.seed)
         baseline = compute_linear_baseline(X, y, task, k=fs.linear_baseline_k, seed=self.seed)
 
         return {
             "mutual_info": {"scores": mi_scores, "ranked": _ranked(mi_scores)},
-            "rf_importance": {"scores": {}, "ranked": []},
+            "information_gain": {"scores": ig_scores, "ranked": _ranked(ig_scores)},
+            "laplacian_score": {"scores": laplacian_scores, "ranked": _ranked_ascending(laplacian_scores)},
             "mrmr_ranking": {"ranked": list(mrmr_ranked)},
             "variance": {"scores": variances, "low_variance": low_variance, "threshold": fs.variance_threshold},
             "correlation_pearson": {"high_pairs": pearson_pairs, "threshold": fs.correlation_threshold},
@@ -133,6 +139,13 @@ class FeatureStatsComputer:
 
 def _ranked(scores: dict[str, float]) -> list[str]:
     return [c for c, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)]
+
+
+def _ranked_ascending(scores: dict[str, float]) -> list[str]:
+    """Rank features ascending (lower score is better, e.g. Laplacian Score). Inf values go last."""
+    finite = [(c, v) for c, v in scores.items() if v != float("inf")]
+    inf_cols = [c for c, v in scores.items() if v == float("inf")]
+    return [c for c, _ in sorted(finite, key=lambda kv: kv[1])] + inf_cols
 
 
 def compute_and_write_stats(state: PipelineState, stats_dir: Path) -> dict:

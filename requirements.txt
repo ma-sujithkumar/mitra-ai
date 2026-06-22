@@ -61,7 +61,7 @@ portalocker>=2.7.0
 # the last compatible release so the passlib bcrypt backend initializes.
 SQLAlchemy>=2.0.0
 passlib>=1.7.4
-bcrypt>=4.0.0,<4.1
+bcrypt==4.0.1
 psycopg2>=2.9.0
 
 # --- Testing ---

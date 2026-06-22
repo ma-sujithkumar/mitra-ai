@@ -31,10 +31,12 @@ class ArtifactReader:
             self._stats_dir = Path(".mitra") / run_id / "stats"
 
         self._mi_data: dict = self._load_stats_json("mutual_info.json")
-        self._rf_data: dict = self._load_stats_json("rf_importance.json")
+        self._information_gain_data: dict = self._load_stats_json("information_gain.json")
+        self._laplacian_data: dict = self._load_stats_json("laplacian_score.json")
         self._mrmr_data: dict = self._load_stats_json("mrmr_ranking.json")
         self._variance_data: dict = self._load_stats_json("variance.json")
         self._pearson_data: dict = self._load_stats_json("correlation_pearson.json")
+        self._spearman_data: dict = self._load_stats_json("correlation_spearman.json")
         self._clusters_data: dict = self._load_stats_json("clusters.json")
         self._baseline_data: dict = self._load_stats_json("linear_baseline.json")
         self._pca_data_raw: dict = self._load_stats_json("pca.json")
@@ -176,8 +178,13 @@ class ArtifactReader:
         return dict(self._mi_data.get("scores", {}))
 
     @property
-    def rf_scores(self) -> dict[str, float]:
-        return dict(self._rf_data.get("scores", {}))
+    def information_gain_scores(self) -> dict[str, float]:
+        return dict(self._information_gain_data.get("scores", {}))
+
+    @property
+    def laplacian_scores(self) -> dict[str, float]:
+        """Per-feature Laplacian Score (lower value = more important for local structure)."""
+        return dict(self._laplacian_data.get("scores", {}))
 
     @property
     def mrmr_ranked(self) -> list[str]:
@@ -190,6 +197,10 @@ class ArtifactReader:
     @property
     def pearson_pairs(self) -> list[list]:
         return list(self._pearson_data.get("high_pairs", []))
+
+    @property
+    def spearman_pairs(self) -> list[list]:
+        return list(self._spearman_data.get("high_pairs", []))
 
     @property
     def clusters(self) -> dict[str, list[str]]:

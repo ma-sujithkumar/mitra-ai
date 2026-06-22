@@ -9,6 +9,10 @@ import plotly.graph_objects as go
 from backend.agents.feature_engineering.visuals.artifact_reader import ArtifactReader
 
 
+# Shared cap applied across all visualizers so charts stay readable.
+MAX_VISUAL_ROWS = 30
+
+
 class BaseVisualizer(ABC):
     """Every concrete visualizer extends this class."""
 

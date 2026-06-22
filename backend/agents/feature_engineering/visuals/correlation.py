@@ -1,4 +1,9 @@
-"""Correlation heatmap reordered by cluster membership with cluster boundary overlays."""
+"""Correlation heatmap reordered by cluster membership with cluster boundary overlays.
+
+Provides a toggle button to switch between Pearson and Spearman heatmaps. Both share
+the same feature ordering (union of high-correlation pair features, ordered by cluster
+membership) so the cluster boundaries remain valid in both views.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,21 +12,21 @@ import numpy as np
 import plotly.graph_objects as go
 
 from backend.agents.feature_engineering.visuals.artifact_reader import ArtifactReader
-from backend.agents.feature_engineering.visuals.base import BaseVisualizer
+from backend.agents.feature_engineering.visuals.base import BaseVisualizer, MAX_VISUAL_ROWS
 
-MAX_FEATURES_IN_HEATMAP = 50
+MAX_FEATURES_IN_HEATMAP = MAX_VISUAL_ROWS
 
 
 def _build_correlation_matrix(
     all_features: list[str],
-    pearson_pairs: list[list],
+    pairs: list[list],
 ) -> np.ndarray:
     """Build a square NxN correlation matrix from a list of (col_a, col_b, corr) triples."""
     feature_index = {feature: idx for idx, feature in enumerate(all_features)}
     num_features = len(all_features)
     corr_matrix = np.zeros((num_features, num_features))
     np.fill_diagonal(corr_matrix, 1.0)
-    for triple in pearson_pairs:
+    for triple in pairs:
         col_a, col_b, corr_value = triple[0], triple[1], float(triple[2])
         idx_a = feature_index.get(col_a)
         idx_b = feature_index.get(col_b)
@@ -32,20 +37,26 @@ def _build_correlation_matrix(
 
 
 class CorrelationClusterVisualizer(BaseVisualizer):
-    """Square Pearson correlation heatmap with cluster-ordered axes and boundary rectangles."""
+    """Square Pearson/Spearman correlation heatmap with cluster-ordered axes and boundary rectangles."""
 
     def build(self) -> go.Figure | None:
         pearson_pairs = self.reader.pearson_pairs
-        if not pearson_pairs:
+        spearman_pairs = self.reader.spearman_pairs
+
+        # Need at least one correlation method to have data
+        if not pearson_pairs and not spearman_pairs:
             return None
 
         clusters = self.reader.clusters
         selected_set = set(self.reader.selected_columns)
         mi_scores = self.reader.mi_scores
 
-        # Collect all unique features mentioned in correlation pairs
+        # Collect features from BOTH methods so both heatmaps share the same feature set
         pair_features: set[str] = set()
         for triple in pearson_pairs:
+            pair_features.add(triple[0])
+            pair_features.add(triple[1])
+        for triple in spearman_pairs:
             pair_features.add(triple[0])
             pair_features.add(triple[1])
 
@@ -57,10 +68,14 @@ class CorrelationClusterVisualizer(BaseVisualizer):
                 triple for triple in pearson_pairs
                 if triple[0] in pair_features and triple[1] in pair_features
             ]
+            spearman_pairs = [
+                triple for triple in spearman_pairs
+                if triple[0] in pair_features and triple[1] in pair_features
+            ]
 
-        # Order features by cluster membership
+        # Order features by cluster membership (same ordering for both views)
         cluster_ordered: list[str] = []
-        cluster_boundary_positions: list[int] = []  # cumulative sizes of each cluster block
+        cluster_boundary_positions: list[int] = []
         for cluster_id in sorted(clusters.keys(), key=lambda cid: int(cid) if cid.isdigit() else 0):
             cluster_members = [col for col in clusters[cluster_id] if col in pair_features]
             if cluster_members:
@@ -70,34 +85,60 @@ class CorrelationClusterVisualizer(BaseVisualizer):
         remaining_features = [col for col in pair_features if col not in set(cluster_ordered)]
         cluster_ordered.extend(sorted(remaining_features))
 
-        corr_matrix = _build_correlation_matrix(cluster_ordered, pearson_pairs)
+        pearson_matrix = _build_correlation_matrix(cluster_ordered, pearson_pairs)
+        spearman_matrix = _build_correlation_matrix(cluster_ordered, spearman_pairs)
 
-        # Build hover text matrix
-        hover_texts = []
-        for row_idx, row_col in enumerate(cluster_ordered):
-            hover_row = []
-            for col_idx, col_col in enumerate(cluster_ordered):
-                corr_val = corr_matrix[row_idx][col_idx]
-                row_status = "selected" if row_col in selected_set else "dropped"
-                col_status = "selected" if col_col in selected_set else "dropped"
-                hover_row.append(
-                    f"{row_col} ({row_status})<br>{col_col} ({col_status})<br>Pearson r = {corr_val:.3f}"
-                )
-            hover_texts.append(hover_row)
+        def _hover_texts(corr_matrix: np.ndarray, method_label: str) -> list[list[str]]:
+            hover = []
+            for row_idx, row_col in enumerate(cluster_ordered):
+                hover_row = []
+                for col_idx, col_col in enumerate(cluster_ordered):
+                    corr_val = corr_matrix[row_idx][col_idx]
+                    row_status = "selected" if row_col in selected_set else "dropped"
+                    col_status = "selected" if col_col in selected_set else "dropped"
+                    hover_row.append(
+                        f"{row_col} ({row_status})<br>{col_col} ({col_status})<br>"
+                        f"{method_label} r = {corr_val:.3f}"
+                    )
+                hover.append(hover_row)
+            return hover
 
-        figure = go.Figure(data=go.Heatmap(
-            z=corr_matrix,
+        pearson_hover = _hover_texts(pearson_matrix, "Pearson")
+        spearman_hover = _hover_texts(spearman_matrix, "Spearman")
+
+        figure = go.Figure()
+
+        # Pearson heatmap (default visible)
+        figure.add_trace(go.Heatmap(
+            name="Pearson",
+            z=pearson_matrix,
             x=cluster_ordered,
             y=cluster_ordered,
             colorscale="RdBu",
             zmin=-1,
             zmax=1,
-            text=hover_texts,
+            text=pearson_hover,
             hovertemplate="%{text}<extra></extra>",
-            colorbar=dict(title="Pearson r"),
+            colorbar=dict(title="r"),
+            visible=True,
         ))
 
-        # Draw cluster boundary rectangles using shapes
+        # Spearman heatmap (hidden by default, toggled via button)
+        figure.add_trace(go.Heatmap(
+            name="Spearman",
+            z=spearman_matrix,
+            x=cluster_ordered,
+            y=cluster_ordered,
+            colorscale="RdBu",
+            zmin=-1,
+            zmax=1,
+            text=spearman_hover,
+            hovertemplate="%{text}<extra></extra>",
+            colorbar=dict(title="r"),
+            visible=False,
+        ))
+
+        # Draw cluster boundary lines (shared across both views)
         num_features = len(cluster_ordered)
         shapes = []
         for boundary_start in cluster_boundary_positions:
@@ -121,11 +162,39 @@ class CorrelationClusterVisualizer(BaseVisualizer):
             ))
 
         figure.update_layout(
-            title="Feature Correlation by Cluster (RdBu: red=positive, blue=negative)",
+            title="Feature Correlation by Cluster - Pearson (RdBu: red=positive, blue=negative)",
             height=max(500, num_features * 18 + 120),
             width=max(600, num_features * 18 + 200),
             shapes=shapes,
-            margin=dict(l=150, r=40, t=60, b=150),
+            margin=dict(l=150, r=40, t=80, b=150),
             xaxis=dict(tickangle=45),
+            updatemenus=[
+                dict(
+                    type="buttons",
+                    direction="right",
+                    x=0.0,
+                    y=1.08,
+                    xanchor="left",
+                    showactive=True,
+                    buttons=[
+                        dict(
+                            label="Pearson",
+                            method="update",
+                            args=[
+                                {"visible": [True, False]},
+                                {"title": "Feature Correlation by Cluster - Pearson (RdBu: red=positive, blue=negative)"},
+                            ],
+                        ),
+                        dict(
+                            label="Spearman",
+                            method="update",
+                            args=[
+                                {"visible": [False, True]},
+                                {"title": "Feature Correlation by Cluster - Spearman (RdBu: red=positive, blue=negative)"},
+                            ],
+                        ),
+                    ],
+                )
+            ],
         )
         return figure

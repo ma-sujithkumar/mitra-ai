@@ -6,7 +6,7 @@ from pathlib import Path
 import plotly.graph_objects as go
 
 from backend.agents.feature_engineering.visuals.artifact_reader import ArtifactReader
-from backend.agents.feature_engineering.visuals.base import BaseVisualizer
+from backend.agents.feature_engineering.visuals.base import BaseVisualizer, MAX_VISUAL_ROWS
 
 COLOR_SELECTED = "#2ca02c"
 COLOR_DROPPED = "#d62728"
@@ -23,7 +23,7 @@ class SelectionRationaleVisualizer(BaseVisualizer):
 
         selected_set = set(self.reader.selected_columns)
         all_feature_cols = list(mi_scores.keys())
-        sorted_features = sorted(all_feature_cols, key=lambda col: mi_scores[col], reverse=True)
+        sorted_features = sorted(all_feature_cols, key=lambda col: mi_scores[col], reverse=True)[:MAX_VISUAL_ROWS]
 
         bar_colors = [COLOR_SELECTED if col in selected_set else COLOR_DROPPED for col in sorted_features]
         hover_texts = [

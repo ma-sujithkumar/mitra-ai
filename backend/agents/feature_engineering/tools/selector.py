@@ -42,6 +42,7 @@ SELECT_PROMPT = """You are a feature selection expert. Choose which feature colu
 ## GOAL
 Keep the most predictive, non-redundant features. Keep AT MOST {top_k} columns.
 - Prefer columns with high mutual information and high information gain.
+- Prefer columns with low Laplacian Score (they preserve local structure better).
 - Respect the mRMR ranking (minimum-redundancy maximum-relevance order).
 - Drop near-zero-variance columns.
 - For each high-correlation pair keep only ONE column (drop the redundant twin).
@@ -69,6 +70,9 @@ Mutual information (column: score), highest first:
 
 Information gain (column: H(Y) - H(Y|X) in bits), highest first:
 {ig_block}
+
+Laplacian Score (column: score), lowest first (lower = better manifold preservation):
+{laplacian_block}
 
 mRMR ranking (best first):
 {mrmr_block}
@@ -207,8 +211,8 @@ class FeatureSelector(BaseTool):
             return None
         loaded: dict = {}
         for name in (
-            "mutual_info", "information_gain", "mrmr_ranking", "variance",
-            "correlation_pearson", "linear_baseline", "pca",
+            "mutual_info", "information_gain", "laplacian_score", "mrmr_ranking",
+            "variance", "correlation_pearson", "linear_baseline", "pca",
         ):
             path = state.stats_dir / f"{name}.json"
             if path.exists():
@@ -223,10 +227,18 @@ class FeatureSelector(BaseTool):
         items = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:limit]
         return "\n".join(f"- {k}: {v:.4f}" for k, v in items) if items else "(none)"
 
+    @staticmethod
+    def _top_items_ascending(scores: dict, limit: int) -> str:
+        """Return items sorted ascending (lowest score first — used for Laplacian Score)."""
+        finite_items = [(k, v) for k, v in scores.items() if v != float("inf")]
+        items = sorted(finite_items, key=lambda kv: kv[1])[:limit]
+        return "\n".join(f"- {k}: {v:.4f}" for k, v in items) if items else "(none)"
+
     def _build_prompt(self, state: PipelineState, feature_cols: list[str], stats: dict, top_k: int) -> str:
         cfg = state.config
         mi = (stats.get("mutual_info") or {}).get("scores", {})
         ig = (stats.get("information_gain") or {}).get("scores", {})
+        laplacian = (stats.get("laplacian_score") or {}).get("scores", {})
         mrmr = (stats.get("mrmr_ranking") or {}).get("ranked", [])
         low_var = (stats.get("variance") or {}).get("low_variance", [])
         corr_pairs = (stats.get("correlation_pearson") or {}).get("high_pairs", [])
@@ -253,6 +265,7 @@ class FeatureSelector(BaseTool):
             linear_baseline=f"{baseline:.4f}",
             mi_block=self._top_items(mi, 40),
             ig_block=self._top_items(ig, 40),
+            laplacian_block=self._top_items_ascending(laplacian, 40),
             mrmr_block="\n".join(f"- {c}" for c in mrmr[:40]) if mrmr else "(none)",
             low_var_block=("\n".join(f"- {c}" for c in low_var) if low_var else "(none)"),
             corr_block=corr_block,
@@ -386,6 +399,47 @@ class FeatureSelector(BaseTool):
             importance = np.abs(model.coef_).mean(axis=0) if model.coef_.ndim > 1 else np.abs(model.coef_)
         order = np.argsort(importance)[::-1][: min(k, X.shape[1])]
         return [X.columns[i] for i in order]
+
+    @staticmethod
+    def _laplacian_scores_dict(X: pd.DataFrame, cfg, state) -> dict[str, float]:
+        """Per-feature Laplacian Score (He, Cai, Niyogi 2005).
+
+        Returns a dict mapping each column to its Laplacian Score (lower = more important).
+        Builds a symmetric k-NN affinity graph and scores each feature by how
+        smoothly it varies across neighbouring samples. Returns 0.0 per feature on failure.
+        """
+        from sklearn.neighbors import kneighbors_graph
+        if X.shape[1] == 0:
+            return {}
+        n_neighbors = min(cfg.feature_selection.laplacian_k_neighbors, X.shape[0] - 1)
+        if n_neighbors < 1:
+            return {col: 0.0 for col in X.columns}
+        try:
+            W = kneighbors_graph(
+                X.to_numpy(), n_neighbors=n_neighbors,
+                mode="connectivity", include_self=False,
+            )
+            W = 0.5 * (W + W.T)
+            d = np.asarray(W.sum(axis=1)).ravel()
+            d_total = float(d.sum())
+            if d_total <= 0:
+                return {col: 0.0 for col in X.columns}
+            scores: dict[str, float] = {}
+            for col in X.columns:
+                f = X[col].to_numpy(dtype=float)
+                f_centered = f - float((d * f).sum()) / d_total
+                denom = float((d * f_centered * f_centered).sum())
+                if denom <= 0:
+                    scores[col] = float("inf")
+                    continue
+                wf = np.asarray(W @ f_centered).ravel()
+                numer = denom - float(f_centered @ wf)
+                scores[col] = numer / denom
+            return scores
+        except Exception as exc:
+            if state is not None:
+                state.warnings.append(f"laplacian_scores_dict failed: {exc}")
+            return {col: 0.0 for col in X.columns}
 
     @staticmethod
     def _laplacian_score(X: pd.DataFrame, y, task: str, k: int, cfg, state) -> list[str]:

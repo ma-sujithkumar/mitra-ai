@@ -41,6 +41,23 @@ OVERFITTING_ANALYSIS_FILENAME = "overfitting_analysis.json"
 PLOT_SEARCH_SUBDIRS = ("plots", "evaluation")
 PLOT_FILE_SUFFIXES = (".png", ".jpg", ".jpeg", ".svg")
 
+# Feature engineering HTML visual file extension (kept separate from image plots).
+FE_VISUAL_HTML_SUFFIX = ".html"
+
+# Mirrors the _CHART_META list in backend/agents/feature_engineering/visuals/dashboard.py.
+# Maps filename -> (display title, suggested iframe height in px).
+FE_VISUAL_CHART_META: dict[str, tuple[str, int]] = {
+    "01_feature_importance.html": ("Feature Importance (MI / Info Gain / mRMR / Laplacian)", 620),
+    "02_correlation_clusters.html": ("Correlation Clusters (Pearson / Spearman)", 680),
+    "03_imputation_decisions.html": ("Imputation Decisions", 500),
+    "04_outlier_decisions.html": ("Outlier Handling Decisions", 440),
+    "05_scaling_decisions.html": ("Scaling Decisions", 500),
+    "06_created_features.html": ("Created Features", 540),
+    "07_selection_rationale.html": ("Feature Selection Rationale", 620),
+    "08_pca_variance.html": ("PCA Explained Variance", 500),
+    "09_pipeline_timeline.html": ("Pipeline Step Timeline", 460),
+}
+
 
 class EvaluationArtifactReader:
     """Reads evaluation artifacts from a single session directory.
@@ -214,6 +231,44 @@ class EvaluationArtifactReader:
             raise HTTPException(status_code=404, detail="Plot not found.")
         if candidate.suffix.lower() not in PLOT_FILE_SUFFIXES:
             raise HTTPException(status_code=400, detail="Unsupported plot type.")
+        return candidate
+
+    def list_fe_visuals(self, fe_output_subdir: str) -> dict[str, Any]:
+        """List available FE HTML visual files that exist on disk."""
+        plots_dir = self.session_dir / fe_output_subdir / "plots"
+        if not plots_dir.is_dir():
+            return {"visuals": [], "dashboard_available": False, "status": "pending"}
+
+        visuals: list[dict[str, Any]] = []
+        for filename, (title, height) in FE_VISUAL_CHART_META.items():
+            if (plots_dir / filename).is_file():
+                visuals.append({"filename": filename, "title": title, "height": height})
+
+        dashboard_available = (plots_dir / "dashboard.html").is_file()
+        return {
+            "visuals": visuals,
+            "dashboard_available": dashboard_available,
+            "status": "complete" if visuals else "pending",
+        }
+
+    def resolve_fe_visual(self, filename: str, fe_output_subdir: str) -> Path:
+        """Resolve a FE HTML visual file safely, rejecting traversal and non-HTML files."""
+        if "/" in filename or "\\" in filename or ".." in filename:
+            raise HTTPException(status_code=400, detail="Invalid visual filename.")
+        if not filename.endswith(FE_VISUAL_HTML_SUFFIX):
+            raise HTTPException(status_code=400, detail="Only .html visual files are served here.")
+
+        plots_dir = (self.session_dir / fe_output_subdir / "plots").resolve()
+        session_root = self.session_dir.resolve()
+        if session_root not in plots_dir.parents and plots_dir != session_root:
+            raise HTTPException(status_code=400, detail="Invalid visual path.")
+
+        candidate = (plots_dir / filename).resolve()
+        if plots_dir not in candidate.parents and candidate != plots_dir:
+            raise HTTPException(status_code=400, detail="Invalid visual path.")
+
+        if not candidate.is_file():
+            raise HTTPException(status_code=404, detail="Visual file not found.")
         return candidate
 
     def feature_engineering_status(self) -> dict[str, Any]:
@@ -577,6 +632,36 @@ def get_feature_engineering(
     return {"session_id": session_id, **reader.feature_engineering_status()}
 
 
+@router.get("/{session_id}/feature-engineering/visuals")
+def list_fe_visuals(
+    session_id: str,
+    config_loader: ConfigLoader = Depends(get_config_loader),
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """List available feature engineering HTML visual chart files for a session."""
+    reader = _build_reader(session_id=session_id, session_manager=session_manager)
+    return {
+        "session_id": session_id,
+        **reader.list_fe_visuals(fe_output_subdir=config_loader.feature_engineering_api.output_subdir),
+    }
+
+
+@router.get("/{session_id}/feature-engineering/visuals/{filename}")
+def get_fe_visual(
+    session_id: str,
+    filename: str,
+    config_loader: ConfigLoader = Depends(get_config_loader),
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> FileResponse:
+    """Serve a single feature engineering HTML visual file."""
+    reader = _build_reader(session_id=session_id, session_manager=session_manager)
+    resolved_path = reader.resolve_fe_visual(
+        filename=filename,
+        fe_output_subdir=config_loader.feature_engineering_api.output_subdir,
+    )
+    return FileResponse(path=resolved_path, media_type="text/html")
+
+
 @router.get("/{session_id}/d2v-prior")
 def get_d2v_prior(
     session_id: str,
@@ -659,20 +744,36 @@ def download_model(
 @router.post("/{session_id}/plots/generate")
 def generate_plots(
     session_id: str,
+    force: bool = False,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
-    """Trigger plot generation for the given session ID."""
+    """Return pre-generated plots or generate them if none exist.
+
+    If plots are already on disk (generated during the pipeline run), the
+    response is returned immediately without re-running the generator.
+    Pass force=true to unconditionally regenerate all plots.
+    """
+    reader = _build_reader(session_id=session_id, session_manager=session_manager)
+    existing_plots = reader.list_plots()
+
+    if existing_plots.get("plots") and not force:
+        plot_count = len(existing_plots["plots"])
+        return {
+            "status": "cached",
+            "message": f"Visualizations ready ({plot_count} plots).",
+            "results": {},
+        }
+
     session_dir = session_manager.get_session_path(session_id=session_id)
-    if not session_dir.is_dir():
-        raise HTTPException(status_code=404, detail=f"Unknown session '{session_id}'.")
     try:
         plot_generator = PipelinePlotGenerator(session_dir=session_dir)
         results = plot_generator.generate_all()
+        total_generated = sum(len(paths) for paths in results.values())
         return {
             "status": "success",
-            "message": "Visualizations generated successfully",
+            "message": f"Visualizations generated successfully ({total_generated} plots).",
             "results": results,
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as generate_error:
+        raise HTTPException(status_code=500, detail=str(generate_error))
 
