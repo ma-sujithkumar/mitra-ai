@@ -2,10 +2,17 @@
 JudgeAgent: orchestrates the full judge pipeline.
 
 Flow:
-  1. Rule engine gates and ranks candidates (deterministic, authoritative).
+  1. Rule engine applies deterministic hard gates (floor / bias / leakage) and
+     produces a provisional score-ordered ranking among survivors.
   2. If use_llm is enabled, renders a jinja2 prompt and invokes the LLM via
-     ADK LlmAgent + LiteLlm (shared build_llm_model factory) to get rationale.
-  3. Merges LLM output (additive only) into the JudgeDecision.
+     ADK LlmAgent + LiteLlm to actually RANK the survivors (not just comment
+     on a fixed order), grounded in metrics/overfitting/complexity/SHAP/domain
+     reasoning fetched via tool calls. The LLM reorders ranked_models; the
+     rule-engine score on each RankedModel is left untouched for auditability.
+  3. Deterministic selection (RuleEngine.apply_selection) picks the top-N% of
+     eligible models from whichever order is authoritative at this point
+     (LLM-reordered if it succeeded, rule-only otherwise). The LLM never
+     decides selection.
   4. Returns the final JudgeDecision.
 """
 
@@ -41,6 +48,7 @@ def _render_prompt(
     decision: JudgeDecision,
     prompts_dir: str,
     template_name: str,
+    max_accuracy_drop_pct: float,
 ) -> str:
     """Render the jinja2 judge prompt with the rule-based decision and context inputs."""
     env = Environment(
@@ -57,6 +65,7 @@ def _render_prompt(
         metadata=judge_input.metadata,
         ranked_models=decision.ranked_models,
         candidates_detail=candidates_detail,
+        max_accuracy_drop_pct=max_accuracy_drop_pct,
     )
 
 
@@ -73,6 +82,14 @@ class JudgeTools:
     def get_dataset_statistics(self) -> dict[str, Any]:
         """Retrieve descriptive statistics (minidata / pd.describe metrics) of the validation dataset."""
         return self._judge_input.minidata or {}
+
+    def get_domain_reasoning(self) -> dict[str, Any]:
+        """Retrieve the domain-reasoning agent's problem/column explanations and leakage-risk flags.
+
+        Returns an empty dict (never raises, never hallucinated) when the
+        domain-reasoning agent did not run or failed for this session.
+        """
+        return self._judge_input.domain_reasoning or {}
 
     def get_model_evaluation_details(self, model_name: str) -> dict[str, Any]:
         """Retrieve detailed validation metrics, overfitting checks, CV results, diagnostics, complexity, and SHAP features for a specific model candidate."""
@@ -122,14 +139,21 @@ async def _invoke_llm_agent(
         name="judge_llm",
         model=llm_model,
         instruction=(
-            "You are an expert ML model selection judge. Your role is to provide a rationale and "
-            "flag any concerns for a rule-based ranking. You CANNOT change the verdicts or scores. "
-            "To construct your response, you MUST call the tools to retrieve dataset metadata, statistics, "
-            "and model evaluation details. Do not assume or guess. Respond only with the requested JSON schema."
+            "You are an expert ML model selection judge. The candidates have already "
+            "passed a deterministic hard floor and bias/leakage gate -- that filtering "
+            "is fixed. Your job is to RANK the survivors by judgment, grounded in their "
+            "metrics, overfitting behavior, complexity, and SHAP feature importance "
+            "correlated against domain reasoning. You do NOT decide which models are "
+            "selected -- a separate deterministic step picks the top percentage of your "
+            "ranking. To construct your response, you MUST call the tools to retrieve "
+            "dataset metadata, statistics, domain reasoning, and model evaluation "
+            "details for every candidate. Do not assume or guess. Respond only with the "
+            "requested JSON ranking schema."
         ),
         tools=[
             tools_instance.get_dataset_metadata,
             tools_instance.get_dataset_statistics,
+            tools_instance.get_domain_reasoning,
             tools_instance.get_model_evaluation_details,
         ],
     )
@@ -162,13 +186,29 @@ async def _invoke_llm_agent(
     return "".join(response_text_parts) if response_text_parts else None
 
 
-def _parse_llm_response(
+# Exceptions that warrant retrying the LLM ranking call: transient timeouts,
+# and response-shape failures (bad JSON, or a ranking that doesn't cover
+# exactly the survivor set). Anything else (e.g. credential/auth errors) is
+# not retried -- retrying won't fix it.
+_RETRYABLE_LLM_RANKING_EXCEPTIONS = (asyncio.TimeoutError, json.JSONDecodeError, ValueError)
+
+
+def _parse_llm_ranking_response(
     raw_response: str,
     decision: JudgeDecision,
 ) -> JudgeDecision:
-    """Parse the LLM's JSON response and merge flags/commentary into the decision.
+    """Parse the LLM's JSON ranking response and reorder survivors by it.
 
-    The rule-based verdicts, scores, and ranking are never changed here.
+    Validates that the LLM ranked exactly the survivor set (verdict=="select"
+    entries -- selection has not been applied yet at this point in judge()).
+    On any mismatch this raises ValueError, which the caller treats as a
+    retryable parse failure rather than silently dropping models.
+
+    The rule-engine `score` on each RankedModel is left untouched for
+    auditability; only `rank` (renumbered to match the LLM's order),
+    `llm_flags`, and `llm_ranking_reasoning` change. Gate-rejected models are
+    never touched by the LLM and keep their original verdict/rank ordering
+    relative to each other, renumbered to continue after the survivors.
     """
     raw_stripped = raw_response.strip()
     # Strip markdown code fences if the model wrapped the JSON.
@@ -179,21 +219,59 @@ def _parse_llm_response(
         ).strip()
 
     parsed: Dict[str, Any] = json.loads(raw_stripped)
-    commentary = parsed.get("llm_commentary", "")
-    model_flags: Dict[str, List[str]] = parsed.get("model_flags", {})
+    ranking_entries: List[Dict[str, Any]] = parsed.get("ranking", [])
+    overall_commentary = parsed.get("overall_commentary", "")
 
-    updated_ranked: List[RankedModel] = []
-    for ranked_model in decision.ranked_models:
-        flags = model_flags.get(ranked_model.model_name, [])
-        updated_ranked.append(
-            ranked_model.model_copy(update={"llm_flags": flags})
+    survivors = [rm for rm in decision.ranked_models if rm.verdict == "select"]
+    rejected = [rm for rm in decision.ranked_models if rm.verdict != "select"]
+    survivor_names = {rm.model_name for rm in survivors}
+    llm_ranked_names = [entry.get("model_name") for entry in ranking_entries]
+
+    if len(llm_ranked_names) != len(survivors) or set(llm_ranked_names) != survivor_names:
+        raise ValueError(
+            f"LLM ranking covers {sorted(set(llm_ranked_names))} but survivors "
+            f"are {sorted(survivor_names)} -- treating as a parse failure."
         )
 
+    survivors_by_name: Dict[str, RankedModel] = {rm.model_name: rm for rm in survivors}
+    reordered_survivors: List[RankedModel] = []
+    for new_rank, entry in enumerate(ranking_entries, start=1):
+        original = survivors_by_name[entry["model_name"]]
+        reasoning_parts = [
+            part for part in (entry.get("reasoning"), entry.get("shap_domain_correlation"))
+            if part
+        ]
+        reordered_survivors.append(
+            original.model_copy(
+                update={
+                    "rank": new_rank,
+                    "llm_flags": entry.get("flags", []),
+                    "llm_ranking_reasoning": "\n".join(reasoning_parts) or None,
+                }
+            )
+        )
+
+    reject_rank_start = len(reordered_survivors) + 1
+    renumbered_rejected = [
+        ranked_model.model_copy(update={"rank": reject_rank_start + offset})
+        for offset, ranked_model in enumerate(rejected)
+    ]
+
     updated_trace = decision.decision_trace.model_copy(
-        update={"llm_commentary": commentary}
+        update={
+            "llm_commentary": overall_commentary,
+            "llm_ranking_status": "applied",
+            "llm_ranking_error": None,
+        }
     )
     return decision.model_copy(
-        update={"ranked_models": updated_ranked, "decision_trace": updated_trace}
+        update={
+            "ranked_models": reordered_survivors + renumbered_rejected,
+            "decision_trace": updated_trace,
+            "selected_model": (
+                reordered_survivors[0].model_name if reordered_survivors else decision.selected_model
+            ),
+        }
     )
 
 
@@ -234,7 +312,7 @@ class JudgeAgent:
             should_use_llm,
         )
 
-        # Step 1: deterministic gating and ranking.
+        # Step 1: deterministic gating and provisional score-ordered ranking.
         survivors, gate_outcomes = self._rule_engine.apply_hard_gates(judge_input.candidates)
         decision = self._rule_engine.rank(
             survivors=survivors,
@@ -243,13 +321,24 @@ class JudgeAgent:
         )
         decision = decision.model_copy(update={"dataset_id": judge_input.dataset_id})
 
-        # Step 2: LLM rationale (additive only; any failure falls back to rule-only output).
+        # Step 2: LLM ranking (reorders survivors; never decides selection).
+        # llm_ranking_status is always set so a missing value never means
+        # "silently swallowed" -- it's explicitly "skipped" when use_llm=False.
         if should_use_llm:
             decision = self._enrich_with_llm(judge_input, decision, status_callback)
+        else:
+            skipped_trace = decision.decision_trace.model_copy(
+                update={"llm_ranking_status": "skipped"}
+            )
+            decision = decision.model_copy(update={"decision_trace": skipped_trace})
+
+        # Step 3: deterministic top-N% selection, always last, always plain
+        # Python -- operates on whichever order is authoritative at this point.
+        decision = self._rule_engine.apply_selection(decision)
 
         logger.debug(
-            "=> JudgeAgent decision: selected=%s total_ranked=%d",
-            decision.selected_model,
+            "=> JudgeAgent decision: selected_models=%s total_ranked=%d",
+            decision.selected_models,
             len(decision.ranked_models),
         )
         return decision
@@ -260,7 +349,14 @@ class JudgeAgent:
         decision: JudgeDecision,
         status_callback: Optional[Callable[[str, Optional[Dict[str, Any]]], None]] = None,
     ) -> JudgeDecision:
-        """Invoke the LLM and merge its output into the decision. Falls back on any error."""
+        """Invoke the LLM to RANK survivors, retrying on transient failures.
+
+        On success, reorders ranked_models (survivors only) by the LLM's
+        ranking and sets decision_trace.llm_ranking_status="applied". On
+        exhausting retries, decision_trace.llm_ranking_status is set to
+        "failed" with the error recorded -- never silently falls back to an
+        unmarked rule-only decision (the bug this rewrite closes).
+        """
         # Opt-in litellm wire-level debug (judge prompts/responses in backend logs),
         # matching the other agents. Driven by judge config so it is not hardcoded.
         if self._config.get("litellm_debug", False):
@@ -269,12 +365,7 @@ class JudgeAgent:
         try:
             # Resolve credentials the SAME way every other agent does: via
             # LlmSettingsResolver, which reads .env (LLM_TYPE/LLM_MODEL/LLM_API_KEY).
-            # Reading os.environ directly was broken -- .env is never exported to the
-            # process environment (no load_dotenv anywhere), so the key was always
-            # empty and the judge silently fell back to rule-only output.
             judge_llm_settings = LlmSettingsResolver(ConfigLoader()).resolve()
-            # INFO so it is visible without DEBUG: confirms the judge actually
-            # reaches the LLM call and which model/provider it uses.
             logger.info(
                 "=> [JUDGE LLM] invoking provider=%s model=%s for %d candidate(s)",
                 judge_llm_settings.provider,
@@ -287,24 +378,22 @@ class JudgeAgent:
                 decision=decision,
                 prompts_dir=self._prompts_dir,
                 template_name=self._prompt_template,
+                max_accuracy_drop_pct=float(self._config["llm_ranking_max_accuracy_drop"]) * 100,
             )
-            # Log the full rendered prompt at INFO so it is debuggable from the
-            # backend logs (the prompt is also persisted as the audit transcript).
             logger.info(
                 "=> [JUDGE LLM] rendered prompt (%d chars):\n%s",
                 len(prompt_text),
                 prompt_text,
             )
 
-            # Store the prompt text as the audit transcript inside decision_trace
+            # Store the prompt text as the audit transcript inside decision_trace.
             updated_trace = decision.decision_trace.model_copy(
                 update={"transcript": prompt_text}
             )
             decision = decision.model_copy(update={"decision_trace": updated_trace})
 
-            # Create tools instance and local callback wrapper to track tool calls live
             tools_instance = JudgeTools(judge_input)
-            active_calls = []
+            active_calls: List[Dict[str, Any]] = []
 
             def tool_call_callback(name: str, args: dict[str, Any]) -> None:
                 call_info = {
@@ -320,50 +409,84 @@ class JudgeAgent:
                         {"tool_calls": active_calls}
                     )
 
-            # Call the LLM with a 30-second timeout to prevent pipeline hanging
-            llm_call_started = time.monotonic()
-            raw_response = asyncio.run(
-                asyncio.wait_for(
-                    _invoke_llm_agent(
-                        prompt_text=prompt_text,
-                        llm_settings=judge_llm_settings,
-                        tools_instance=tools_instance,
-                        tool_call_callback=tool_call_callback,
+            max_attempts = int(self._config.get("llm_judge_max_retries", 2)) + 1
+            last_exc: Optional[Exception] = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    llm_call_started = time.monotonic()
+                    raw_response = asyncio.run(
+                        asyncio.wait_for(
+                            _invoke_llm_agent(
+                                prompt_text=prompt_text,
+                                llm_settings=judge_llm_settings,
+                                tools_instance=tools_instance,
+                                tool_call_callback=tool_call_callback,
+                            ),
+                            timeout=30.0,
+                        )
+                    )
+                    llm_elapsed_sec = time.monotonic() - llm_call_started
+
+                    if not raw_response:
+                        raise ValueError(
+                            f"empty LLM response after {llm_elapsed_sec:.1f}s"
+                        )
+
+                    logger.info(
+                        "=> [JUDGE LLM] response received in %.1fs (%d chars):\n%s",
+                        llm_elapsed_sec,
+                        len(raw_response),
+                        raw_response,
+                    )
+
+                    enriched = _parse_llm_ranking_response(raw_response, decision)
+                    # Deterministic guardrail: the LLM cannot rank a model
+                    # above another with a much better primary metric just
+                    # because SHAP/domain signal looks cleaner.
+                    enriched = self._rule_engine.enforce_accuracy_reorder_guardrail(
+                        enriched, judge_input.candidates
+                    )
+                    logger.info(
+                        "=> [JUDGE LLM] ranking applied successfully (attempt %d/%d).",
+                        attempt,
+                        max_attempts,
+                    )
+                    return enriched
+                except _RETRYABLE_LLM_RANKING_EXCEPTIONS as exc:
+                    last_exc = exc
+                    will_retry = attempt < max_attempts
+                    logger.warning(
+                        "=> [JUDGE LLM] attempt %d/%d failed (%s: %s)%s",
+                        attempt,
+                        max_attempts,
+                        type(exc).__name__,
+                        exc,
+                        "; retrying..." if will_retry else "; exhausted retries.",
+                    )
+
+            # Exhausted retries on a retryable failure: surface it visibly
+            # instead of silently returning an unmarked rule-only decision.
+            failed_trace = decision.decision_trace.model_copy(
+                update={
+                    "llm_ranking_status": "failed",
+                    "llm_ranking_error": (
+                        f"{type(last_exc).__name__}: {last_exc}" if last_exc else "unknown error"
                     ),
-                    timeout=30.0,
-                )
+                }
             )
-            llm_elapsed_sec = time.monotonic() - llm_call_started
-
-            if not raw_response:
-                logger.warning(
-                    "=> [JUDGE LLM] empty response after %.1fs; using rule-only decision.",
-                    llm_elapsed_sec,
-                )
-                return decision
-
-            logger.info(
-                "=> [JUDGE LLM] response received in %.1fs (%d chars):\n%s",
-                llm_elapsed_sec,
-                len(raw_response),
-                raw_response,
-            )
-
-            enriched = _parse_llm_response(raw_response, decision)
-            logger.info("=> [JUDGE LLM] enrichment applied successfully.")
-            return enriched
-        except asyncio.TimeoutError:
-            # Surface the timeout explicitly -- this is the most common cause of
-            # "judge takes a huge time": a slow/unreachable LLM endpoint.
-            logger.warning(
-                "=> [JUDGE LLM] timed out after 30s; falling back to rule-only decision. "
-                "Check the LLM endpoint/credentials (.env LLM_TYPE/LLM_MODEL/LLM_API_KEY/LLM_GATEWAY_URL)."
-            )
-            return decision
+            return decision.model_copy(update={"decision_trace": failed_trace})
         except Exception as exc:
+            # Non-retryable failure (e.g. missing/invalid LLM credentials):
+            # also surfaced visibly, never a silent fallback.
             logger.warning(
-                "=> [JUDGE LLM] enrichment failed (%s: %s); falling back to rule-only decision.",
+                "=> [JUDGE LLM] ranking failed non-retryably (%s: %s); falling back to rule-only order.",
                 type(exc).__name__,
                 exc,
             )
-            return decision
+            failed_trace = decision.decision_trace.model_copy(
+                update={
+                    "llm_ranking_status": "failed",
+                    "llm_ranking_error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            return decision.model_copy(update={"decision_trace": failed_trace})

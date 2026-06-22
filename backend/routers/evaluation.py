@@ -29,6 +29,7 @@ router = APIRouter(prefix="/api/runs", tags=["evaluation"])
 # constants (mirrors the path segments already hardcoded in runs.py) so the
 # router resolves them in one place rather than scattering literals.
 JUDGE_DECISION_FILENAME = "judge_decision.json"
+DOMAIN_REASONING_FILENAME = "domain_reasoning.json"
 TRAINING_SUMMARY_FILENAME = "training_summary.json"
 TOKEN_USAGE_FILENAME = "token_usage.json"
 SHAP_IMPORTANCE_FILENAME = "global_feature_importance.csv"
@@ -40,6 +41,14 @@ OVERFITTING_ANALYSIS_FILENAME = "overfitting_analysis.json"
 # Directories scanned (recursively) when listing on-demand plots for a session.
 PLOT_SEARCH_SUBDIRS = ("plots", "evaluation")
 PLOT_FILE_SUFFIXES = (".png", ".jpg", ".jpeg", ".svg")
+
+# Maps the judge's 3-state RankedModel.verdict onto the leaderboard's
+# selection_status vocabulary the frontend renders (no if-else ladder).
+_VERDICT_TO_SELECTION_STATUS: dict[str, str] = {
+    "select": "selected",
+    "rank_only": "ranked_only",
+    "reject": "rejected",
+}
 
 
 class EvaluationArtifactReader:
@@ -61,6 +70,9 @@ class EvaluationArtifactReader:
 
     def judge_decision(self) -> dict[str, Any] | None:
         return self._read_json_or_none(self.reports_dir / JUDGE_DECISION_FILENAME)
+
+    def domain_reasoning(self) -> dict[str, Any] | None:
+        return self._read_json_or_none(self.reports_dir / DOMAIN_REASONING_FILENAME)
 
     def training_summary(self) -> dict[str, Any] | None:
         return self._read_json_or_none(self.reports_dir / TRAINING_SUMMARY_FILENAME)
@@ -115,6 +127,11 @@ class EvaluationArtifactReader:
         overfitting_by_model = self._index_overfitting()
         hpt_by_model = self._index_hpt_results()
         selected_model = (judge_decision or {}).get("selected_model")
+        # Backward compat: older judge_decision.json files (pre-rewrite) only
+        # have the singular selected_model -- fall back to a 1-element list.
+        selected_models = (judge_decision or {}).get("selected_models") or (
+            [selected_model] if selected_model else []
+        )
         decision_trace = (judge_decision or {}).get("decision_trace")
         comparison_explanation = (judge_decision or {}).get("comparison_explanation")
 
@@ -135,10 +152,14 @@ class EvaluationArtifactReader:
                 "decision": ranked_model.get("decision"),
                 "findings": ranked_model.get("findings", []),
                 "ranking_explanation": ranked_model.get("ranking_explanation"),
+                "llm_ranking_reasoning": ranked_model.get("llm_ranking_reasoning"),
                 "validation_score": training_record.get("validation_score"),
                 "metrics": training_record.get("metrics", {}),
                 "overfitting": overfitting_by_model.get(model_name),
-                "winner": model_name == selected_model,
+                "winner": model_name in selected_models,
+                "selection_status": _VERDICT_TO_SELECTION_STATUS.get(
+                    ranked_model.get("verdict"), "rejected"
+                ),
                 # HPT fields: populated after on-demand tuning of the top-1 model
                 "hpt_best_score": hpt_record.get("best_score"),
                 "hpt_best_params": hpt_record.get("best_hyperparameters"),
@@ -154,7 +175,8 @@ class EvaluationArtifactReader:
         status = "complete" if judge_decision is not None else "training_only"
         return {
             "status": status,
-            "selected_model": selected_model,
+            "selected_model": selected_models[0] if selected_models else None,
+            "selected_models": selected_models,
             "decision_trace": decision_trace,
             "comparison_explanation": comparison_explanation,
             "models": leaderboard_rows,
@@ -510,6 +532,23 @@ def get_verdict(
 ) -> dict[str, Any]:
     reader = _build_reader(session_id=session_id, session_manager=session_manager)
     return {"session_id": session_id, **reader.verdict()}
+
+
+@router.get("/{session_id}/domain-reasoning")
+def get_domain_reasoning(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Return the domain-reasoning agent's output for the Training page panel.
+
+    Generated exactly once per session (see backend/routers/metadata.py); this
+    endpoint only reads the persisted artifact, never triggers generation.
+    """
+    reader = _build_reader(session_id=session_id, session_manager=session_manager)
+    domain_reasoning = reader.domain_reasoning()
+    if domain_reasoning is None:
+        return {"session_id": session_id, "status": "pending", "domain_reasoning": None}
+    return {"session_id": session_id, "status": "complete", "domain_reasoning": domain_reasoning}
 
 
 @router.get("/{session_id}/evaluation/shap/status")

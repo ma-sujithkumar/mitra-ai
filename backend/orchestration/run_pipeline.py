@@ -33,6 +33,11 @@ from backend.agents.metadata_gen_agent import (
     MetadataGenerationInput,
     LlmSettingsResolver,
 )
+from backend.agents.domain_reasoning_agent import (
+    DomainReasoningAgentRunner,
+    DomainReasoningError,
+    DomainReasoningInput,
+)
 from backend.agents.training_orchestrator import TrainingOrchestrator
 from backend.orchestration.eval_runner import EvalRunner
 from backend.orchestration.events import TrainingEventBus
@@ -166,6 +171,30 @@ class PipelineRunner:
         )
         metadata_path = metadata_result.metadata_path
         logger.info("=> metadata written: %s", metadata_path)
+
+        # Stage 1.5: domain reasoning (runs exactly once per session, right after
+        # metadata; non-fatal so a domain-reasoning failure never aborts the
+        # pipeline -- the judge tolerates a missing domain_reasoning.json).
+        logger.info("=> [1.5/6] domain reasoning ...")
+        try:
+            domain_reasoning_result = DomainReasoningAgentRunner().generate_domain_reasoning(
+                DomainReasoningInput(
+                    session_id=self.session_id,
+                    # Mirrors the metadata-generation call above exactly so
+                    # domain_reasoning.json lands in the same reports/ dir as
+                    # metadata.json regardless of how workspace_root resolves.
+                    workspace_root=self.session_dir,
+                    llm_settings=llm_settings,
+                )
+            )
+            logger.info(
+                "=> domain reasoning written: %s",
+                domain_reasoning_result.domain_reasoning_path,
+            )
+        except DomainReasoningError as domain_reasoning_exc:
+            logger.warning(
+                "=> domain reasoning failed (non-fatal): %s", domain_reasoning_exc
+            )
 
         # Stage 2: feature engineering -> feature_selection -> train/test split -> model selection
         logger.info("=> [2/6] pre-training prep (feature eng + model selection) ...")

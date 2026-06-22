@@ -58,6 +58,7 @@ class JudgeInputBuilder:
         session_dir: Path,
         dataset_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        domain_reasoning: Optional[Dict[str, Any]] = None,
     ) -> JudgeInput:
         """Build JudgeInput preferring HPT path; falls back to training_summary path."""
         if eval_artifacts.hpt_results_path and Path(eval_artifacts.hpt_results_path).exists():
@@ -65,6 +66,7 @@ class JudgeInputBuilder:
                 eval_artifacts=eval_artifacts,
                 dataset_id=dataset_id,
                 metadata=metadata,
+                domain_reasoning=domain_reasoning,
             )
         return self._build_from_training_summary(
             eval_artifacts=eval_artifacts,
@@ -72,6 +74,7 @@ class JudgeInputBuilder:
             session_dir=session_dir,
             dataset_id=dataset_id,
             metadata=metadata,
+            domain_reasoning=domain_reasoning,
         )
 
     def _build_from_hpt(
@@ -79,6 +82,7 @@ class JudgeInputBuilder:
         eval_artifacts: EvalArtifacts,
         dataset_id: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        domain_reasoning: Optional[Dict[str, Any]] = None,
     ) -> JudgeInput:
         """Use adapt_from_hpt_results() which already handles SHAP enrichment."""
         # Use the first non-None shap_dir as root (per-model lookup handled in adapter)
@@ -94,6 +98,7 @@ class JudgeInputBuilder:
             shap_dir=shap_root_dir,
             dataset_id=dataset_id,
             metadata=metadata,
+            domain_reasoning=domain_reasoning,
         )
 
     def _build_from_training_summary(
@@ -103,6 +108,7 @@ class JudgeInputBuilder:
         session_dir: Path,
         dataset_id: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        domain_reasoning: Optional[Dict[str, Any]] = None,
     ) -> JudgeInput:
         """Build candidates directly from training_summary + overfitting JSONs."""
         primary_metric = "accuracy" if self.task_type == "classification" else "r2"
@@ -154,6 +160,7 @@ class JudgeInputBuilder:
             candidate_raw_list=candidate_raws,
             dataset_id=dataset_id,
             metadata=metadata,
+            domain_reasoning=domain_reasoning,
         )
 
     def _infer_complexity(self, model_name: str) -> Dict[str, Any]:
@@ -238,12 +245,17 @@ class JudgeLoop:
             msg="[JUDGE] Building evaluation input from SHAP, overfitting, and training metrics...",
             pct=10,
         )
+        # Domain reasoning is generated once upstream (metadata stage) and is
+        # only ever read here, never regenerated -- a single disk read per
+        # JudgeLoop.run() call, reused as-is for this single-turn run.
+        domain_reasoning = self._load_domain_reasoning(session_dir=session_dir)
         judge_input = self.input_builder.build(
             eval_artifacts=eval_artifacts,
             training_summary=training_summary,
             session_dir=session_dir,
             dataset_id=dataset_id,
             metadata=metadata,
+            domain_reasoning=domain_reasoning,
         )
         candidate_count = len(judge_input.candidates) if judge_input else 0
         self._write_judge_status(session_dir, 1, 1, "running", f"Evaluating {candidate_count} model candidate(s) with rule engine + LLM...")
@@ -316,6 +328,9 @@ class JudgeLoop:
         # Initialize decision to None so the return below is always defined
         # even when the loop breaks before judge_agent.judge() is called.
         decision: Optional[JudgeDecision] = None
+        # Loaded exactly once for the whole feedback loop -- every turn reuses
+        # the same in-memory dict rather than re-reading or regenerating it.
+        domain_reasoning = self._load_domain_reasoning(session_dir=session_dir)
 
         for turn_number in range(1, self.max_turns + 1):
             def status_callback(msg: str, details: Optional[Dict[str, Any]] = None) -> None:
@@ -342,6 +357,7 @@ class JudgeLoop:
                 session_dir=session_dir,
                 dataset_id=dataset_id,
                 metadata=metadata,
+                domain_reasoning=domain_reasoning,
             )
 
             if not judge_input.candidates:
@@ -565,7 +581,11 @@ class JudgeLoop:
         if self.event_bus is None or not self.session_id:
             return
         # Map verdict => streamed verb (no if-else ladder).
-        verdict_verb_map: Dict[str, str] = {"select": "Approving", "reject": "Rejecting"}
+        verdict_verb_map: Dict[str, str] = {
+            "select": "Approving",
+            "rank_only": "Ranking",
+            "reject": "Rejecting",
+        }
         for ranked_model in decision.ranked_models:
             self._emit_judge_event(
                 turn_number=turn_number,
@@ -602,6 +622,25 @@ class JudgeLoop:
                     "decision": ranked_model.decision,
                 },
             )
+
+    @staticmethod
+    def _load_domain_reasoning(session_dir: Path) -> Optional[Dict[str, Any]]:
+        # domain_reasoning.json is generated exactly once, upstream, during
+        # metadata generation (see backend/routers/metadata.py and Stage 1.5
+        # of run_pipeline.py). It is read-only here -- the judge never
+        # triggers generation itself, and a missing file is tolerated.
+        domain_reasoning_path = session_dir / "reports" / "domain_reasoning.json"
+        if not domain_reasoning_path.is_file():
+            return None
+        try:
+            return json.loads(domain_reasoning_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(
+                "=> failed to read domain_reasoning.json at %s: %s",
+                domain_reasoning_path,
+                exc,
+            )
+            return None
 
     def _persist_decision(self, decision: JudgeDecision, session_dir: Path, turn: int) -> None:
         """Write judge_decision.json (overwritten each turn; turn N also archived)."""
