@@ -1,0 +1,150 @@
+{
+  "HistGradientBoostingClassifier": {
+    "learning_rate":     {"type": "float",       "low": 0.01, "high": 0.3,   "log": true},
+    "max_iter":          {"type": "int",          "low": 50,   "high": 300},
+    "max_leaf_nodes":    {"type": "int",          "low": 15,   "high": 63},
+    "min_samples_leaf":  {"type": "int",          "low": 10,   "high": 50},
+    "l2_regularization": {"type": "float",        "low": 0.0,  "high": 1.0},
+    "max_bins":          {"type": "categorical",  "choices": [63, 127, 255]}
+  },
+  "HistGradientBoostingRegressor": {
+    "learning_rate":     {"type": "float",       "low": 0.01, "high": 0.3,   "log": true},
+    "max_iter":          {"type": "int",          "low": 50,   "high": 300},
+    "max_leaf_nodes":    {"type": "int",          "low": 15,   "high": 63},
+    "min_samples_leaf":  {"type": "int",          "low": 10,   "high": 50},
+    "l2_regularization": {"type": "float",        "low": 0.0,  "high": 1.0}
+  },
+  "RandomForestClassifier": {
+    "n_estimators":    {"type": "int",         "low": 50,   "high": 300},
+    "max_depth":       {"type": "categorical", "choices": [null, 5, 10, 20]},
+    "min_samples_split": {"type": "int",       "low": 2,    "high": 20},
+    "min_samples_leaf":  {"type": "int",       "low": 1,    "high": 10},
+    "max_features":    {"type": "categorical", "choices": ["sqrt", "log2", null]}
+  },
+  "RandomForestRegressor": {
+    "n_estimators":    {"type": "int",         "low": 50,   "high": 300},
+    "max_depth":       {"type": "categorical", "choices": [null, 5, 10, 20]},
+    "min_samples_split": {"type": "int",       "low": 2,    "high": 20},
+    "min_samples_leaf":  {"type": "int",       "low": 1,    "high": 10},
+    "max_features":    {"type": "categorical", "choices": ["sqrt", "log2", null]}
+  },
+  "ExtraTreesClassifier": {
+    "n_estimators":    {"type": "int",         "low": 50,   "high": 300},
+    "max_depth":       {"type": "categorical", "choices": [null, 5, 10, 20]},
+    "min_samples_split": {"type": "int",       "low": 2,    "high": 20},
+    "min_samples_leaf":  {"type": "int",       "low": 1,    "high": 10}
+  },
+  "ExtraTreesRegressor": {
+    "n_estimators":    {"type": "int",         "low": 50,   "high": 300},
+    "max_depth":       {"type": "categorical", "choices": [null, 5, 10, 20]},
+    "min_samples_split": {"type": "int",       "low": 2,    "high": 20},
+    "min_samples_leaf":  {"type": "int",       "low": 1,    "high": 10}
+  },
+  "GradientBoostingClassifier": {
+    "learning_rate": {"type": "float",       "low": 0.01, "high": 0.3, "log": true},
+    "n_estimators":  {"type": "int",         "low": 50,   "high": 300},
+    "max_depth":     {"type": "int",         "low": 2,    "high": 8},
+    "subsample":     {"type": "float",       "low": 0.6,  "high": 1.0},
+    "min_samples_leaf": {"type": "int",      "low": 1,    "high": 20}
+  },
+  "GradientBoostingRegressor": {
+    "learning_rate": {"type": "float",       "low": 0.01, "high": 0.3, "log": true},
+    "n_estimators":  {"type": "int",         "low": 50,   "high": 300},
+    "max_depth":     {"type": "int",         "low": 2,    "high": 8},
+    "subsample":     {"type": "float",       "low": 0.6,  "high": 1.0}
+  },
+  "XGBClassifier": {
+    "learning_rate":   {"type": "float", "low": 0.01, "high": 0.3, "log": true},
+    "n_estimators":    {"type": "int",   "low": 50,   "high": 300},
+    "max_depth":       {"type": "int",   "low": 2,    "high": 10},
+    "subsample":       {"type": "float", "low": 0.6,  "high": 1.0},
+    "colsample_bytree":{"type": "float", "low": 0.5,  "high": 1.0},
+    "reg_alpha":       {"type": "float", "low": 0.0,  "high": 1.0},
+    "reg_lambda":      {"type": "float", "low": 0.5,  "high": 5.0}
+  },
+  "XGBRegressor": {
+    "learning_rate":   {"type": "float", "low": 0.01, "high": 0.3, "log": true},
+    "n_estimators":    {"type": "int",   "low": 50,   "high": 300},
+    "max_depth":       {"type": "int",   "low": 2,    "high": 10},
+    "subsample":       {"type": "float", "low": 0.6,  "high": 1.0},
+    "colsample_bytree":{"type": "float", "low": 0.5,  "high": 1.0}
+  },
+  "LogisticRegression": {
+    "C":       {"type": "float",       "low": 1e-4, "high": 100.0, "log": true},
+    "solver":  {"type": "categorical", "choices": ["lbfgs", "saga"]},
+    "max_iter":{"type": "int",         "low": 100,  "high": 500}
+  },
+  "RidgeClassifier": {
+    "alpha": {"type": "float", "low": 1e-4, "high": 100.0, "log": true}
+  },
+  "Ridge": {
+    "alpha": {"type": "float", "low": 1e-4, "high": 100.0, "log": true}
+  },
+  "Lasso": {
+    "alpha":   {"type": "float", "low": 1e-4, "high": 10.0, "log": true},
+    "max_iter":{"type": "int",   "low": 500,  "high": 3000}
+  },
+  "ElasticNet": {
+    "alpha":    {"type": "float", "low": 1e-4, "high": 10.0,  "log": true},
+    "l1_ratio": {"type": "float", "low": 0.1,  "high": 0.9},
+    "max_iter": {"type": "int",   "low": 500,  "high": 3000}
+  },
+  "SVC": {
+    "C":      {"type": "float",       "low": 1e-3, "high": 100.0, "log": true},
+    "kernel": {"type": "categorical", "choices": ["rbf", "poly", "sigmoid"]},
+    "gamma":  {"type": "categorical", "choices": ["scale", "auto"]}
+  },
+  "LinearSVC": {
+    "C":       {"type": "float", "low": 1e-3, "high": 100.0, "log": true},
+    "max_iter":{"type": "int",   "low": 500,  "high": 3000}
+  },
+  "KNeighborsClassifier": {
+    "n_neighbors": {"type": "int",         "low": 1,  "high": 30},
+    "weights":     {"type": "categorical", "choices": ["uniform", "distance"]},
+    "metric":      {"type": "categorical", "choices": ["euclidean", "manhattan", "minkowski"]}
+  },
+  "KNeighborsRegressor": {
+    "n_neighbors": {"type": "int",         "low": 1,  "high": 30},
+    "weights":     {"type": "categorical", "choices": ["uniform", "distance"]}
+  },
+  "MLPClassifier": {
+    "hidden_layer_sizes": {"type": "categorical", "choices": [[64], [128], [64, 32], [128, 64]]},
+    "learning_rate_init": {"type": "float",       "low": 1e-4, "high": 0.1, "log": true},
+    "alpha":              {"type": "float",       "low": 1e-5, "high": 0.1, "log": true},
+    "max_iter":           {"type": "int",         "low": 100,  "high": 500}
+  },
+  "MLPRegressor": {
+    "hidden_layer_sizes": {"type": "categorical", "choices": [[64], [128], [64, 32], [128, 64]]},
+    "learning_rate_init": {"type": "float",       "low": 1e-4, "high": 0.1, "log": true},
+    "alpha":              {"type": "float",       "low": 1e-5, "high": 0.1, "log": true},
+    "max_iter":           {"type": "int",         "low": 100,  "high": 500}
+  },
+  "DecisionTreeClassifier": {
+    "max_depth":        {"type": "categorical", "choices": [null, 5, 10, 20]},
+    "min_samples_split":{"type": "int",         "low": 2,  "high": 20},
+    "min_samples_leaf": {"type": "int",         "low": 1,  "high": 10},
+    "criterion":        {"type": "categorical", "choices": ["gini", "entropy"]}
+  },
+  "DecisionTreeRegressor": {
+    "max_depth":        {"type": "categorical", "choices": [null, 5, 10, 20]},
+    "min_samples_split":{"type": "int",         "low": 2,  "high": 20},
+    "min_samples_leaf": {"type": "int",         "low": 1,  "high": 10}
+  },
+  "SVR": {
+    "C":      {"type": "float",       "low": 1e-3, "high": 100.0, "log": true},
+    "epsilon":{"type": "float",       "low": 0.01, "high": 1.0},
+    "kernel": {"type": "categorical", "choices": ["rbf", "linear", "poly"]}
+  },
+  "BayesianRidge": {
+    "alpha_1": {"type": "float", "low": 1e-8, "high": 1e-2, "log": true},
+    "lambda_1":{"type": "float", "low": 1e-8, "high": 1e-2, "log": true}
+  },
+  "AdaBoostClassifier": {
+    "n_estimators":  {"type": "int",   "low": 25,   "high": 200},
+    "learning_rate": {"type": "float", "low": 0.01, "high": 2.0, "log": true}
+  },
+  "AdaBoostRegressor": {
+    "n_estimators":  {"type": "int",   "low": 25,   "high": 200},
+    "learning_rate": {"type": "float", "low": 0.01, "high": 2.0, "log": true}
+  }
+}

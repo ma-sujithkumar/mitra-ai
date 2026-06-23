@@ -1,0 +1,43 @@
+MITRA Epic2 — Feature Engineering Pipeline: run commands
+=========================================================
+
+Run all commands from the Epic2/ directory. The Anthropic API key and the
+OpenAI-compatible endpoint are already configured in config/config.yaml.
+
+  cd /home/sujithma/mitra/Epic2
+
+
+1) Classification fixture  (target: loan_status)
+------------------------------------------------
+  /home/sujithma/venv/bin/python main.py run "test data/C/loan_data.csv" \
+    --target loan_status --model claude-sonnet-4-6 --config config/config.yaml
+
+
+2) Regression fixture  (target: SalePrice)
+------------------------------------------
+  /home/sujithma/venv/bin/python main.py run "test data/Reg/train.csv" \
+    --target SalePrice --model claude-sonnet-4-6 --config config/config.yaml
+
+
+Notes
+-----
+- --task is optional; it is inferred from the target column. Force it with
+  --task classification  or  --task regression  if needed.
+- Outputs land in   pipeline_output/<run_id>/
+    engineered_dataset.csv, feature_artifact.json, report.md,
+    execution_log.txt, raw_responses.txt
+- Precomputed feature-selection stats land in   .mitra/<run_id>/stats/
+    mutual_info.json, rf_importance.json, mrmr_ranking.json, variance.json,
+    correlation_pearson.json, correlation_spearman.json, clusters.json,
+    linear_baseline.json, pca.json
+- A full run makes ~2 LLM calls (startup smoke test + single feature-selection
+  call). All other steps are deterministic Python.
+- test data/Reg/test.csv has no SalePrice column, so it cannot be run directly;
+  use train.csv for the regression path.
+
+
+3) Regenerate stats only over an already-numeric/encoded CSV (no LLM)
+--------------------------------------------------------------------
+  /home/sujithma/venv/bin/python -m pipeline.feature_stats \
+    --data "pipeline_output/<run_id>/engineered_dataset.csv" \
+    --target loan_status --config config/config.yaml --out /tmp/stats_check

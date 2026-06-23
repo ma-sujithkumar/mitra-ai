@@ -1,0 +1,105 @@
+flowchart TB
+
+    classDef agentTool    fill:#4A90D9,stroke:#2971B5,color:#fff,font-weight:bold
+    classDef codeTool     fill:#27AE60,stroke:#1E8449,color:#fff
+    classDef orchestrator fill:#8E44AD,stroke:#6C3483,color:#fff,font-weight:bold
+    classDef llm          fill:#C0392B,stroke:#922B21,color:#fff,font-weight:bold
+    classDef memory       fill:#D68910,stroke:#A04000,color:#fff
+    classDef compute      fill:#E67E22,stroke:#BA4A00,color:#fff
+    classDef artifact     fill:#1A5276,stroke:#0D2B4E,color:#fff
+    classDef entry        fill:#148F77,stroke:#0E6655,color:#fff
+    classDef envfile      fill:#6C3483,stroke:#4A235A,color:#fff
+
+    %% ── CALLER ──────────────────────────────────────────────────────────────
+    CALLER(["User  /  Caller\npython main.py run data.csv\n--task classification|regression  (optional)\n--target col_name  --model model_string"]):::entry
+
+    %% ── ENV FILE ─────────────────────────────────────────────────────────────
+    ENV[(".env  ·  python-dotenv\nAPI_KEY=your_actual_key\nLoaded at startup via load_dotenv\nNever committed to git\nVar name declared in config.yaml\nunder llm.api_key_env_var")]:::envfile
+
+    %% ── EXTERNAL LLM ────────────────────────────────────────────────────────
+    LLM(["External LLM\nUser-supplied model string\ngemini-2.0-flash  gpt-4o  etc\nADK resolves provider from string\nAPI key read from env var\nname set in llm.api_key_env_var\nNo client bundled in pipeline"]):::llm
+
+    %% ── SHARED MEMORY ───────────────────────────────────────────────────────
+    MEM[("Shared Memory  ·  PipelineState  state.py\ndf                target              task\nconfig             run_id             output_dir\nprofile            column_types\ntransformers       dropped_columns\ncreated_columns    warnings\nselected_columns   selection_method\npre_encoding_done  row_count_after_outlier")]:::memory
+
+    %% ── CONFIG ──────────────────────────────────────────────────────────────
+    CFG[("Config  ·  config.yaml  +  ConfigSchema\nnull_drop_threshold  0.50\niqr_multiplier  1.5    zscore_threshold  3.0\nisolation_contamination  0.05\nmax_created_features  50\npca_variance_retained  0.95\nrandom_state  42    max_workers  8\nmax_tool_retries  3\ntask_infer_nunique_threshold  20\nllm.max_tokens  2048\nllm.api_key_env_var  API_KEY")]:::memory
+
+    %% ── RAY CLUSTER ─────────────────────────────────────────────────────────
+    RAY[("Ray Cluster  ·  parallel.py\nray.init num_cpus=8  called once at startup\n@ray.remote function definitions\nrun_parallel helper\nmini_profile shared utility\nzero-copy Arrow serialization")]:::compute
+
+    %% ── ORCHESTRATOR AGENT ──────────────────────────────────────────────────
+    subgraph ORCH_BOX["Orchestrator Agent  ·  orchestrator.py"]
+        direction TB
+        ORCH{{"ADK Orchestrator Agent\ngoogle.adk.agents.Agent\n\nStartup sequence:\n1. load_dotenv  read API key from .env\n2. load + validate config.yaml via ConfigSchema\n3. infer or validate task type\n   if --task supplied → validate against classification|regression\n   if --task omitted  → inspect target column\n   numeric + nunique above threshold → regression\n   else → classification\n4. ray.init num_cpus=8\n5. generate run_id\n6. separate target column\n7. set output_dir\n8. init PipelineState\n9. ADK smoke test\n\nRuntime:\nADK Runner dispatches tools in order\nRetries tool up to max_tool_retries\non PostconditionError\nAppends execution_log.txt after each tool\nWrites feature_artifact.json after validator"}}:::orchestrator
+    end
+
+    %% ── PIPELINE TOOLS ──────────────────────────────────────────────────────
+    subgraph TOOLS_BOX["ADK-Registered Tools  ·  adk_tools.py  ·  state injected via set_pipeline_state"]
+        direction TB
+
+        subgraph AGENT_TOOLS["Agent Tools  ─  LLM decides  ─  code executes"]
+            direction LR
+            P2(["SemanticTypeInfer  ·  2\ninfer.py  ·  AGENT\nOne LLM call  ·  all columns\nAssigns: numeric  categorical\ndatetime  id  text  binary  target\nid + text → drop\ndatetime → year month day quarter\nmini-profile for new datetime cols"]):::agentTool
+
+            P3(["MissingValueHandler  ·  3\nimputer.py  ·  AGENT\nOne batched LLM call\nPer column: median  mode  knn  iterative  drop\nnull_rate above 0.50 → drop\nKNNImputer no seed  IterativeImputer seed=42\nTarget imputed first  mode/median"]):::agentTool
+
+            P4(["OutlierHandler  ·  4\noutlier.py  ·  AGENT\nOne batched LLM call  all numeric cols\nDetectors: IQR  ZScore  IsolationForest seed=42\nActions: scale → RobustScaler\nflag → add col_is_outlier column\ndrop_row → drop row + target row atomically"]):::agentTool
+
+            P5A(["FeatureCreator.run_pre  ·  5\ncreator.py  ·  AGENT\nOne LLM call  caches ALL specs on self._specs\nExec pre_encoding specs only\nOnly operation: cross_categorical\nAny spec missing temporal_class rejected\nSets state.pre_encoding_done = True"]):::agentTool
+
+            P8(["Scaler  ·  8\nscaler.py  ·  AGENT + RAY\nOne batched LLM call\nPer column: standard  robust  minmax  power\nskewed → robust  bounded → minmax\nheavily skewed → power Yeo-Johnson seed=42\nRay parallel column batches\nTarget never scaled"]):::agentTool
+
+            P9(["FeatureSelector  ·  9\nselector.py  ·  AGENT + RAY\nOne LLM call  picks method\nhigh corr + low MI → PCA\nhigh MI + low corr → mRMR\nmixed → mRMR then PCA on residual\ndefault → mRMR\ntop_k_features from config\nRay parallel scoring methods"]):::agentTool
+
+            P11(["FeatureReporter  ·  11\nreporter.py  ·  AGENT\nOne LLM call\nInput: structured pipeline summary\nOutput: Markdown report\nFallback: string constant template\nDumps summary dict under fixed headings"]):::agentTool
+        end
+
+        subgraph CODE_TOOLS["Code Tools  ─  deterministic  ─  no LLM"]
+            direction LR
+            P1["DataProfiler  ·  1\nprofiler.py  ·  CODE + RAY\nUnivariate per column in parallel\nnull_rate  dtype  nunique  top5\nmean  std  skewness  kurtosis\nMultivariate single pass\nPearson correlation matrix\nMI each feature vs target\nWrites state.profile"]:::codeTool
+
+            P6["Encoder  ·  6\nencoder.py  ·  CODE\nRequires pre_encoding_done = True\nLabelEncoder on categorical + binary\nLabelEncoder on target if classif\nFitted classes → state.transformers"]:::codeTool
+
+            P7["FeatureCreator.run_post  ·  7\ncreator.py  ·  CODE\nExecutes cached post_encoding specs\nratio  difference  product  sum_group\nsquare  sqrt  log1p  row_mean  row_max\nrow_count_positive  days_since  is_recent\nequal_width_bins  quantile_bins\nProxy MI ranking = mean MI of sources\nCap at max_created_features\nMini-profile for new cols → state.profile"]:::codeTool
+
+            P10["FeatureValidator  ·  10\nvalidator.py  ·  CODE\nAll selected cols present  no NaN\nAll float64 → coerce in order:\ncast to float  parse timestamp  label encode\nIf all fail: skip + log warning\nRow count matches row_count_after_outlier\nTarget is last column"]:::codeTool
+        end
+    end
+
+    %% ── PIPELINE SEQUENCE ───────────────────────────────────────────────────
+    subgraph SEQ["Pipeline Execution Sequence  ─  ADK-dispatched  ─  tools read+write shared state"]
+        direction LR
+        N1(["1"]):::codeTool --> N2(["2"]):::agentTool --> N3(["3"]):::agentTool --> N4(["4"]):::agentTool --> N5(["5 pre"]):::agentTool --> N6(["6"]):::codeTool --> N7(["7 post"]):::codeTool --> N8(["8"]):::agentTool --> N9(["9"]):::agentTool --> N10(["10"]):::codeTool --> N11(["11"]):::agentTool
+    end
+
+    %% ── ARTIFACT OUTPUTS ────────────────────────────────────────────────────
+    subgraph ARTIFACTS["Output Artifacts  ·  pipeline_output / run_id /"]
+        direction LR
+        OUT1[("engineered_dataset.csv\nall features float64\nscaled + selected\ntarget last column")]:::artifact
+        OUT2[("feature_artifact.json\nrun_id  task  target_column\ndropped_columns\ncreated_columns\ntransformers with fitted params\nselected_columns  selection_method\nwarnings")]:::artifact
+        OUT3[("report.md\nData Quality\nEncoding\nFeatures Created\nSelection + Warnings\nmodel-written or template fallback")]:::artifact
+        OUT4[("execution_log.txt\nappend-only\none line per tool\ntool  duration  status")]:::artifact
+    end
+
+    %% ── CONNECTIONS ─────────────────────────────────────────────────────────
+
+    CALLER -->|"dataset path  task optional  target  model_string"| ORCH_BOX
+    CFG -->|"Pydantic validated at startup  ValidationError on bad key"| ORCH_BOX
+    ENV -->|"load_dotenv at startup\nAPI key injected into os.environ"| ORCH_BOX
+    ORCH_BOX -->|"reads api_key_env_var from config\nresolves key from os.environ"| LLM
+
+    ORCH_BOX <-->|"all model calls via ADK Runner\n7 agent tools call LLM through orchestrator"| LLM
+    ORCH_BOX -->|"dispatches tools in sequence"| SEQ
+    ORCH_BOX -.->|"owns + registers"| TOOLS_BOX
+
+    TOOLS_BOX <-->|"every tool reads + writes shared state"| MEM
+
+    P1 -->|"Ray parallel workers"| RAY
+    P8 -->|"Ray parallel workers"| RAY
+    P9 -->|"Ray parallel workers"| RAY
+
+    ORCH_BOX -->|"writes after FeatureValidator"| OUT2
+    ORCH_BOX -->|"appends after each tool"| OUT4
+    P11 -->|"writes"| OUT3
+    P10 -->|"final dataset"| OUT1

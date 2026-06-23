@@ -1,0 +1,35 @@
+{
+  "model_name": "LogisticRegression",
+  "model_type": "classification",
+  "is_overfitted": false,
+  "gap_threshold": 0.1,
+  "primary_metric": "accuracy",
+  "gaps": {
+    "accuracy": 0.03,
+    "f1_macro": 0.03
+  },
+  "rel_rmse_gap": null,
+  "train_metrics": {
+    "accuracy": 0.91,
+    "f1_macro": 0.90,
+    "f1_weighted": 0.91,
+    "precision_macro": 0.91,
+    "recall_macro": 0.90
+  },
+  "test_metrics": {
+    "accuracy": 0.88,
+    "f1_macro": 0.87,
+    "f1_weighted": 0.88,
+    "precision_macro": 0.88,
+    "recall_macro": 0.87
+  },
+  "k_fold_cross_validation_results": {
+    "k": 5,
+    "scoring": "accuracy",
+    "per_fold_scores": [0.87, 0.88, 0.89, 0.87, 0.88],
+    "mean": 0.878,
+    "std": 0.007,
+    "train_vs_cv_gap": 0.02
+  },
+  "cv_skipped_reason": null
+}

@@ -1,0 +1,200 @@
+GAPS: spec/plan vs code (as of 2026-06-16)
+
+Each entry: WHAT THE SPEC/PLAN REQUIRES → WHAT THE CODE ACTUALLY DOES → FIX.
+
+----------------------------------------------------------------------
+1. Profiler does not emit `_clusters`, `_linear_baseline_score`, `_joint_mi_pairs`
+----------------------------------------------------------------------
+Spec/Plan:
+  plan.md `pipeline/tools/profiler.py — DataProfiler` says the profiler must
+  also write to `state.profile`:
+    - `_clusters`              (output of compute_correlation_clusters)
+    - `_linear_baseline_score` (output of compute_linear_baseline on top-K MI)
+    - `_joint_mi_pairs`        (top column pairs by joint MI)
+
+Code today:
+  pipeline/tools/profiler.py writes only:
+    - per-column stats dict
+    - profile["_correlation_matrix"]
+    - profile[col]["null_mask_corr"]
+  It does NOT call compute_correlation_clusters, compute_linear_baseline,
+  or compute joint MI pairs.
+
+How the pipeline still runs:
+  - selector.py recomputes correlation clusters and the linear baseline
+    on its actual input dataframe (lines 52–53). This matches the spec
+    line about Selector re-clustering over post-Creator df.
+  - creator.py approximates `co_occurring_pairs` as a product of per-
+    column MI scores (creator.py::_co_occurring_pairs). The docstring
+    explicitly notes this is an approximation.
+
+Severity: Medium. Pipeline is functional; Creator receives a weaker
+signal than spec'd.
+
+Fix:
+  - In pipeline/tools/profiler.py, after the per-column profile is
+    built and `_correlation_matrix` is written, compute and store:
+      state.profile["_clusters"] = compute_correlation_clusters(
+          numeric_df, cut_threshold=cfg.feature_selection.cluster_cut_threshold)
+      state.profile["_linear_baseline_score"] = compute_linear_baseline(
+          numeric_df, target_arr, state.task,
+          k=cfg.feature_selection.linear_baseline_k)
+      state.profile["_joint_mi_pairs"] = <ranked list of (col_a, col_b, mi)>
+  - Then in creator.py::_co_occurring_pairs, prefer the precomputed
+    `_joint_mi_pairs` from `state.profile` and fall back to the product
+    proxy only if absent.
+  - selector.py can keep its own recompute since the input df changes
+    after FeatureCreator runs. (Don't remove the selector re-cluster —
+    that is required by the spec.)
+
+----------------------------------------------------------------------
+2. Selector clusters execute sequentially, not in parallel via Ray
+----------------------------------------------------------------------
+Spec/Plan:
+  plan.md FeatureSelector section: "Cluster execution runs in parallel
+  via Ray (`run_parallel` from `parallel.py`)."
+
+Code today:
+  pipeline/tools/selector.py loops sequentially over `clusters_map`
+  at line 105:
+      for cid, members in clusters_map.items():
+          action = plan_actions.get(cid, "mrmr")
+          ...
+  Each cluster's mRMR/PCA/Lasso/RF call runs one after the other on the
+  main thread.
+
+Severity: Low. Functionally correct, just slower.
+
+Fix:
+  - Wrap each per-cluster action body in a @ray.remote function in
+    parallel.py, returning the list of kept column names plus any
+    side-effects (e.g. PCA-created columns must be materialized after
+    the parallel section so the central df is not mutated concurrently).
+  - Replace the loop with run_parallel(...) and merge results.
+  - Note: PCA currently mutates state.df inside _pca. To parallelize,
+    return new column arrays from each remote call and append them to
+    state.df serially after ray.get returns.
+
+----------------------------------------------------------------------
+3. Tool retry budget is hardcoded in the orchestrator prompt
+----------------------------------------------------------------------
+Spec/Plan:
+  config.yaml carries `pipeline.max_tool_retries: 3`. The orchestrator
+  instruction prompt should read from config, not hardcode the value.
+
+Code today:
+  pipeline/orchestrator.py ORCHESTRATOR_INSTRUCTION literal string:
+      "If a tool returns {"status": "error"}, retry it up to 3 times."
+  The "3" is a bare literal.
+
+Severity: Low. Value matches default; changing config has no effect.
+
+Fix:
+  - Convert ORCHESTRATOR_INSTRUCTION into a template (or build it in
+    __init__) and format with config.pipeline.max_tool_retries:
+      ORCHESTRATOR_INSTRUCTION = ORCHESTRATOR_INSTRUCTION_TEMPLATE.format(
+          max_tool_retries=self.config.pipeline.max_tool_retries)
+  - Pass the rendered string into Agent(instruction=...) in
+    _run_adk_agent.
+
+----------------------------------------------------------------------
+4. Env-var name heuristic in orchestrator overrides config value
+----------------------------------------------------------------------
+Spec/Plan ambiguity #22:
+  "The config value always wins —
+  os.environ[llm.api_key_env_var] = config.llm.api_key unconditionally
+  overwrites any pre-existing value. The single source of truth for which
+  key is used is config.yaml."
+
+Code today:
+  pipeline/orchestrator.py lines 138–145: when config.llm.api_key_env_var
+  equals "OPENAI_API_KEY" (the default), the code derives the env var
+  name from the model_string prefix:
+      prefix = self.model_string.split("/", 1)[0].lower()
+      env_var = {"openai": "OPENAI_API_KEY",
+                 "gemini": "GOOGLE_API_KEY",
+                 "google": "GOOGLE_API_KEY",
+                 "anthropic": "ANTHROPIC_API_KEY"}.get(prefix, "OPENAI_API_KEY")
+  This second-guesses the config value.
+
+Severity: Low. Safety net that helps when users leave the default and
+use a non-OpenAI model; it never overrides an explicitly-set non-default
+env_var. But it is undocumented behavior that contradicts the "config
+value always wins" rule.
+
+Fix (pick one):
+  (a) Remove the heuristic. Trust config.llm.api_key_env_var exactly.
+      Users who use NVIDIA / Gemini / Anthropic models must set the
+      right env_var in config.yaml.
+  (b) Keep the heuristic but document it explicitly in spec §2 / §7-22
+      and in the config.yaml comment for api_key_env_var. Add a log
+      line at startup when the override fires, so the user sees that
+      the env_var name was changed.
+
+Recommended: (a) for spec-fidelity; (b) for user ergonomics.
+
+----------------------------------------------------------------------
+5. `co_occurring_pairs` uses MI product, not true joint MI
+----------------------------------------------------------------------
+Spec/Plan:
+  evidence.py `FeatureCreatorEvidence.co_occurring_pairs` is documented
+  as "top column pairs by joint MI".
+
+Code today:
+  pipeline/tools/creator.py::_co_occurring_pairs:
+      scored.append((a, b, float(mi_a * mi_b)))
+  This is the product of independent per-column MI, not joint MI of the
+  (col_a, col_b, target) distribution.
+
+Severity: Low. The product is a cheap proxy that correlates with joint
+MI but is not equivalent.
+
+Fix:
+  Tied to Gap #1. If profiler emits `_joint_mi_pairs` computed properly
+  (e.g. via mutual_info_regression / _classif on the concatenated
+  [col_a, col_b] columns vs target, sampled to top-N pairs to keep cost
+  bounded), creator.py reads that key instead of computing the proxy.
+
+----------------------------------------------------------------------
+6. `validate_response` adds an undocumented floor on degeneracy check
+----------------------------------------------------------------------
+Spec/Plan §5 / §7-G:
+  "The batched response is degenerate: more than
+  `validation.lazy_response_threshold` (default 0.8) of items share the
+  same strategy tuple ..."
+  No minimum batch size mentioned.
+
+Code today:
+  pipeline/responses.py::validate_response line 242:
+      if len(items) >= 3:
+          counts = Counter(_strategy_tuple(it) for it in items)
+          ...
+  The lazy check only fires when there are 3+ items.
+
+Severity: Low. Defensible — avoids triggering on tiny batches where
+"all items share one strategy" is not informative — but undocumented.
+
+Fix (pick one):
+  (a) Remove the `len(items) >= 3` guard. Let the check run for any
+      batch size and accept the occasional false positive on a 1-2 item
+      batch.
+  (b) Promote the floor to a config value
+      (`validation.lazy_min_batch_size: 3`) and document in spec §5.
+
+Recommended: (b).
+
+----------------------------------------------------------------------
+SUMMARY
+----------------------------------------------------------------------
+Of the six gaps:
+  - 1 medium-severity gap (profiler does not emit the three new keys).
+  - 5 low-severity gaps (cosmetic / minor deviations).
+
+All four loophole closures from the fortification pass ARE in code:
+  - STRATEGY_DEFINITIONS per tool
+  - Joint-strategy tuple degeneracy
+  - Judge response goes through validate_response with one revision
+  - Selector re-clusters over current df (post-Creator)
+
+The pipeline is otherwise spec-compliant; the gaps are correctness/
+performance/documentation polish rather than missing mechanics.

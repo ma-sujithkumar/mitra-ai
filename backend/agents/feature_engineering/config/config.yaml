@@ -1,0 +1,82 @@
+imputation:
+  null_drop_threshold: 0.50
+  knn_neighbors: 5
+  iterative_max_iter: 10
+  categorical_null_literals:
+    - "None"
+    - "NA"
+    - "N/A"
+    - "na"
+    - "n/a"
+    - "none"
+    - "NaN"
+
+outlier:
+  iqr_multiplier: 1.5
+  zscore_threshold: 3.0
+  isolation_contamination: 0.05
+  default_action: scale
+
+feature_creation:
+  max_created_features: 50
+  equal_width_bins: 5
+  quantile_bins: 5
+
+feature_selection:
+  correlation_threshold: 0.70
+  mi_threshold: 0.01
+  variance_threshold: 0.01
+  lasso_alpha: 0.01
+  ig_n_bins: 10
+  laplacian_k_neighbors: 5
+  pca_variance_retained: 0.95
+  top_k_features: 20
+  cluster_cut_threshold: 0.30
+  linear_baseline_k: 10
+  # Columns where (nunique / n_rows) >= this threshold are treated as identifiers
+  # and dropped before encoding and feature-selection stats are computed.
+  id_uniqueness_threshold: 0.95
+
+scaling:
+  power_transformer_method: yeo-johnson
+
+pipeline:
+  max_tool_retries: 3
+  random_state: 42
+  max_workers: 8
+  task_infer_nunique_threshold: 20
+  downstream_model_hint: tree
+
+validation:
+  min_rationale_chars: 60
+  min_alternatives: 2
+  lazy_response_threshold: 0.80
+  lazy_min_batch_size: 3
+  raw_log_max_chars: 60000
+  boilerplate_denylist:
+    - "based on the data"
+    - "because it is appropriate"
+    - "it is the best choice"
+    - "looks suitable"
+    - "as per the guidance"
+
+paths:
+  workspace_root: .mitra            # precomputed feature-selection stats go to .mitra/<run_id>/stats
+
+feature_stats:
+  keep_pca_components: false         # PCA artifact stores explained-variance only by default
+  max_corr_pairs: 200               # cap pairwise correlation/MI artifact size on wide data
+
+report:
+  use_llm: false                    # report.md written from a deterministic template (no LLM call)
+
+llm:
+  max_tokens: 2048
+  api_key_env_var: ANTHROPIC_API_KEY
+  # SECURITY: never commit a key here. The key is read from the env var named
+  # above (api_key_env_var), populated from .env (LLM_API_KEY). Leave blank.
+  api_key: ""
+  # The pipeline's LLM client speaks the OpenAI chat-completions protocol, so an
+  # Anthropic key must go through Anthropic's OpenAI-compatible endpoint and the
+  # model must be the plain Claude id (passed straight through as the OpenAI "model").
+  base_url: https://api.anthropic.com/v1/

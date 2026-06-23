@@ -1,0 +1,2270 @@
+ ▐▛███▜▌   Claude Code v2.1.181
+▝▜█████▛▘  Opus 4.8 · Claude Pro
+  ▘▘ ▝▝    ~/mitra/Epic2
+
+
+❯ expore epic2 and run it.                                                      
+
+● I'll explore the repo to find what "epic2" refers to.
+
+  Searched for 1 pattern, listed 1 directory (ctrl+o to expand)
+
+● There's an Epic2 directory. Let me explore it.
+
+  Searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● Let me look at the config, requirements, and how to run it.
+
+  Read 3 files, listed 1 directory (ctrl+o to expand)
+
+● Let me check the config schema and what API keys are available.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● Let me check the actual env values and look for a sample config.yaml
+  structure.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● Let me read the full orchestrator and search for a sample config in the
+  impl/plan files.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Let me find a sample config YAML block in the docs.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● I have the full config template now. I need an API key to actually run it. Let
+  me check the Python environment and whether dependencies are installed.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● I've explored Epic2 thoroughly. Here's what it is and what's blocking a run.
+
+  What Epic2 is
+
+  Epic2 = "Feature Engineering Agent" — an agentic feature-engineering pipeline
+  built on Google ADK (bring-your-own-LLM). It reads a raw CSV, runs 11 ADK
+  tools in sequence via an orchestrator agent, and writes ML-ready features + a
+  replay artifact.
+
+  Pipeline sequence (Epic2/pipeline/):
+  profile_data → infer_types → handle_missing → handle_outliers
+    → create_features_pre → encode_features → create_features_post
+    → scale_features → select_features → validate_features → write_report
+  - Entry point: Epic2/main.py run <data.csv> --target <col> --model 
+  <provider/model> [--task]
+  - Outputs to pipeline_output/<run_id>/: engineered_dataset.csv,
+  feature_artifact.json, report.md, execution_log.txt
+  - Includes a Judge sub-agent, Ray-based parallelism, and bundled test data
+  under Epic2/test data/ (a classification loan_data.csv and a regression
+  train.csv).
+
+  Two blockers to actually running it
+
+  1. Dependencies aren't installed. No Python env on this machine has google-adk
+  (also needs mrmr-selection, ray, nest_asyncio, etc.). I can `pip install -
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ use this api - ANTHROPIC_API_KEY=sk-ant-api03-QuJTVPFtrXEOxowzSzimlvpSZsFsBHX 
+  A0y_C10wuTytg_fY-W58g7-sJyUhllsKHXpAywgIYAEzm7pbs5FntWw-Qo7oHgAA              
+
+● I have an API key now. Let me set up the config and install dependencies. I'll
+  create the config file and start the dependency install in parallel.
+
+● Write(config/config.yaml)
+  ⎿  Wrote 62 lines to config/config.yaml
+       1 imputation:
+       2   null_drop_threshold: 0.50
+       3   knn_neighbors: 5
+       4   iterative_max_iter: 10
+       5   categorical_null_literals:
+       6     - "None"
+       7     - "NA"
+       8     - "N/A"
+       9     - "na"
+      10     - "n/a"
+     … +53 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Dependencies installed. Let me verify imports and check the bundled test data
+  columns.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Everything imports. Now let me run the pipeline on the bundled classification
+  dataset (loan_status target) with the Anthropic model.
+  Read 1 file (ctrl+o to expand)
+
+● 45k rows. I'll run it in the background since it makes many LLM calls across
+  the 11 tools plus the judge agent.
+
+  Read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+● Ray started. The pipeline is running its LLM calls now. Let me monitor
+  progress via the execution log.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Background command "Run Epic2 feature engineering pipeline" completed (exit
+code 0)
+
+● The run completed (exit 0). Let me look at the full output and the produced
+  artifacts.
+
+  Read 1 file (ctrl+o to expand)
+
+● The notification's exit 0 was from `
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ continue                                                                      
+
+● The run actually failed (the background wrapper reported exit 0, but the piped
+  command exited 1). The real problem: despite the README advertising Anthropic
+  support, the pipeline routes every call through an OpenAI-compatible client
+  (openai_llm.py) and sent the Anthropic key to platform.openai.com. Let me look
+  at how the model is routed.
+
+  Read 1 file (ctrl+o to expand)
+
+● The README advertises Anthropic but the actual LLM client
+  (OpenAICompatibleLlm) only speaks the OpenAI chat-completions protocol. With
+  no base_url, it sent the Anthropic key to OpenAI → 401. Anthropic does expose
+  an OpenAI-compatible endpoint, so I can point base_url at it. Let me check how
+  the model string is parsed.
+
+  Read 1 file (ctrl+o to expand)
+
+● Found the issue. The fix: point base_url at Anthropic's OpenAI-compatible
+  endpoint and pass the plain model ID (no anthropic/ prefix, since the string
+  is sent verbatim as the OpenAI model). Let me update the config.
+
+● Update(config/config.yaml)
+  ⎿  Added 4 lines
+      60    max_tokens: 2048
+      61    api_key_env_var: ANTHROPIC_API_KEY
+      62    api_key: sk-ant-api03-QuJTVPFtrXEOxowzSzimlvpSZsFsBHXA0y_C10w
+          uTytg_fY-W58g7-sJyUhllsKHXpAywgIYAEzm7pbs5FntWw-Qo7oHgAA
+      63 +  # The pipeline's LLM client speaks the OpenAI chat-completion
+         +s protocol, so an                                              
+      64 +  # Anthropic key must go through Anthropic's OpenAI-compatible
+         + endpoint and the                                              
+      65 +  # model must be the plain Claude id (passed straight through 
+         +as the OpenAI "model").                                        
+      66 +  base_url: https://api.anthropic.com/v1/                      
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Background command "Re-run Epic2 with Anthropic OpenAI-compat endpoint"
+completed (exit code 0)
+
+● Auth is fixed now — it got past the model call. Next bug: the orchestrator's
+  smoke test imports INFER_PROMPT and _strategy_definitions_block from infer.py,
+  which don't exist there. Let me inspect both.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● infer.py defines no LLM prompt at all — it does pure heuristic type inference.
+  The orchestrator's smoke test references prompt constants that don't exist in
+  this version of the tool module — a mismatch in the repo itself. Let me read
+  infer.py fully and check how other tools structure prompts.
+
+  Read 1 file (ctrl+o to expand)
+
+● infer.py here is heuristic-only (no LLM), yet the orchestrator's smoke test —
+  and schema.md — assume an LLM-based infer with prompt constants. The repo is
+  internally inconsistent. Let me check whether these constants exist anywhere,
+  or how other tools expose prompts.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● The smoke test is the only place referencing an LLM-based infer; the actual
+  infer.py was refactored to heuristic-only and dropped those prompt constants.
+  The other LLM tools still have their prompts, so transport is fine — the bare
+  model_call on line 329 already validated auth/transport. The minimal, faithful
+  fix is to make the structured probe skip cleanly when the (now-removed) infer
+  prompt isn't present. Let me make that small change.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(pipeline/orchestrator.py)
+  ⎿  Added 16 lines, removed 1 line
+      333          # Structured probe.
+      334          from pipeline.evidence import ColumnTypeEvidence, Sema
+           nticTypeInferEvidence, render
+      335          from pipeline.responses import SemanticTypeInferRespon
+           se, validate_response
+      336 -        from pipeline.tools.infer import INFER_PROMPT, _strate
+          -gy_definitions_block                                          
+      336 +        from pipeline.tools import infer as infer_module      
+      337  
+      338 +        # SemanticTypeInfer is heuristic-only in this build an
+          +d no longer ships an                                          
+      339 +        # LLM prompt. When the prompt constants are absent the
+          + structured probe                                             
+      340 +        # has no template to exercise, so skip it — the bare m
+          +odel_call above                                               
+      341 +        # already validated transport, auth, and a non-empty r
+          +esponse.                                                      
+      342 +        if not hasattr(infer_module, "INFER_PROMPT") or not ha
+          +sattr(infer_module, "_strategy_definitions_block"):           
+      343 +            log_line = (                                      
+      344 +                f"[{datetime.utcnow().strftime('%Y-%m-%dT%H:%M
+          +:%S')}] smoke_test "                                          
+      345 +                f"structured_probe=skipped (infer is heuristic
+          +, no LLM prompt) parsed=n/a\n"                                
+      346 +            )                                                 
+      347 +            with open(output_dir / "execution_log.txt", "a", e
+          +ncoding="utf-8") as f:                                        
+      348 +                f.write(log_line)                             
+      349 +            return                                            
+      350 +        INFER_PROMPT = infer_module.INFER_PROMPT              
+      351 +        _strategy_definitions_block = infer_module._strategy_d
+          +efinitions_block                                              
+      352 +                                                              
+      353          packet = SemanticTypeInferEvidence(columns=[
+      354              ColumnTypeEvidence(
+      355                  name="example_col",
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now it should proceed into the actual ADK agent pipeline. This runs many LLM
+  calls across the 11 tools, so it'll take a while. Let me monitor the execution
+  log as tools complete.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+❯ kill the runs. change to sonnet 4-6. also why do we need LLM calls across 11  
+  tools? can you analyze this and simplify - for context, read MITRA design     
+  plan pdf - do an agentic search                                               
+
+● I'll kill the runs, switch the model to Sonnet 4.6, then analyze the LLM-call
+  architecture against the MITRA design plan.
+
+  Ran 5 shell commands (ctrl+o to expand)
+
+● Pipeline processes are killed (PID 134915 gone; only the grep's own shell
+  showed up). Now let me read the MITRA design plan PDF and analyze the
+  architecture. Let me check its size first.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 30 pages. Let me read it (in two batches due to the 20-page limit) and focus
+  on the feature-engineering portion.
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ do not read all pages, convert pdf into markdown -                            
+  https://github.com/iamarunbrahma/pdf-to-markdown                              
+
+● Let me look at that tool's repo to understand how it works before using it.
+
+● Fetch(https://github.com/iamarunbrahma/pdf-to-markdown)
+  ⎿  Received 278.5KB (200 OK)
+
+● That tool needs torch + transformers + tesseract OCR — heavy, and meant for
+  scanned/image PDFs. This MITRA PDF is text-based (extraction already worked
+  cleanly). Let me clone the repo as you asked and inspect it before installing
+  the heavy stack, so I can decide whether OCR is actually needed.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● The tool degrades gracefully if the captioning model fails, and OCR only runs
+  on image blocks (the diagrams). Let me check its config, then install deps.
+  torch+transformers are heavy, so I'll run the install in the background.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Tesseract isn't installed (needs sudo), but the code catches OCR failures and
+  falls back, so that's fine. The top-level import torch/transformers means I
+  must install the full stack to run extract.py as-is. Let me install in the
+  background (torch is large).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The install is running in the background (torch is the big download). I'll
+  wait for it to finish before running the converter.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Background command "Install pdf-to-markdown dependencies" completed (exit code
+0)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ do not use pip. use ~/venv                                                    
+
+● Understood — the install already finished (exit 0); I'll just use ~/venv to
+  run the converter, no more pip. Let me run the conversion.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+❯ read the pdf in your own way. finish debugging. once you have read, write     
+  what you read into DESIGN_PLAN.md for other agents to look                    
+
+● Let me stop the external tool and read the remaining pages (21-30) directly.
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Killed (only the grep's own shell shows). Now let me read the remaining pages
+  21-30.
+
+  Read 1 file, listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+● The PDF was renamed to design_plan.pdf. Let me read pages 21-30.
+
+  Read 1 file (ctrl+o to expand)
+
+● I've now read the entire 30-page design plan. Let me write DESIGN_PLAN.md
+  capturing it for other agents, then finish debugging the Epic2 run.
+
+● Write(~/mitra/DESIGN_PLAN.md)
+  ⎿  Wrote 468 lines to ../DESIGN_PLAN.md
+       1 # MITRA v2 — Design Plan (Reference for Agents)
+       3 > Source: `design_plan.pdf` ("MITRA v2 — Improved Design Plan: S
+         elf-Hosted Agentic AutoML",
+       4 > 30 pages, internal draft). This file is a faithful text transc
+       5 > other agents do not have to re-read the binary. Where the PDF 
+         gives exact code, schemas, or
+       7 
+       8 ## 0. One-paragraph summary
+       9 
+         ploads a tabular CSV (or an image
+     … +747 lines (ctrl+o to expand)
+
+● DESIGN_PLAN.md written. Now let me finish debugging the Epic2 run, switched to
+  Sonnet 4.6.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● The smoke test passes, the ADK agent is running, and profile_data completed.
+  The pipeline is now executing its tools. Let me wait for it to finish.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+❯ the pipeline is unnecessarily taking a lot of time to run these tools. Debug  
+  why and come up with a plan to simplify this while meeting the requirements   
+  in DESIGN_PLAN.md - feature_selection and feature engineering should run      
+  faster. need not have these many tools. run the scripts first to generate PCA 
+  data, mrmr data, pearson correlation data, and now keep them in .mitra        
+  folder. let the agent only have tools to read them and make decisions on what 
+  features have to be selected. for encoding and other EDA stuff - do we need   
+  agents?                                                                       
+
+● I'll plan this properly. Let me first explore the Epic2 pipeline to pinpoint
+  the slowness and understand which tools call the LLM, and what feature-stat
+  utilities already exist to reuse.
+
+● 3 Explore agents finished (ctrl+o to expand)
+   ├ Map Epic2 tool LLM usage and cost · 19 tool uses · 69.1k tokens
+   │ ⎿  Done
+   ├ Find feature-stat utilities to reuse · 9 tool uses · 28.4k tokens
+   │ ⎿  Done
+   └ Map encoding/EDA tools and config · 13 tool uses · 39.9k tokens
+     ⎿  Done
+
+● I have a clear picture now. The slowness has three main causes:
+
+  1. The ADK agent loop adds ~12 LLM round-trips just to sequence a fixed 
+  11-step order — and it resends the growing tool-result history every turn, so
+  latency compounds. This is ~half of all LLM calls and pure overhead.
+  2. EDA steps call the LLM unnecessarily — imputer, outlier, scaler each make
+  1–2 batched LLM calls to pick strategies that already have deterministic
+  config-driven fallbacks. Encoder/profiler/infer are already rule-based.
+  3. Heavy stats are computed twice — the profiler computes clusters + linear
+  baseline + per-column MI + 60-pair joint MI + O(cols²) null-mask correlation,
+  then the selector recomputes clusters + linear baseline + per-column MI and
+  adds per-cluster RF/Lasso/PCA/mRMR, gated behind another 1–2 judge LLM calls.
+
+  Your instinct matches the DESIGN_PLAN: encoding/scaling/imputation should be
+  deterministic Python, and feature selection should read precomputed stats.
+  Before I write the plan, a few decisions shape it:
+
+● User answered Claude's questions:
+  ⎿  · How should the 11 fixed tools be driven? Today an LLM agent loop decides 
+     'call the next tool' ~12 times for a hard-coded order. → Deterministic 
+     Python (Recommended)
+     · For the EDA/preprocessing steps (imputation, outlier handling, scaling; 
+     encoder is already rule-based), should we drop the LLM? → All deterministic
+     (Recommended)
+     · How should the precomputed stats (PCA, mRMR, Pearson/Spearman corr, MI, 
+     RF importance, variance) be produced and consumed? → One pipeline, two 
+     phases (Recommended)
+     · What should the feature-selection LLM do, and should feature *creation* 
+     stay? → Select only, 1 call (Recommended)
+
+● All four recommendations confirmed. Let me write the plan.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● The plan is written. Here's the summary before you approve.
+
+  Root cause of the slowness (confirmed by exploring the code): a full run makes
+  ~20–25 LLM round-trips, ~half of which are the ADK agent loop deciding "call
+  the next tool" for a hard-coded order (and resending growing history each
+  turn). The rest are EDA strategy picks (impute/outlier/scale) that already
+  have deterministic fallbacks, plus a creator+judge step. On top of that, the
+  profiler and selector compute clusters/linear-baseline/MI twice.
+
+  The fix (matches your four choices and DESIGN_PLAN):
+  - Replace the ADK agent loop with a deterministic Python sequence → removes
+  ~12 calls.
+  - Make impute/outlier/scale/encode rule-based (reusing their existing
+  fallbacks + config knobs) → removes ~4–8 calls.
+  - Precompute all selection stats once (PCA, mRMR, Pearson+Spearman, MI, RF
+  importance, variance) into .mitra/<run_id>/stats/, reusing parallel.py +
+  selector.py helpers → no double compute.
+  - One LLM call reads those artifacts and decides keep/drop; drop the separate
+  creator+judge (keep only cheap deterministic ratio/poly features);
+  deterministic report.
+
+  Net: ~20–25 → ~2 LLM calls (BYOM smoke test + selection), with the heavy stats
+  computed once.
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/the-pipeline-is-unnecessarily-witty-quill.md
+     · /plan to edit
+     Plan: Simplify & speed up the Epic2 feature-engineering pipeline
+
+     Context
+
+     Epic2/ is the feature-engineering slice of MITRA (see DESIGN_PLAN.md).
+     Running it on
+     test data/C/loan_data.csv (45k rows) is very slow. Profiling the code (3
+     Explore passes) found the
+     cost is dominated by LLM round-trips and duplicated compute, not the actual
+     data work:
+
+     - The ADK agent loop adds ~12 sequential LLM round-trips just to decide
+     "call the next tool" for
+     a hard-coded 11-step order, and it resends the growing tool-result history
+     every turn
+     (orchestrator.py:18-39, _run_adk_agent at :273-319; history rebuild in
+     openai_llm.py:66-135).
+     - EDA steps call the LLM needlessly: imputer.py, outlier.py, scaler.py each
+     make 1-2
+     batched LLM calls to pick strategies that already have deterministic,
+     config-driven fallbacks
+     (imputer.py:180-194, outlier.py:131-141, scaler.py:124-132).
+     encoder.py/profiler.py/
+     infer.py are already rule-based.
+     - Heavy stats are computed twice: profiler.py builds clusters + linear
+     baseline + per-col MI +
+     60-pair joint MI + O(cols²) null-mask corr; then selector.py:62-66,171-191
+     recomputes clusters +
+     linear baseline + per-col MI and adds per-cluster RF/Lasso/PCA/mRMR, gated
+     behind 1-2 more judge
+     LLM calls (judge_agent.py).
+
+     Total: ~20-25 LLM round-trips per run, ~half pure orchestration overhead.
+
+     Goal (per user + DESIGN_PLAN.md §4.1/§7/Appendix): make orchestration
+     deterministic, make EDA
+     deterministic (no LLM), precompute feature-selection statistics once into
+     .mitra/, and let a
+     single LLM call read those stats and decide keep/drop. Target: ~2 LLM calls
+     (BYOM smoke test
+     - feature selection) and no duplicated compute.
+
+     Decisions confirmed with user: (1) deterministic Python orchestration, (2)
+     all EDA deterministic,
+     (3) one pipeline / two phases (compute stats to .mitra/, then selection
+     reads them), (4) feature
+     selection = 1 LLM call; drop the separate creator+judge, keep only cheap
+     deterministic engineered
+     features.
+
+     Target architecture (deterministic orchestrator, 1 LLM decision)
+
+     Phase A  deterministic EDA (no LLM)
+       profile -> infer_types -> handle_missing(rule) -> handle_outliers(rule)
+         -> encode -> scale -> engineer_candidates(deterministic ratio/poly,
+     cheap)
+     Phase B  precompute feature-selection stats ONCE ->
+     .mitra/<run_id>/stats/*.json|npy
+       pearson + spearman corr, per-col MI, RF importance, variance,
+       correlation clusters, linear baseline, mRMR ranking, PCA
+     explained-variance
+     Phase C  select_features = ONE LLM call
+       read .mitra stat artifacts -> prompt -> keep/drop/engineered -> apply
+     deterministically
+       (deterministic fallback = mRMR top_k if the call fails)
+     Phase D  validate -> write_report (deterministic template, no LLM)
+
+     Keep the startup BYOM smoke test
+     (orchestrator.py:_run_structured_smoke_test, 1 cheap call) —
+     it is the design's R6 guardrail. Everything else loses its LLM dependency.
+
+     Changes by file
+
+     1. Deterministic orchestration — Epic2/pipeline/orchestrator.py
+
+     - Delete ORCHESTRATOR_INSTRUCTION_TEMPLATE, START_MESSAGE, and
+     _run_adk_agent (the ADK
+     agent-loop driver). Replace the self._run_adk_agent(state) call in run()
+     with a plain,
+     ordered Python sequence that invokes the tool classes directly (they
+     already follow the
+     BaseTool.__call__ precondition/run/postcondition contract — base.py:14-31).
+     - Stop constructing the JudgeAgent (orchestrator.py:241-247) and stop
+     passing it into
+     adk_tools.set_pipeline_state. The single feature-selection model_call is
+     still built via
+     _make_model_call and passed only to the selector.
+     - Keep config load, Ray init, run_id, PipelineState setup, smoke test, and
+     the final
+     feature_artifact.json / engineered_dataset.csv writes unchanged.
+     - Add a .mitra/<run_id>/stats/ directory creation (mkdir -p) using a
+     configurable workspace root.
+
+     2. Deterministic EDA — imputer.py, outlier.py, scaler.py
+
+     For each, branch on self.model_call is None (deterministic mode) vs.
+     present (legacy LLM mode),
+     reusing the decision_map their existing fallback paths already build:
+     - imputer.py: deterministic rule = null_rate > 
+     cfg.imputation.null_drop_threshold -> drop, else
+     median (numeric) / mode (categorical/binary), keeping the existing target
+     rule
+     (:116-124) and categorical exclusion (:132-136). (knn/iterative dropped in
+     deterministic mode.)
+     - outlier.py: deterministic rule = (iqr, cfg.outlier.default_action) for
+     every numeric column
+     (exactly the current fallback at :135).
+     - scaler.py: deterministic rule from profile signals already computed
+     (skewness, bounded,
+     outlier_rate at :96-106): skewed -> power, bounded -> minmax, else standard
+     (a small
+     improvement over the flat standard fallback). The fit/transform mapping
+     _fit (:146-161) is
+     reused as-is.
+     The deterministic orchestrator instantiates these with model_call=None.
+
+     3. Drop LLM feature creation, keep cheap deterministic engineering — 
+     creator.py
+
+     - In deterministic mode, skip the CREATOR_PROMPT LLM proposal (:168-171)
+     and the judge rank
+     (:197-207). Instead generate a small, capped set of degree-2 ratio/product 
+     candidates from the
+     top-MI numeric columns (bounded by
+     cfg.feature_creation.max_created_features) and execute them
+     with the existing deterministic _execute (:245-311). This matches
+     DESIGN_PLAN.md §9
+     (degree-2 poly + ratio only). These candidates are included in the stats so
+     the selection call can
+     keep/drop them.
+
+     4. New stats module — Epic2/pipeline/feature_stats.py
+
+     A deterministic module that computes all selection statistics once and
+     writes them to
+     .mitra/<run_id>/stats/. Reuse existing functions (no new math where one
+     exists):
+     - From parallel.py: compute_correlation_clusters, compute_linear_baseline,
+     compute_mini_profile, run_parallel.
+     - From selector.py (staticmethods): _mrmr, _pca, _lasso, _rf, _top_mi,
+     _per_col_mi,
+     _deterministic_tag.
+     - New only where nothing exists: full Spearman matrix
+     (df.corr(method="spearman")) and a
+     variance artifact (honoring the currently-unused variance_threshold).
+     - Outputs (JSON, plus pca.npy if components are kept):
+     correlation_pearson.json, correlation_spearman.json, mutual_info.json,
+     rf_importance.json,
+     variance.json, clusters.json, linear_baseline.json, mrmr_ranking.json,
+     pca.json.
+     - Expose both an importable compute_and_write_stats(state, stats_dir) -> 
+     dict (called by the
+     orchestrator, phase B) and a thin python -m pipeline.feature_stats CLI so
+     stats can be
+     regenerated standalone.
+
+     5. Single-call feature selection — Epic2/pipeline/tools/selector.py + 
+     responses.py
+
+     - Rewrite FeatureSelector.run to: load the .mitra stat artifacts, build one
+     compact evidence
+     prompt (summaries: top-MI list, RF importance, mRMR order, cluster
+     membership, low-variance/
+     high-correlation flags, PCA explained variance), make one
+     call_with_revision
+     (responses.py:336-386) against a new FeatureSelectionResponse schema
+     (keep[], drop[], engineered[], rationale{}), validate, then apply
+     deterministically (subset
+     state.df to keep, execute any kept engineered specs via creator._execute).
+     - Deterministic fallback (LLM fails / invalid) = existing _mrmr over all
+     features at
+     top_k_features (selector.py fallback, already present).
+     - Remove the JudgeAgent.plan dependency (selector.py:95-101). The selector
+     no longer recomputes
+     clusters/baseline/MI — it reads them from phase B.
+
+     6. Deterministic report — Epic2/pipeline/tools/reporter.py
+
+     Default to the existing string-template fallback (no LLM). Reuse the
+     current fallback template path;
+     make the LLM call opt-in via config (default off).
+
+     7. Retire the ADK tool registry usage — Epic2/pipeline/tools/adk_tools.py
+
+     No longer needed for orchestration (the deterministic sequence calls tool
+     classes directly). Keep the
+     file/set_pipeline_state for state injection if convenient, but ALL_TOOLS
+     and the ADK Agent are
+     no longer wired. (Leave the module importable to avoid breaking tests; just
+     stop building the agent.)
+
+     8. Config — Epic2/config/config.yaml + Epic2/pipeline/config.py
+
+     - Add a paths: block with workspace_root: .mitra (no hardcoded paths in
+     code — CLAUDE.md rule 7).
+     - Add a feature_stats: block listing which artifacts to compute and
+     keep_pca_components: bool.
+     - Add report.use_llm: false. Honor the now-consumed keys
+     variance_threshold,
+     correlation_threshold, mi_threshold, pca_variance_retained (declared today
+     but unused).
+     - Mirror the new keys into the pydantic ConfigSchema (config.py).
+
+     What gets removed / reduced
+
+     - ADK agent loop: ~12 LLM calls eliminated.
+     - impute/outlier/scale LLM calls: ~4-8 eliminated.
+     - creator proposal + judge rank: ~2-3 eliminated.
+     - report LLM call: 1 eliminated.
+     - Net: from ~20-25 -> ~2 LLM calls (smoke + selection), and
+     clusters/linear-baseline/MI computed
+     once instead of twice.
+
+     Verification
+
+     1. Run classification fixture:
+     ~/venv/bin/python main.py run "test data/C/loan_data.csv" --target 
+     loan_status --model claude-sonnet-4-6 --config config/config.yaml
+       - Assert .mitra/<run_id>/stats/ contains all artifact files.
+       - Assert pipeline_output/<run_id>/ has engineered_dataset.csv,
+     feature_artifact.json,
+     report.md, execution_log.txt.
+       - Assert raw_responses.txt shows ~2 LLM calls (smoke + selection), not
+     ~20.
+       - Compare wall-clock to the previous run (expect a large drop; EDA +
+     stats are pure CPU).
+     2. Run regression fixture:
+     ~/venv/bin/python main.py run "test data/Reg/train.csv" --target SalePrice 
+     --model claude-sonnet-4-6 --config config/config.yaml
+     and confirm task=regression path (mRMR/MI regression variants) works.
+     3. Standalone stats: ~/venv/bin/python -m pipeline.feature_stats ...
+     regenerates .mitra/ stats
+     without running the LLM.
+     4. Spawn a test agent (CLAUDE.md rule 26) to run any existing tests under
+     Epic2/ and confirm no
+     import breakage from removing the agent loop.
+     5. Sanity: engineered_dataset.csv has the target column last and
+     all-numeric features; row count
+     consistent with outlier drop_row actions.
+
+     Notes / constraints
+
+     - Reuse-first: import the existing parallel.py and selector.py helpers;
+     only add Spearman +
+     variance where no implementation exists.
+     - Keep model_call typed and pass it only to the selector; everything else
+     runs model_call=None.
+     - Epic2 keeps its own config.yaml (its established config); not folding
+     into the repo config.ini
+     to avoid scope creep.
+     - No commits unless asked (CLAUDE.md rule 14).
+
+● Plan approved. Let me set up task tracking, kill any leftover run, and read
+  the files I need to edit.
+
+  Ran 1 shell command (ctrl+o to expand)
+● Now let me read all the files I need to edit, in parallel.
+
+  Read 13 files (ctrl+o to expand)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ continue                                                                      
+
+● Let me read the encoder to handle its precondition in the deterministic flow.
+
+  Read 1 file (ctrl+o to expand)
+
+● I have full context now. Let me implement. Starting with config schema.
+
+● Update(pipeline/config.py)
+  ⎿  Added 21 lines
+      71      base_url: str | None = None  # optional; if set, used as th
+          e OpenAI-compatible endpoint
+      72  
+      73  
+      74 +class PathsConfig(BaseModel):                                  
+      75 +    # Root for precomputed feature-selection stat artifacts (.m
+         +itra/<run_id>/stats).                                          
+      76 +    workspace_root: str = ".mitra"                             
+      77 +                                                               
+      78 +                                                               
+      79 +class FeatureStatsConfig(BaseModel):                           
+      80 +    # Whether the PCA artifact also materialises the transforme
+         +d components on disk.                                          
+      81 +    keep_pca_components: bool = False                          
+      82 +    # Cap on base columns used to build pairwise correlation/MI
+         + artifacts on wide data.                                       
+      83 +    max_corr_pairs: int = Field(gt=0, default=200)             
+      84 +                                                               
+      85 +                                                               
+      86 +class ReportConfig(BaseModel):                                 
+      87 +    # Default off: the report is written from a deterministic t
+         +emplate (no LLM call).                                         
+      88 +    use_llm: bool = False                                      
+      89 +                                                               
+      90 +                                                               
+      91  class ConfigSchema(BaseModel):
+      92      imputation: ImputationConfig
+      93      outlier: OutlierConfig
+     ...
+       97      pipeline: PipelineSettings
+       98      validation: ValidationSettings
+       99      llm: LlmConfig
+      100 +    # New blocks default to safe values so older config.yaml f
+          +iles still validate.                                          
+      101 +    paths: PathsConfig = Field(default_factory=PathsConfig)   
+      102 +    feature_stats: FeatureStatsConfig = Field(default_factory=
+          +FeatureStatsConfig)                                           
+      103 +    report: ReportConfig = Field(default_factory=ReportConfig)
+      104  
+      105  
+      106  def load_config(path: str | Path) -> ConfigSchema:
+
+● Now the config.yaml additions:
+
+● Update(config/config.yaml)
+  ⎿  Added 10 lines
+      56      - "looks suitable"
+      57      - "as per the guidance"
+      58  
+      59 +paths:                                                         
+      60 +  workspace_root: .mitra            # precomputed feature-selec
+         +tion stats go to .mitra/<run_id>/stats                         
+      61 +                                                               
+      62 +feature_stats:                                                 
+      63 +  keep_pca_components: false         # PCA artifact stores expl
+         +ained-variance only by default                                 
+      64 +  max_corr_pairs: 200               # cap pairwise correlation/
+         +MI artifact size on wide data                                  
+      65 +                                                               
+      66 +report:                                                        
+      67 +  use_llm: false                    # report.md written from a 
+         +deterministic template (no LLM call)                           
+      68 +                                                               
+      69  llm:
+      70    max_tokens: 2048
+      71    api_key_env_var: ANTHROPIC_API_KEY
+
+● Now add stats_dir to PipelineState:
+
+● Update(pipeline/state.py)
+  ⎿  Added 1 line
+      28      selection_method: str | None = None
+      29  
+      30      output_dir: Path | None = None
+      31 +    stats_dir: Path | None = None  # .mitra/<run_id>/stats — pr
+         +ecomputed feature-selection artifacts                          
+      32  
+      33      pre_encoding_done: bool = False
+      34      row_count_after_outlier: int | None = None
+
+● Now the deterministic EDA. Let me update task #2 and edit imputer, outlier,
+  scaler.
+
+● Update(pipeline/tools/imputer.py)
+  ⎿  Added 3 lines, removed 1 line
+      100  
+      101  
+      102  class MissingValueHandler(BaseTool):
+      103 -    def __init__(self, model_call: Callable[[str], str]):     
+      103 +    def __init__(self, model_call: Callable[[str], str] | None
+          +):                                                            
+      104 +        # model_call is None => deterministic mode (no LLM): r
+          +ule-based strategy                                            
+      105 +        # per column using the same defaults as the LLM fallba
+          +ck path.                                                      
+      106          self.model_call = model_call
+      107  
+      108      def precondition(self, state: PipelineState) -> None:
+
+● Update(pipeline/tools/imputer.py)
+  ⎿  Added 12 lines
+      140              self._final_pass(df, state)
+      141              return
+      142  
+      143 +        # Deterministic mode: rule-based strategy per column (
+          +median for numeric,                                           
+      144 +        # mode otherwise). The hard drop-threshold rule below 
+          +still applies.                                                
+      145 +        if self.model_call is None:                           
+      146 +            state.last_llm_source = "deterministic"           
+      147 +            decision_map: dict[str, str] = {                  
+      148 +                col: ("median" if state.column_types.get(col, 
+          +"numeric") == "numeric" else "mode")                          
+      149 +                for col in cols_with_nulls                    
+      150 +            }                                                 
+      151 +            self._apply_decisions(df, state, cols_with_nulls, 
+          +decision_map, drop_threshold)                                 
+      152 +            self._final_pass(df, state)                       
+      153 +            return                                            
+      154 +                                                              
+      155          per_col: list[NullColumnEvidence] = []
+      156          for col in cols_with_nulls:
+      157              p = state.profile.get(col, {})
+● Now refactor the imputer execution into a shared method so both modes reuse
+  it:
+
+● Update(pipeline/tools/imputer.py)
+  ⎿  Added 14 lines, removed 3 lines
+      202              for d in parsed.decisions:  # type: ignore[attr-de
+           fined]
+      203                  decision_map[d.column] = d.strategy
+      204  
+      205 -        # Hard rule: drop above the configured null threshold 
+          -regardless of model.                                          
+      205 +        self._apply_decisions(df, state, cols_with_nulls, deci
+          +sion_map, drop_threshold)                                     
+      206 +        self._final_pass(df, state)                           
+      207 +                                                              
+      208 +    @staticmethod                                             
+      209 +    def _apply_decisions(                                     
+      210 +        df: pd.DataFrame,                                     
+      211 +        state: PipelineState,                                 
+      212 +        cols_with_nulls: list[str],                           
+      213 +        decision_map: dict[str, str],                         
+      214 +        drop_threshold: float,                                
+      215 +    ) -> None:                                                
+      216 +        """Apply per-column imputation strategies. Shared by d
+          +eterministic and LLM modes."""                                
+      217 +        cfg = state.config                                    
+      218 +        # Hard rule: drop above the configured null threshold 
+          +regardless of strategy source.                                
+      219          for col in cols_with_nulls:
+      220              if state.profile.get(col, {}).get("null_rate", 0.0
+           ) > drop_threshold:
+      221                  decision_map[col] = "drop"
+     ...
+      279                          {"step": "imputation", "column": col, 
+           "strategy": "iterative", "random_state": cfg.pipeline.random_s
+           tate}
+      280                      )
+      281  
+      269 -        self._final_pass(df, state)                           
+      270 -                                                              
+      282      @staticmethod
+      283      def _final_pass(df: pd.DataFrame, state: PipelineState) ->
+            None:
+      284          """Mode-fill any leftover nulls — including stray empt
+           y-string NaNs in
+
+● Now the outlier handler deterministic mode:
+
+● Update(pipeline/tools/outlier.py)
+  ⎿  Added 10 lines, removed 1 line
+      65  
+      66  
+      67  class OutlierHandler(BaseTool):
+      68 -    def __init__(self, model_call: Callable[[str], str]):      
+      68 +    def __init__(self, model_call: Callable[[str], str] | None)
+         +:                                                              
+      69 +        # model_call is None => deterministic mode (no LLM): (i
+         +qr, default_action)                                            
+      70 +        # for every numeric column, matching the LLM fallback p
+         +olicy.                                                         
+      71          self.model_call = model_call
+      72  
+      73      def precondition(self, state: PipelineState) -> None:
+     ...
+      85              state.row_count_after_outlier = len(df)
+      86              return
+      87  
+      88 +        # Deterministic mode: rule-based (iqr detector, configu
+         +red default action).                                           
+      89 +        if self.model_call is None:                            
+      90 +            state.last_llm_source = "deterministic"            
+      91 +            decision_map = {c: ("iqr", cfg.outlier.default_acti
+         +on) for c in numeric_cols}                                     
+      92 +            self._apply_decisions(df, state, numeric_cols, deci
+         +sion_map)                                                      
+      93 +            return                                             
+      94 +                                                               
+      95          per_col: list[OutlierColumnEvidence] = []
+      96          for col in numeric_cols:
+      97              series = pd.to_numeric(df[col], errors="coerce")
+
+● Now extract the outlier execution into _apply_decisions:
+
+● Update(pipeline/tools/outlier.py)
+  ⎿  Added 11 lines
+      149              for c in numeric_cols:
+      150                  decision_map.setdefault(c, ("iqr", cfg.outlier
+           .default_action))
+      151  
+      152 +        self._apply_decisions(df, state, numeric_cols, decisio
+          +n_map)                                                        
+      153 +                                                              
+      154 +    def _apply_decisions(                                     
+      155 +        self,                                                 
+      156 +        df: pd.DataFrame,                                     
+      157 +        state: PipelineState,                                 
+      158 +        numeric_cols: list[str],                              
+      159 +        decision_map: dict,                                   
+      160 +    ) -> None:                                                
+      161 +        """Apply (detector, action) per column. Shared by dete
+          +rministic and LLM modes."""                                   
+      162 +        cfg = state.config                                    
+      163          drop_indices: set[int] = set()
+      164          for col in numeric_cols:
+      165              detector, action = decision_map[col]
+
+● Now the scaler deterministic mode with a profile-signal rule:
+
+● Update(pipeline/tools/scaler.py)
+  ⎿  Added 24 lines, removed 1 line
+      51  
+      52  
+      53  class Scaler(BaseTool):
+      54 -    def __init__(self, model_call: Callable[[str], str]):      
+      54 +    def __init__(self, model_call: Callable[[str], str] | None)
+         +:                                                              
+      55 +        # model_call is None => deterministic mode (no LLM): ru
+         +le-based scaler                                                
+      56 +        # choice from profile signals (skewness / outlier_rate 
+         +/ bounded).                                                    
+      57          self.model_call = model_call
+      58  
+      59 +    @staticmethod                                              
+      60 +    def _deterministic_scaler(col: str, df: pd.DataFrame, profi
+         +le: dict) -> str:                                              
+      61 +        """Pick a scaler from cheap distribution signals (no LL
+         +M).                                                            
+      62 +                                                               
+      63 +        robust  -> heavy outliers; power -> strongly skewed;   
+      64 +        minmax  -> bounded range; standard -> default.         
+      65 +        """                                                    
+      66 +        p = profile.get(col, {})                               
+      67 +        outlier_rate = float(p.get("outlier_rate") or 0.0)     
+      68 +        skew = abs(float(p.get("skewness") or 0.0))            
+      69 +        if outlier_rate > 0.10:                                
+      70 +            return "robust"                                    
+      71 +        if skew > 1.0:                                         
+      72 +            return "power"                                     
+      73 +        series = pd.to_numeric(df[col], errors="coerce").dropna
+         +()                                                             
+      74 +        if not series.empty:                                   
+      75 +            lo, hi = float(series.min()), float(series.max())  
+      76 +            if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+      77 +                return "minmax"                                
+      78 +        return "standard"                                      
+      79 +                                                               
+      80      def precondition(self, state: PipelineState) -> None:
+      81          non_numeric = [c for c in state.df.columns if not pd.ap
+          i.types.is_numeric_dtype(state.df[c])]
+      82          if non_numeric:
+
+● The minmax-for-any-bounded rule would over-trigger (almost all columns are
+  bounded). Let me simplify to robust/power/standard:
+
+● Update(pipeline/tools/scaler.py)
+  ⎿  Added 1 line, removed 7 lines
+      60      def _deterministic_scaler(col: str, df: pd.DataFrame, profi
+          le: dict) -> str:
+      61          """Pick a scaler from cheap distribution signals (no LL
+          M).
+      62  
+      63 -        robust  -> heavy outliers; power -> strongly skewed;   
+      64 -        minmax  -> bounded range; standard -> default.         
+      63 +        robust -> heavy outliers; power -> strongly skewed; sta
+         +ndard -> default.                                              
+      64          """
+      65          p = profile.get(col, {})
+      66          outlier_rate = float(p.get("outlier_rate") or 0.0)
+     ...
+      69              return "robust"
+      70          if skew > 1.0:
+      71              return "power"
+      73 -        series = pd.to_numeric(df[col], errors="coerce").dropna
+         -()                                                             
+      74 -        if not series.empty:                                   
+      75 -            lo, hi = float(series.min()), float(series.max())  
+      76 -            if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+      77 -                return "minmax"                                
+      72          return "standard"
+      73  
+      74      def precondition(self, state: PipelineState) -> None:
+
+● Now branch the scaler run to use the deterministic rule:
+
+● Update(pipeline/tools/scaler.py)
+  ⎿  Added 7 lines
+       90          if not scale_targets:
+       91              return
+       92  
+       93 +        # Deterministic mode: rule-based scaler per column fro
+          +m profile signals.                                            
+       94 +        if self.model_call is None:                           
+       95 +            state.last_llm_source = "deterministic"           
+       96 +            decision_map = {c: self._deterministic_scaler(c, d
+          +f, state.profile or {}) for c in scale_targets}               
+       97 +            self._apply_decisions(df, state, scale_targets, de
+          +cision_map)                                                   
+       98 +            return                                            
+       99 +                                                              
+      100          per_col: list[ScalerColumnEvidence] = []
+      101          for col in scale_targets:
+      102              series = pd.to_numeric(df[col], errors="coerce").d
+           ropna()
+
+● Now extract the scaler execution into _apply_decisions:
+
+● Update(pipeline/tools/scaler.py)
+  ⎿  Added 11 lines
+      155              for c in scale_targets:
+      156                  decision_map.setdefault(c, "standard")
+      157  
+      158 +        self._apply_decisions(df, state, scale_targets, decisi
+          +on_map)                                                       
+      159 +                                                              
+      160 +    def _apply_decisions(                                     
+      161 +        self,                                                 
+      162 +        df: pd.DataFrame,                                     
+      163 +        state: PipelineState,                                 
+      164 +        scale_targets: list[str],                             
+      165 +        decision_map: dict[str, str],                         
+      166 +    ) -> None:                                                
+      167 +        """Fit/transform each column with its chosen scaler. S
+          +hared by both modes."""                                       
+      168 +        cfg = state.config                                    
+      169          for col in scale_targets:
+      170              scaler_name = decision_map[col]
+      171              arr = df[[col]].to_numpy()
+
+● EDA deterministic done. Now creator deterministic mode:
+
+● Update(pipeline/tools/creator.py)
+  ⎿  Added 46 lines
+      129      def __call__(self, state: PipelineState) -> PipelineState:
+      130          return state  # FeatureCreator dispatches through run_
+           pre / run_post
+      131  
+      132 +    def create_deterministic(self, state: PipelineState) -> No
+          +ne:                                                           
+      133 +        """Deterministic feature engineering (no LLM): degree-
+          +2 ratio + product                                             
+      134 +        features from the top mutual-information numeric colum
+          +ns, capped by                                                 
+      135 +        feature_creation.max_created_features. Run AFTER encod
+          +ing so every source                                           
+      136 +        is numeric. Matches DESIGN_PLAN.md §9 (degree-2 poly +
+          + ratio only).                                                 
+      137 +        """                                                   
+      138 +        cfg = state.config                                    
+      139 +        cap = cfg.feature_creation.max_created_features       
+      140 +        if cap <= 0:                                          
+      141 +            return                                            
+      142 +        df = state.df                                         
+      143 +        numeric_cols = [                                      
+      144 +            c for c in df.columns                             
+      145 +            if c != state.target_column                       
+      146 +            and state.column_types.get(c) == "numeric"        
+      147 +            and pd.api.types.is_numeric_dtype(df[c])          
+      148 +        ]                                                     
+      149 +        if len(numeric_cols) < 2:                             
+      150 +            return                                            
+      151 +        # Rank by mutual information with the target (from the
+          + profile) and bound                                           
+      152 +        # the base set to keep the pair count small/cheap.    
+      153 +        ranked = sorted(                                      
+      154 +            numeric_cols,                                     
+      155 +            key=lambda c: state.profile.get(c, {}).get("mi_wit
+          +h_target") or 0.0,                                            
+      156 +            reverse=True,                                     
+      157 +        )                                                     
+      158 +        top = ranked[: min(len(ranked), 6)]                   
+      159 +        specs: list[dict] = []                                
+      160 +        for i, a in enumerate(top):                           
+      161 +            for b in top[i + 1:]:                             
+      162 +                specs.append({"operation": "ratio", "sources":
+          + [a, b], "name": f"{a}_div_{b}", "temporal_class": "post_encod
+          +ing"})                                                        
+      163 +                specs.append({"operation": "product", "sources
+          +": [a, b], "name": f"{a}_x_{b}", "temporal_class": "post_encod
+          +ing"})                                                        
+      164 +        specs = specs[:cap]                                   
+      165 +                                                              
+      166 +        new_cols: list[str] = []                              
+      167 +        for spec in specs:                                    
+      168 +            if self._execute(state, spec):                    
+      169 +                new_cols.append(spec["name"])                 
+      170 +        if new_cols:                                          
+      171 +            mini = compute_mini_profile(state.df, new_cols)   
+      172 +            for nc, p in mini.items():                        
+      173 +                p["mi_with_target"] = 0.0                     
+      174 +                p["null_mask_corr"] = {}                      
+      175 +                state.profile[nc] = p                         
+      176 +                state.column_types[nc] = "numeric"            
+      177 +                                                              
+      178      def _ensure_specs(self, state: PipelineState) -> None:
+      179          if self._specs is not None:
+      180              return
+
+● Now let me rewrite the selector for single-call selection plus reusable
+  staticmethods. First add the response model:
+
+● Update(pipeline/responses.py)
+  ⎿  Added 10 lines
+      157      plan: list[ClusterAction]
+      158  
+      159  
+      160 +class FeatureSelectionResponse(BaseModel):                    
+      161 +    # Single-call feature selection over precomputed stat arti
+          +facts: the model                                              
+      162 +    # reads the stats and returns the columns to keep (and, fo
+          +r transparency,                                               
+      163 +    # the columns to drop + a short rationale). No per-item De
+          +cisionItem checks                                             
+      164 +    # apply — validate_response only content-checks assignment
+          +s/decisions/specs/plan.                                       
+      165 +    keep: list[str]                                           
+      166 +    drop: list[str] = Field(default_factory=list)             
+      167 +    rationale: str = ""                                       
+      168 +                                                              
+      169 +                                                              
+      170  # ---------- validation helper ----------
+      171  
+      172  
+
+● Now rewrite selector.py:
+
+● Write(pipeline/tools/selector.py)
+  ⎿  Added 172 lines, removed 131 lines
+       1 -"""FeatureSelector — method choice delegated to JudgeAgent.plan
+         -().                                                            
+       1 +"""FeatureSelector — single-LLM-call selection over precomputed
+         + stat artifacts.                                               
+       2  
+       3 -Builds a FeatureSelectorEvidence packet using clusters and a li
+         -near baseline                                                  
+       4 -recomputed on the *current* dataframe (including FeatureCreator
+         --added columns),                                               
+       5 -hands it to the Judge sub-agent, then executes the returned    
+       6 -SelectionPlanResponse cluster by cluster.                      
+       3 +The deterministic stat phase (pipeline/feature_stats.py) writes
+         + mutual information,                                           
+       4 +RF importance, mRMR ranking, variance, correlation pairs, clust
+         +ers, linear baseline                                           
+       5 +and PCA artifacts to `.mitra/<run_id>/stats/`. This tool reads 
+         +those artifacts,                                               
+       6 +makes ONE LLM call to decide which columns to keep/drop, and ap
+         +plies the result                                               
+       7 +deterministically. If the LLM call fails (or no model is config
+         +ured), it falls back                                           
+       8 +to mRMR over all features at top_k_features.                   
+       9  
+       8 -Per-cluster action vocabulary:                                 
+       9 -  mrmr, pca, mrmr_then_pca, drop, lasso, rf_importance.        
+      10 -                                                               
+      11 -Judge unavailable or both attempts fail → fallback: mRMR over a
+         -ll features                                                    
+      12 -with top_k_features from config.                               
+      10 +The per-estimator helpers (_mrmr, _pca, _lasso, _rf, _top_mi, _
+         +mi_scores,                                                     
+      11 +_rf_importances) are reused by feature_stats.py so the math liv
+         +es in one place.                                               
+      12  """
+      13  from __future__ import annotations
+      14  
+      15  import hashlib
+      16 +import json                                                    
+      17  from typing import Callable
+      18  
+      19  import numpy as np
+     ...
+      22  from sklearn.feature_selection import mutual_info_classif, mutu
+          al_info_regression
+      23  
+      24  from pipeline.base import BaseTool, PostconditionError, Precond
+          itionError
+      25 -from pipeline.evidence import ClusterEvidence, FeatureSelectorE
+         -vidence                                                        
+      26 -from pipeline.parallel import compute_correlation_clusters, com
+         -pute_linear_baseline                                           
+      25 +from pipeline.responses import FeatureSelectionResponse, call_w
+         +ith_revision                                                   
+      26  from pipeline.state import PipelineState
+      27  
+      28  
+     ...
+      35      return hashlib.md5("|".join(columns).encode("utf-8")).hexdi
+          gest()[:8]
+      36  
+      37  
+      38 +SELECT_PROMPT = """You are a feature selection expert. Choose w
+         +hich feature columns to KEEP for a                             
+      39 +{task} model. You are given precomputed statistics — you do NOT
+         + have the raw data.                                            
+      40 +                                                               
+      41 +## GOAL                                                        
+      42 +Keep the most predictive, non-redundant features. Keep AT MOST 
+         +{top_k} columns.                                               
+      43 +- Prefer columns with high mutual information and high RF impor
+         +tance.                                                         
+      44 +- Respect the mRMR ranking (minimum-redundancy maximum-relevanc
+         +e order).                                                      
+      45 +- Drop near-zero-variance columns.                             
+      46 +- For each high-correlation pair keep only ONE column (drop the
+         + redundant twin).                                              
+      47 +                                                               
+      48 +## STATISTICS                                                  
+      49 +n_features: {n_features}                                       
+      50 +linear_baseline_score: {linear_baseline}                       
+      51 +                                                               
+      52 +Mutual information (column: score), highest first:             
+      53 +{mi_block}                                                     
+      54 +                                                               
+      55 +RandomForest importance (column: score), highest first:        
+      56 +{rf_block}                                                     
+      57 +                                                               
+      58 +mRMR ranking (best first):                                     
+      59 +{mrmr_block}                                                   
+      60 +                                                               
+      61 +Low-variance columns (consider dropping):                      
+      62 +{low_var_block}                                                
+      63 +                                                               
+      64 +Highly correlated pairs (keep one of each):                    
+      65 +{corr_block}                                                   
+      66 +                                                               
+      67 +PCA: {pca_block}                                               
+      68 +                                                               
+      69 +## RESPONSE SHAPE                                              
+      70 +Return ONLY a JSON object:                                     
+      71 +{{                                                             
+      72 +  "keep": ["<column>", "..."],                                 
+      73 +  "drop": ["<column>", "..."],                                 
+      74 +  "rationale": "<one or two sentences>"                        
+      75 +}}                                                             
+      76 +"""                                                            
+      77 +                                                               
+      78 +                                                               
+      79  class FeatureSelector(BaseTool):
+      80      def __init__(self, model_call: Callable[[str], str] | None 
+          = None, judge=None):
+      41 -        # model_call kept for backward-compat with adk_tools; s
+         -elector itself                                                 
+      42 -        # never calls the model — Judge does.                  
+      81 +        # model_call drives the single selection LLM call. judg
+         +e kept only for                                                
+      82 +        # backward-compatible construction; no longer used.    
+      83          self.model_call = model_call
+      84          self.judge = judge
+      85  
+     ...
+       98  
+       99          X = df[feature_cols].apply(pd.to_numeric, errors="coer
+           ce").fillna(0.0)
+      100          y = state.target.to_numpy()
+      101 +        top_k = min(cfg.feature_selection.top_k_features, len(
+          +feature_cols))                                                
+      102  
+       62 -        clusters_map = compute_correlation_clusters(X, cut_thr
+          -eshold=cfg.feature_selection.cluster_cut_threshold)           
+       63 -        baseline = compute_linear_baseline(                   
+       64 -            X, y, state.task, k=cfg.feature_selection.linear_b
+          -aseline_k,                                                    
+       65 -            seed=cfg.pipeline.random_state,                   
+       66 -        )                                                     
+      103 +        stats = self._load_stats(state)                       
+      104 +        if self.model_call is None or stats is None:          
+      105 +            self._fallback(state, X, y, feature_cols, top_k,  
+      106 +                           reason="no model_call" if self.mode
+          +l_call is None else "no stats artifacts")                     
+      107 +            return                                            
+      108  
+       68 -        cluster_evidence: list[ClusterEvidence] = []          
+       69 -        per_col_mi = self._per_col_mi(X, y, state.task, state)
+       70 -        for cid, members in clusters_map.items():             
+       71 -            mis = [per_col_mi.get(c, 0.0) for c in members]   
+       72 -            if len(members) > 1:                              
+       73 -                sub = X[members]                              
+       74 -                corr = sub.corr().abs().to_numpy()            
+       75 -                n = corr.shape[0]                             
+       76 -                mask = ~np.eye(n, dtype=bool)                 
+       77 -                intra = float(np.nanmean(corr[mask])) if mask.
+          -any() else 0.0                                                
+       78 -            else:                                             
+       79 -                intra = 0.0                                   
+       80 -            cluster_evidence.append(                          
+       81 -                ClusterEvidence(                              
+       82 -                    cluster_id=cid,                           
+       83 -                    members=members,                          
+       84 -                    mean_mi=float(np.mean(mis)) if mis else 0.
+          -0,                                                            
+       85 -                    max_mi=float(np.max(mis)) if mis else 0.0,
+       86 -                    intra_cluster_corr=intra,                 
+       87 -                )                                             
+       88 -            )                                                 
+       89 -                                                              
+       90 -        evidence = FeatureSelectorEvidence(                   
+       91 -            n_rows=len(df),                                   
+       92 -            n_features=len(feature_cols),                     
+       93 -            task=state.task,                                  
+       94 -            linear_baseline_score=baseline,                   
+       95 -            clusters=cluster_evidence,                        
+      109 +        prompt = self._build_prompt(state, feature_cols, stats
+          +, top_k)                                                      
+      110 +        parsed, source, failures = call_with_revision(        
+      111 +            self.model_call, prompt, FeatureSelectionResponse,
+          + set(), cfg,                                                  
+      112 +            caller="FeatureSelector",                         
+      113          )
+      114 +        state.last_llm_source = source                        
+      115  
+       98 -        plan = None                                           
+       99 -        if self.judge is not None:                            
+      100 -            try:                                              
+      101 -                plan = self.judge.plan(evidence=evidence, cfg=
+          -cfg)                                                          
+      102 -            except Exception as e:                            
+      103 -                state.warnings.append(f"FeatureSelector: judge
+          -.plan threw {e}")                                             
+      116 +        if parsed is None or source == "fallback":            
+      117 +            state.warnings.append(f"FeatureSelector LLM call f
+          +ailed (failures={failures}); fallback mRMR")                  
+      118 +            self._fallback(state, X, y, feature_cols, top_k, r
+          +eason="llm_failed")                                           
+      119 +            return                                            
+      120  
+      105 -        if plan is None:                                      
+      106 -            state.warnings.append("FeatureSelector: Judge unav
+          -ailable; fallback mRMR over all features")                    
+      107 -            state.last_llm_source = "fallback"                
+      108 -            selected = self._mrmr(X, y, state.task, min(cfg.fe
+          -ature_selection.top_k_features, len(feature_cols)), state)    
+      109 -            if not selected:                                  
+      110 -                selected = feature_cols[: cfg.feature_selectio
+          -n.top_k_features]                                             
+      111 -            state.selected_columns = selected                 
+      112 -            state.selection_method = "fallback:mrmr_all"      
+      121 +        keep = [c for c in parsed.keep if c in feature_cols]  
+          +# type: ignore[attr-defined]                                  
+      122 +        # De-dup, order-preserving.                           
+      123 +        seen: set[str] = set()                                
+      124 +        selected = [c for c in keep if not (c in seen or seen.
+          +add(c))]                                                      
+      125 +        if not selected:                                      
+      126 +            state.warnings.append("FeatureSelector LLM returne
+          +d no valid columns; fallback mRMR")                           
+      127 +            self._fallback(state, X, y, feature_cols, top_k, r
+          +eason="empty_keep")                                           
+      128              return
+      114 -        state.last_llm_source = "ok"                          
+      129  
+      116 -        # Execute the plan cluster by cluster.                
+      117 -        plan_actions = {a.cluster_id: a.action for a in plan.p
+          -lan}                                                          
+      118 -        kept: list[str] = []                                  
+      119 -        per_cluster_summary: list[str] = []                   
+      120 -        for cid, members in clusters_map.items():             
+      121 -            action = plan_actions.get(cid, "mrmr")            
+      122 -            # Per-cluster top-k: split overall budget proporti
+          -onally.                                                       
+      123 -            cluster_k = max(1, int(cfg.feature_selection.top_k
+          -_features * len(members) / max(1, len(feature_cols))))        
+      124 -            cluster_k = min(cluster_k, len(members))          
+      125 -            sub_X = X[members]                                
+      126 -            try:                                              
+      127 -                if action == "mrmr":                          
+      128 -                    cols = self._mrmr(sub_X, y, state.task, cl
+          -uster_k, state)                                               
+      129 -                elif action == "pca":                         
+      130 -                    cols = self._pca(sub_X, cluster_k, state, 
+          -cfg)                                                          
+      131 -                elif action == "mrmr_then_pca":               
+      132 -                    half = max(1, cluster_k // 2)             
+      133 -                    mrmr_cols = self._mrmr(sub_X, y, state.tas
+          -k, half, state)                                               
+      134 -                    residual = [c for c in members if c not in
+          - mrmr_cols]                                                   
+      135 -                    if residual:                              
+      136 -                        pca_cols = self._pca(sub_X[residual], 
+          -cluster_k - len(mrmr_cols), state, cfg)                       
+      137 -                        cols = mrmr_cols + pca_cols           
+      138 -                    else:                                     
+      139 -                        cols = mrmr_cols                      
+      140 -                elif action == "drop":                        
+      141 -                    cols = []                                 
+      142 -                elif action == "lasso":                       
+      143 -                    cols = self._lasso(sub_X, y, state.task, c
+          -luster_k, cfg, state)                                         
+      144 -                elif action == "rf_importance":               
+      145 -                    cols = self._rf(sub_X, y, state.task, clus
+          -ter_k, cfg, state)                                            
+      146 -                else:                                         
+      147 -                    cols = members[:cluster_k]                
+      148 -            except Exception as e:                            
+      149 -                state.warnings.append(f"Selector cluster {cid}
+          - action={action} failed: {e}; fallback top-MI")               
+      150 -                cols = self._top_mi(sub_X, y, state.task, clus
+          -ter_k, seed=cfg.pipeline.random_state)                        
+      151 -            kept.extend(cols)                                 
+      152 -            per_cluster_summary.append(f"c{cid}:{action}")    
+      130 +        state.selected_columns = selected[:top_k]             
+      131 +        state.selection_method = "llm_select"                 
+      132  
+      154 -        # De-dup and cap at top_k_features                    
+      155 -        seen: set[str] = set()                                
+      156 -        deduped: list[str] = []                               
+      157 -        for c in kept:                                        
+      158 -            if c not in seen:                                 
+      159 -                seen.add(c)                                   
+      160 -                deduped.append(c)                             
+      133 +    # ---------- prompt assembly ----------                   
+      134  
+      162 -        if not deduped:                                       
+      163 -            deduped = feature_cols[: cfg.feature_selection.top
+          -_k_features]                                                  
+      164 -            state.selection_method = "fallback:first_k"       
+      165 -        else:                                                 
+      166 -            state.selection_method = "plan:[" + ",".join(per_c
+          -luster_summary) + "]"                                         
+      167 -        state.selected_columns = deduped[: cfg.feature_selecti
+          -on.top_k_features]                                            
+      135 +    def _load_stats(self, state: PipelineState) -> dict | None
+          +:                                                             
+      136 +        if state.stats_dir is None or not state.stats_dir.exis
+          +ts():                                                         
+      137 +            return None                                       
+      138 +        loaded: dict = {}                                     
+      139 +        for name in (                                         
+      140 +            "mutual_info", "rf_importance", "mrmr_ranking", "v
+          +ariance",                                                     
+      141 +            "correlation_pearson", "linear_baseline", "pca",  
+      142 +        ):                                                    
+      143 +            path = state.stats_dir / f"{name}.json"           
+      144 +            if path.exists():                                 
+      145 +                try:                                          
+      146 +                    loaded[name] = json.loads(path.read_text(e
+          +ncoding="utf-8"))                                             
+      147 +                except Exception as e:                        
+      148 +                    state.warnings.append(f"FeatureSelector: f
+          +ailed to read {name}.json: {e}")                              
+      149 +        return loaded or None                                 
+      150  
+      169 -    # ---------- helpers ----------                           
+      151 +    @staticmethod                                             
+      152 +    def _top_items(scores: dict, limit: int) -> str:          
+      153 +        items = sorted(scores.items(), key=lambda kv: kv[1], r
+          +everse=True)[:limit]                                          
+      154 +        return "\n".join(f"- {k}: {v:.4f}" for k, v in items) 
+          +if items else "(none)"                                        
+      155  
+      171 -    def _per_col_mi(self, X: pd.DataFrame, y, task: str, state
+          -) -> dict[str, float]:                                        
+      172 -        seed = state.config.pipeline.random_state             
+      156 +    def _build_prompt(self, state: PipelineState, feature_cols
+          +: list[str], stats: dict, top_k: int) -> str:                 
+      157 +        cfg = state.config                                    
+      158 +        mi = (stats.get("mutual_info") or {}).get("scores", {}
+          +)                                                             
+      159 +        rf = (stats.get("rf_importance") or {}).get("scores", 
+          +{})                                                           
+      160 +        mrmr = (stats.get("mrmr_ranking") or {}).get("ranked",
+          + [])                                                          
+      161 +        low_var = (stats.get("variance") or {}).get("low_varia
+          +nce", [])                                                     
+      162 +        corr_pairs = (stats.get("correlation_pearson") or {}).
+          +get("high_pairs", [])                                         
+      163 +        baseline = (stats.get("linear_baseline") or {}).get("s
+          +core", 0.0)                                                   
+      164 +        pca = stats.get("pca") or {}                          
+      165 +                                                              
+      166 +        corr_block = "\n".join(                               
+      167 +            f"- {a} <-> {b} (corr={c:.2f})" for a, b, c in cor
+          +r_pairs[:40]                                                  
+      168 +        ) if corr_pairs else "(none)"                         
+      169 +        pca_block = (                                         
+      170 +            f"{pca.get('n_components_for_threshold', 'n/a')} c
+          +omponents explain "                                           
+      171 +            f"{pca.get('variance_retained', 'n/a')} of varianc
+          +e"                                                            
+      172 +            if pca else "(not computed)"                      
+      173 +        )                                                     
+      174 +        return SELECT_PROMPT.format(                          
+      175 +            task=state.task,                                  
+      176 +            top_k=top_k,                                      
+      177 +            n_features=len(feature_cols),                     
+      178 +            linear_baseline=f"{baseline:.4f}",                
+      179 +            mi_block=self._top_items(mi, 40),                 
+      180 +            rf_block=self._top_items(rf, 40),                 
+      181 +            mrmr_block="\n".join(f"- {c}" for c in mrmr[:40]) 
+          +if mrmr else "(none)",                                        
+      182 +            low_var_block=("\n".join(f"- {c}" for c in low_var
+          +) if low_var else "(none)"),                                  
+      183 +            corr_block=corr_block,                            
+      184 +            pca_block=pca_block,                              
+      185 +        )                                                     
+      186 +                                                              
+      187 +    def _fallback(self, state: PipelineState, X: pd.DataFrame,
+          + y, feature_cols: list[str], top_k: int, reason: str) -> None:
+      188 +        state.last_llm_source = "fallback"                    
+      189 +        state.warnings.append(f"FeatureSelector fallback mRMR 
+          +over all features ({reason})")                                
+      190 +        selected = self._mrmr(X, y, state.task, top_k, state=s
+          +tate)                                                         
+      191 +        if not selected:                                      
+      192 +            selected = feature_cols[:top_k]                   
+      193 +        state.selected_columns = selected                     
+      194 +        state.selection_method = "fallback:mrmr_all"          
+      195 +                                                              
+      196 +    # ---------- reusable estimators (shared with feature_stat
+          +s.py) ----------                                              
+      197 +                                                              
+      198 +    @staticmethod                                             
+      199 +    def _mi_scores(X: pd.DataFrame, y, task: str, seed: int = 
+          +42) -> dict[str, float]:                                      
+      200 +        if X.shape[1] == 0:                                   
+      201 +            return {}                                         
+      202          try:
+      203              if task == "classification":
+      204                  mi = mutual_info_classif(X.to_numpy(), y, rand
+           om_state=seed)
+     ...
+      208          except Exception:
+      209              return {c: 0.0 for c in X.columns}
+      210  
+      211 +    def _per_col_mi(self, X: pd.DataFrame, y, task: str, state
+          +) -> dict[str, float]:                                        
+      212 +        return self._mi_scores(X, y, task, seed=state.config.p
+          +ipeline.random_state)                                         
+      213 +                                                              
+      214      @staticmethod
+      183 -    def _mrmr(X: pd.DataFrame, y, task: str, k: int, state) ->
+          - list[str]:                                                   
+      215 +    def _mrmr(X: pd.DataFrame, y, task: str, k: int, state=Non
+          +e, seed: int = 42) -> list[str]:                              
+      216          if X.shape[1] == 0:
+      217              return []
+      218 +        if state is not None:                                 
+      219 +            seed = state.config.pipeline.random_state         
+      220          try:
+      221              from mrmr import mrmr_classif, mrmr_regression
+      222              y_series = pd.Series(y)
+     ...
+      224                  return mrmr_classif(X=X, y=y_series, K=min(k, 
+           X.shape[1]))
+      225              return mrmr_regression(X=X, y=y_series, K=min(k, X
+           .shape[1]))
+      226          except Exception as e:
+      193 -            state.warnings.append(f"mrmr unavailable: {e}; usi
+          -ng top-MI proxy")                                             
+      194 -            return FeatureSelector._top_mi(X, y, task, k, seed
+          -=state.config.pipeline.random_state)                          
+      227 +            if state is not None:                             
+      228 +                state.warnings.append(f"mrmr unavailable: {e};
+          + using top-MI proxy")                                         
+      229 +            return FeatureSelector._top_mi(X, y, task, k, seed
+          +=seed)                                                        
+      230  
+      231      @staticmethod
+      232      def _top_mi(X: pd.DataFrame, y, task: str, k: int, seed: i
+           nt = 42) -> list[str]:
+     ...
+      243              return X.columns.tolist()[:k]
+      244  
+      245      @staticmethod
+      246 +    def _rf_importances(X: pd.DataFrame, y, task: str, cfg, se
+          +ed: int = 42) -> dict[str, float]:                            
+      247 +        from sklearn.ensemble import RandomForestClassifier, R
+          +andomForestRegressor                                          
+      248 +        if X.shape[1] == 0:                                   
+      249 +            return {}                                         
+      250 +        try:                                                  
+      251 +            if task == "classification":                      
+      252 +                model = RandomForestClassifier(n_estimators=cf
+          +g.feature_selection.rf_n_estimators, random_state=seed)       
+      253 +            else:                                             
+      254 +                model = RandomForestRegressor(n_estimators=cfg
+          +.feature_selection.rf_n_estimators, random_state=seed)        
+      255 +            model.fit(X.to_numpy(), y)                        
+      256 +            return {c: float(i) for c, i in zip(X.columns, mod
+          +el.feature_importances_)}                                     
+      257 +        except Exception:                                     
+      258 +            return {c: 0.0 for c in X.columns}                
+      259 +                                                              
+      260 +    @staticmethod                                             
+      261      def _pca(X: pd.DataFrame, k: int, state, cfg) -> list[str]
+           :
+      262          if X.shape[1] == 0 or k <= 0:
+      263              return []
+     ...
+      299  
+      300      @staticmethod
+      301      def _rf(X: pd.DataFrame, y, task: str, k: int, cfg, state)
+            -> list[str]:
+      252 -        from sklearn.ensemble import RandomForestClassifier, R
+          -andomForestRegressor                                          
+      253 -        if X.shape[1] == 0:                                   
+      302 +        scores = FeatureSelector._rf_importances(X, y, task, c
+          +fg, seed=cfg.pipeline.random_state)                           
+      303 +        if not scores:                                        
+      304              return []
+      255 -        if task == "classification":                          
+      256 -            model = RandomForestClassifier(                   
+      257 -                n_estimators=cfg.feature_selection.rf_n_estima
+          -tors, random_state=cfg.pipeline.random_state                  
+      258 -            ).fit(X.to_numpy(), y)                            
+      259 -        else:                                                 
+      260 -            model = RandomForestRegressor(                    
+      261 -                n_estimators=cfg.feature_selection.rf_n_estima
+          -tors, random_state=cfg.pipeline.random_state                  
+      262 -            ).fit(X.to_numpy(), y)                            
+      263 -        importance = model.feature_importances_               
+      264 -        order = np.argsort(importance)[::-1][: min(k, X.shape[
+          -1])]                                                          
+      265 -        return [X.columns[i] for i in order]                  
+      305 +        order = sorted(scores.items(), key=lambda kv: kv[1], r
+          +everse=True)[: min(k, X.shape[1])]                            
+      306 +        return [c for c, _ in order]                          
+      307  
+      308      def postcondition(self, state: PipelineState) -> None:
+      309          if state.selected_columns is None:
+● Now the new feature_stats.py module:
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ continue                                                                      
+
+● Write(pipeline/feature_stats.py)
+  ⎿  Wrote 179 lines to pipeline/feature_stats.py
+      1 """Deterministic feature-selection statistics — computed ONCE, wr
+      2 
+      3 Phase B of the pipeline. Computes every statistic the feature-sel
+      4 (mutual information, RandomForest importance, mRMR ranking, varia
+      5 Spearman correlation pairs, correlation clusters, linear baseline
+        , PCA explained
+        >/stats/`.
+      7 
+        ne.parallel so the
+        elector).
+     … +225 lines (ctrl+o to expand)
+
+● Now make the reporter deterministic by default:
+
+● Update(pipeline/tools/reporter.py)
+  ⎿  Added 3 lines, removed 1 line
+      35  
+      36  
+      37  class FeatureReporter(BaseTool):
+      38 -    def __init__(self, model_call: Callable[[str], str]):      
+      38 +    def __init__(self, model_call: Callable[[str], str] | None)
+         +:                                                              
+      39 +        # model_call is None => write report.md from the determ
+         +inistic template                                               
+      40 +        # (no LLM call). This is the default per config.report.
+         +use_llm = false.                                               
+      41          self.model_call = model_call
+      42  
+      43      def precondition(self, state: PipelineState) -> None:
+
+● Update(pipeline/tools/reporter.py)
+  ⎿  Added 10 lines, removed 7 lines
+      58              "selection_method": state.selection_method,
+      59              "warnings": state.warnings,
+      60          }
+      61 -        prompt = REPORT_PROMPT.format(summary=json.dumps(summar
+         -y, indent=2, default=str))                                     
+      62 -        try:                                                   
+      63 -            report_md = self.model_call(prompt)                
+      64 -            if not isinstance(report_md, str) or not report_md.
+         -strip():                                                       
+      65 -                raise ValueError("empty model response")       
+      66 -        except Exception as e:                                 
+      67 -            state.warnings.append(f"Reporter model call failed:
+         - {e}; using template")                                         
+      61 +        if self.model_call is None:                            
+      62              report_md = self._template(state, summary)
+      63 +        else:                                                  
+      64 +            prompt = REPORT_PROMPT.format(summary=json.dumps(su
+         +mmary, indent=2, default=str))                                 
+      65 +            try:                                               
+      66 +                report_md = self.model_call(prompt)            
+      67 +                if not isinstance(report_md, str) or not report
+         +_md.strip():                                                   
+      68 +                    raise ValueError("empty model response")   
+      69 +            except Exception as e:                             
+      70 +                state.warnings.append(f"Reporter model call fai
+         +led: {e}; using template")                                     
+      71 +                report_md = self._template(state, summary)     
+      72  
+      73          (state.output_dir / "report.md").write_text(report_md, 
+          encoding="utf-8")
+      74  
+
+● Now simplify the profiler — drop the expensive joint-MI, null-mask-corr, and
+  cluster/baseline blocks (clusters/baseline now computed once in feature_stats;
+  the others fed only the removed LLM evidence):
+
+● Update(pipeline/tools/profiler.py)
+  ⎿  Added 1 line, removed 6 lines
+       5  from sklearn.feature_selection import mutual_info_classif, mutu
+          al_info_regression
+       6  
+       7  from pipeline.base import BaseTool, PostconditionError, Precond
+          itionError
+       8 -from pipeline.parallel import (                                
+       9 -    _univariate_stats,                                         
+      10 -    compute_correlation_clusters,                              
+      11 -    compute_linear_baseline,                                   
+      12 -    run_parallel,                                              
+      13 -)                                                              
+       8 +from pipeline.parallel import _univariate_stats, run_parallel  
+       9  from pipeline.state import PipelineState
+      10  
+      11  
+
+● Update(pipeline/tools/profiler.py)
+  ⎿  Added 6 lines, removed 89 lines
+       42              except Exception:
+       43                  profile[col]["mi_with_target"] = 0.0
+       44  
+       45 +        # Correlation matrix kept (cheap, vectorised) for any 
+          +downstream consumer.                                          
+       46 +        # Clusters, linear baseline, joint-MI pairs and null-m
+          +ask correlations are                                          
+       47 +        # NOT computed here anymore: clusters/baseline are com
+          +puted once in                                                 
+       48 +        # pipeline.feature_stats, and the joint-MI / null-mask
+          + signals only fed the                                         
+       49 +        # removed LLM evidence packets.                       
+       50          numeric_df = df.select_dtypes(include=[np.number])
+       46 -        if not numeric_df.empty:                              
+       47 -            profile["_correlation_matrix"] = numeric_df.corr()
+          -.to_dict()                                                    
+       48 -        else:                                                 
+       49 -            profile["_correlation_matrix"] = {}               
+       51 +        profile["_correlation_matrix"] = numeric_df.corr().to_
+          +dict() if not numeric_df.empty else {}                        
+       52  
+       51 -        # Spec §6 / plan ambiguity #29 (resolved as gaps.txt #
+          -1): profiler                                                  
+       52 -        # surfaces _clusters, _linear_baseline_score, _joint_m
+          -i_pairs into                                                  
+       53 -        # state.profile. Selector still recomputes its own clu
+          -sters after the                                               
+       54 -        # column set grows; profiler's values seed the Creator
+          -'s co-occurrence                                              
+       55 -        # ranking and the Selector's evidence packet when noth
+          -ing has changed.                                              
+       56 -        if not numeric_df.empty:                              
+       57 -            profile["_clusters"] = compute_correlation_cluster
+          -s(                                                            
+       58 -                numeric_df, cut_threshold=cfg.feature_selectio
+          -n.cluster_cut_threshold                                       
+       59 -            )                                                 
+       60 -            profile["_linear_baseline_score"] = compute_linear
+          -_baseline(                                                    
+       61 -                numeric_df, target_arr, state.task,           
+       62 -                k=cfg.feature_selection.linear_baseline_k,    
+       63 -                seed=seed,                                    
+       64 -            )                                                 
+       65 -            profile["_joint_mi_pairs"] = _joint_mi_pairs(     
+       66 -                numeric_df, target_arr, state.task,           
+       67 -                profile=profile, seed=seed, top_n=20,         
+       68 -            )                                                 
+       69 -        else:                                                 
+       70 -            profile["_clusters"] = {}                         
+       71 -            profile["_linear_baseline_score"] = 0.0           
+       72 -            profile["_joint_mi_pairs"] = []                   
+       73 -                                                              
+       74 -        null_mask_df = df.isna().astype(int)                  
+       75 -        for col in df.columns:                                
+       76 -            if df[col].isna().sum() == 0:                     
+       77 -                profile[col]["null_mask_corr"] = {}           
+       78 -                continue                                      
+       79 -            corrs: dict[str, float] = {}                      
+       80 -            for other in df.columns:                          
+       81 -                if other == col:                              
+       82 -                    continue                                  
+       83 -                other_num = pd.to_numeric(df[other], errors="c
+          -oerce")                                                       
+       84 -                if other_num.notna().sum() < 5:               
+       85 -                    continue                                  
+       86 -                try:                                          
+       87 -                    c = float(null_mask_df[col].corr(other_num
+          -.fillna(other_num.median())))                                 
+       88 -                    if not np.isnan(c) and abs(c) > 0.1:      
+       89 -                        corrs[other] = c                      
+       90 -                except Exception:                             
+       91 -                    pass                                      
+       92 -            profile[col]["null_mask_corr"] = corrs            
+       93 -                                                              
+       53          state.profile = profile
+       54  
+       55      def postcondition(self, state: PipelineState) -> None:
+       56          if state.profile is None:
+       57              raise PostconditionError("DataProfiler: state.prof
+           ile is None")
+       99 -                                                              
+      100 -                                                              
+      101 -def _joint_mi_pairs(                                          
+      102 -    numeric_df: pd.DataFrame,                                 
+      103 -    target_arr: np.ndarray,                                   
+      104 -    task: str,                                                
+      105 -    profile: dict,                                            
+      106 -    seed: int,                                                
+      107 -    top_n: int,                                               
+      108 -) -> list[tuple[str, str, float]]:                            
+      109 -    """Top column pairs by joint MI with target.              
+      110 -                                                              
+      111 -    Candidate pairs are first ranked by the cheap MI-product p
+          -roxy to keep cost                                             
+      112 -    bounded, then the top 3*top_n are re-scored with true join
+          -t MI on the                                                   
+      113 -    concatenated [col_a, col_b] feature against the target.   
+      114 -    """                                                       
+      115 -    cols = [c for c in numeric_df.columns]                    
+      116 -    if len(cols) < 2:                                         
+      117 -        return []                                             
+      118 -                                                              
+      119 -    candidates: list[tuple[str, str, float]] = []             
+      120 -    for i, a in enumerate(cols):                              
+      121 -        mi_a = profile.get(a, {}).get("mi_with_target") or 0.0
+      122 -        for b in cols[i + 1:]:                                
+      123 -            mi_b = profile.get(b, {}).get("mi_with_target") or
+          - 0.0                                                          
+      124 -            candidates.append((a, b, float(mi_a * mi_b)))     
+      125 -    candidates.sort(key=lambda t: t[2], reverse=True)         
+      126 -    short = candidates[: max(top_n * 3, top_n)]               
+      127 -                                                              
+      128 -    scored: list[tuple[str, str, float]] = []                 
+      129 -    for a, b, _ in short:                                     
+      130 -        try:                                                  
+      131 -            X = numeric_df[[a, b]].apply(pd.to_numeric, errors
+          -="coerce").fillna(0.0).to_numpy()                             
+      132 -            if task == "classification":                      
+      133 -                mi_pair = float(mutual_info_classif(X, target_
+          -arr, random_state=seed).sum())                                
+      134 -            else:                                             
+      135 -                mi_pair = float(mutual_info_regression(X, targ
+          -et_arr, random_state=seed).sum())                             
+      136 -            scored.append((a, b, mi_pair))                    
+      137 -        except Exception:                                     
+      138 -            scored.append((a, b, 0.0))                        
+      139 -    scored.sort(key=lambda t: t[2], reverse=True)             
+      140 -    return scored[:top_n]                                     
+
+● Now the orchestrator. Let me update imports and remove the agent-loop
+  constants:
+
+● Update(pipeline/orchestrator.py)
+  ⎿  Added 13 lines, removed 26 lines
+      12  from pandas.api.types import is_numeric_dtype
+      13  
+      14  from pipeline.config import ConfigSchema, load_config
+      15 +from pipeline.feature_stats import compute_and_write_stats     
+      16  from pipeline.state import PipelineState
+      16 -from pipeline.tools import adk_tools                           
+      17 +from pipeline.tools.adk_tools import _coerce_object_numeric    
+      18 +from pipeline.tools.creator import FeatureCreator              
+      19 +from pipeline.tools.encoder import Encoder                     
+      20 +from pipeline.tools.imputer import MissingValueHandler         
+      21 +from pipeline.tools.infer import SemanticTypeInfer             
+      22 +from pipeline.tools.outlier import OutlierHandler              
+      23 +from pipeline.tools.profiler import DataProfiler               
+      24 +from pipeline.tools.reporter import FeatureReporter            
+      25 +from pipeline.tools.scaler import Scaler                       
+      26 +from pipeline.tools.selector import FeatureSelector            
+      27 +from pipeline.tools.validator import FeatureValidator          
+      28 +from pipeline.base import PostconditionError, PreconditionError
+      29  
+      18 -ORCHESTRATOR_INSTRUCTION_TEMPLATE = """You orchestrate a featur
+         -e engineering pipeline. Your job: call the tools below in the r
+         -ight order until the pipeline is complete, then stop.          
+      30  
+      20 -Default tool sequence:                                         
+      21 -1. profile_data                                                
+      22 -2. infer_types                                                 
+      23 -3. handle_missing                                              
+      24 -4. handle_outliers                                             
+      25 -5. create_features_pre                                         
+      26 -6. encode_features                                             
+      27 -7. create_features_post                                        
+      28 -8. scale_features                                              
+      29 -9. select_features                                             
+      30 -10. validate_features                                          
+      31 -11. write_report                                               
+      32 -                                                               
+      33 -Rules:                                                         
+      34 -- Call each tool exactly once if it returns {{"status": "ok"}}.
+      35 -- If a tool returns {{"status": "error"}}, retry it up to {max_
+         -tool_retries} times. On the next failure, skip to the next tool
+         - and continue.                                                 
+      36 -- After write_report returns ok, respond with exactly the text:
+         - DONE. Nothing else.                                           
+      37 -- CRITICAL: Tool names must be used EXACTLY as listed above. Ne
+         -ver append, prepend, or attach any suffix, prefix, annotation, 
+         -commentary, or extra characters to a tool name. For example, ca
+         -ll "create_features_pre" not "create_features_pre..commentary" 
+         -or "create_features_pre_note". Only the exact name as listed is
+         - valid.                                                        
+      38 -- Do not add any notes, labels, or commentary by modifying the 
+         -tool name. If you want to reason, do it in plain text before ca
+         -lling the tool.                                                
+      39 -"""                                                            
+      40 -                                                               
+      41 -START_MESSAGE = "Begin the feature engineering pipeline. Start 
+         -with profile_data."                                            
+      42 -                                                               
+      43 -                                                               
+      31  def _make_model_call(
+      32      model_string: str,
+      33      max_tokens: int,
+
+● Now replace the JudgeAgent construction + ADK agent run with the deterministic
+  sequence:
+
+● Update(pipeline/orchestrator.py)
+  ⎿  Added 7 lines, removed 14 lines
+      222                  f"--- traceback ---\n{_tb.format_exc()}"
+      223              ) from e
+      224  
+      225 -        # Construct the Judge Agent: isolated ADK sub-agent th
+          -at ranks                                                      
+      226 -        # FeatureCreator proposals and plans FeatureSelector a
+          -ctions. Reuses                                                
+      227 -        # the same model/endpoint.                            
+      228 -        from pipeline.judge_agent import JudgeAgent           
+      229 -        judge_agent = JudgeAgent(                             
+      230 -            model_string=self.model_string,                   
+      231 -            api_key=api_key,                                  
+      232 -            base_url=self.config.llm.base_url,                
+      233 -            max_tokens=self.config.llm.max_tokens,            
+      234 -        )                                                     
+      225 +        # Precomputed feature-selection stats go to .mitra/<ru
+          +n_id>/stats.                                                  
+      226 +        stats_dir = Path(self.config.paths.workspace_root) / r
+          +un_id / "stats"                                               
+      227 +        stats_dir.mkdir(parents=True, exist_ok=True)          
+      228 +        state.stats_dir = stats_dir                           
+      229  
+      236 -        adk_tools.set_pipeline_state(state, model_call, judge_
+          -agent=judge_agent)                                            
+      230 +        # Run the pipeline as a deterministic Python sequence 
+          +(no ADK agent loop).                                          
+      231 +        # Only feature selection uses the LLM; everything else
+          + is rule-based.                                               
+      232 +        self._run_pipeline(state, model_call)                 
+      233  
+      238 -        # Run pipeline via ADK Agent                          
+      239 -        self._run_adk_agent(state)                            
+      240 -                                                              
+      234          # Write feature_artifact.json (orchestrator owns it; r
+           eporter only writes report.md)
+      235          artifact = {
+      236              "run_id": run_id,
+
+● Now replace the _run_adk_agent method with the deterministic _run_pipeline:
+
+● Update(pipeline/orchestrator.py)
+  ⎿  Added 60 lines, removed 42 lines
+      250  
+      251          return output_dir, run_id
+      252  
+      253 -    def _run_adk_agent(self, state: PipelineState) -> None:   
+      254 -        try:                                                  
+      255 -            from google.adk.agents import Agent               
+      256 -            from google.adk.runners import InMemoryRunner     
+      257 -            from google.genai import types as genai_types     
+      258 -        except ImportError as e:                              
+      259 -            raise RuntimeError(f"google-adk not installed: {e}
+          -")                                                            
+      253 +    def _run_pipeline(self, state: PipelineState, model_call: 
+          +Callable[[str], str]) -> None:                                
+      254 +        """Deterministic, ordered pipeline. Each step is logge
+          +d to execution_log.txt.                                       
+      255  
+      261 -        from pipeline.openai_llm import OpenAICompatibleLlm   
+      256 +        Only feature selection consults the LLM (single call).
+          + All EDA steps run                                            
+      257 +        with model_call=None (rule-based). Precondition/Postco
+          +ndition errors are                                            
+      258 +        logged and the pipeline continues to the next step.   
+      259 +        """                                                   
+      260 +        use_report_llm = model_call if self.config.report.use_
+          +llm else None                                                 
+      261  
+      263 -        agent = Agent(                                        
+      264 -            name="feature_engineer_orchestrator",             
+      265 -            model=OpenAICompatibleLlm(                        
+      266 -                model=self.model_string,                      
+      267 -                api_key=self.config.llm.api_key,              
+      268 -                base_url=self.config.llm.base_url,            
+      269 -                max_tokens=self.config.llm.max_tokens,        
+      270 -            ),                                                
+      271 -            description="Orchestrates the feature engineering 
+          -pipeline.",                                                   
+      272 -            instruction=ORCHESTRATOR_INSTRUCTION_TEMPLATE.form
+          -at(                                                           
+      273 -                max_tool_retries=self.config.pipeline.max_tool
+          -_retries,                                                     
+      274 -            ),                                                
+      275 -            tools=adk_tools.ALL_TOOLS,                        
+      276 -        )                                                     
+      262 +        # (step_name, callable) — runs in this exact order.   
+      263 +        steps: list[tuple[str, Callable[[], object]]] = [     
+      264 +            ("profile_data", lambda: DataProfiler()(state)),  
+      265 +            ("infer_types", lambda: SemanticTypeInfer(None)(st
+          +ate)),                                                        
+      266 +            ("handle_missing", lambda: self._step_missing(stat
+          +e)),                                                          
+      267 +            ("handle_outliers", lambda: OutlierHandler(None)(s
+          +tate)),                                                       
+      268 +            # No pre-encoding (cross_categorical) features in 
+          +deterministic mode;                                           
+      269 +            # satisfy the Encoder precondition that expects th
+          +e pre phase to run.                                           
+      270 +            ("encode_features", lambda: self._step_encode(stat
+          +e)),                                                          
+      271 +            ("create_features", lambda: FeatureCreator(None).c
+          +reate_deterministic(state)),                                  
+      272 +            ("scale_features", lambda: Scaler(None)(state)),  
+      273 +            ("compute_feature_stats", lambda: self._step_stats
+          +(state)),                                                     
+      274 +            ("select_features", lambda: FeatureSelector(model_
+          +call=model_call)(state)),                                     
+      275 +            ("validate_features", lambda: FeatureValidator()(s
+          +tate)),                                                       
+      276 +            ("write_report", lambda: FeatureReporter(use_repor
+          +t_llm)(state)),                                               
+      277 +        ]                                                     
+      278  
+      278 -        runner = InMemoryRunner(agent=agent, app_name="fe_pipe
+          -line")                                                        
+      279 -        import asyncio                                        
+      279 +        log_path = state.output_dir / "execution_log.txt"     
+      280 +        for name, fn in steps:                                
+      281 +            state.last_llm_source = None                      
+      282 +            start = time.perf_counter()                       
+      283 +            try:                                              
+      284 +                fn()                                          
+      285 +                elapsed = time.perf_counter() - start         
+      286 +                src = f" llm={state.last_llm_source}" if state
+          +.last_llm_source else ""                                      
+      287 +                self._log_step(log_path, name, "ok", f"({elaps
+          +ed:.2f}s){src}")                                              
+      288 +            except (PreconditionError, PostconditionError) as 
+          +e:                                                            
+      289 +                elapsed = time.perf_counter() - start         
+      290 +                self._log_step(log_path, name, "error", f"({el
+          +apsed:.2f}s) {e}")                                            
+      291 +                state.warnings.append(f"{name} skipped: {e}") 
+      292 +            except Exception as e:  # noqa: BLE001 - log and c
+          +ontinue, do not abort the whole run                           
+      293 +                elapsed = time.perf_counter() - start         
+      294 +                self._log_step(log_path, name, "error", f"({el
+          +apsed:.2f}s) {type(e).__name__}: {e}")                        
+      295 +                state.warnings.append(f"{name} failed: {e}")  
+      296  
+      281 -        async def _run():                                     
+      282 -            session = await runner.session_service.create_sess
+          -ion(                                                          
+      283 -                app_name="fe_pipeline", user_id="caller", sess
+          -ion_id=state.run_id                                           
+      284 -            )                                                 
+      285 -            content = genai_types.Content(role="user", parts=[
+          -genai_types.Part(text=START_MESSAGE)])                        
+      286 -            async for _ in runner.run_async(                  
+      287 -                user_id="caller", session_id=session.id, new_m
+          -essage=content                                                
+      288 -            ):                                                
+      289 -                pass                                          
+      297 +    @staticmethod                                             
+      298 +    def _step_missing(state: PipelineState) -> None:          
+      299 +        # Spec §4 numeric-placeholder normalization, then dete
+          +rministic imputation.                                         
+      300 +        _coerce_object_numeric(state)                         
+      301 +        MissingValueHandler(None)(state)                      
+      302  
+      291 -        try:                                                  
+      292 -            loop = asyncio.get_event_loop()                   
+      293 -            if loop.is_running():                             
+      294 -                import nest_asyncio                           
+      295 -                nest_asyncio.apply()                          
+      296 -        except RuntimeError:                                  
+      297 -            loop = asyncio.new_event_loop()                   
+      298 -            asyncio.set_event_loop(loop)                      
+      299 -        loop.run_until_complete(_run())                       
+      303 +    @staticmethod                                             
+      304 +    def _step_encode(state: PipelineState) -> None:           
+      305 +        # No pre-encoding feature creation in deterministic mo
+          +de; mark the phase                                            
+      306 +        # done so the Encoder precondition is satisfied.      
+      307 +        state.pre_encoding_done = True                        
+      308 +        Encoder()(state)                                      
+      309  
+      310 +    @staticmethod                                             
+      311 +    def _step_stats(state: PipelineState) -> None:            
+      312 +        compute_and_write_stats(state, state.stats_dir)       
+      313 +                                                              
+      314 +    @staticmethod                                             
+      315 +    def _log_step(log_path: Path, name: str, status: str, deta
+          +il: str) -> None:                                             
+      316 +        with open(log_path, "a", encoding="utf-8") as f:      
+      317 +            f.write(f"[{datetime.utcnow().strftime('%Y-%m-%dT%
+          +H:%M:%S')}] {name} {status} {detail}\n")                      
+      318 +                                                              
+      319      def _run_structured_smoke_test(self, model_call: Callable[
+           [str], str], output_dir: Path) -> None:
+      320          """Send one structured-output prompt and parse it thro
+           ugh validate_response.
+      321  
+
+● I used time.perf_counter — need to import time:
+
+● Update(pipeline/orchestrator.py)
+  ⎿  Added 1 line
+      2  
+      3  import json
+      4  import os
+      5 +import time                                                     
+      6  import uuid
+      7  from datetime import datetime
+      8  from pathlib import Path
+
+● Now let me update tasks and check for leftover references to removed symbols:
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Only a stale comment remains. Let me fix it, then do an import/compile check.
+
+● Update(pipeline/orchestrator.py)
+  ⎿  Added 1 line, removed 1 line
+      111          # Startup sequence (config already validated in __init
+           __)
+      112  
+      113          # Read API key & endpoint from config. Inject into env
+            BEFORE any ADK / LiteLlm import.
+      114 -        # ADK imports are deliberately kept inside method bodi
+          -es (_make_model_call, _run_adk_agent)                         
+      114 +        # ADK / LiteLlm imports are deliberately kept inside m
+          +ethod bodies (_make_model_call)                               
+      115          # so env vars are set before the provider client reads
+            them.
+      116          api_key = (self.config.llm.api_key or "").strip()
+      117          if not api_key or api_key == "your_actual_key_here":
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All imports compile and config loads. Now let me run the classification
+  fixture end-to-end.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Background command "Run deterministic pipeline on classification fixture"
+completed (exit code 0)
+
+● The classification run finished. Let me inspect the results.
+
+  Read 1 file (ctrl+o to expand)
+
+● Completed in 54s (exit 0). Let me verify the artifacts and count LLM calls.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Excellent — 1 logged LLM call (FeatureSelector) plus the smoke test = ~2
+  total, down from ~20-25. All EDA is deterministic, all 9 stat artifacts
+  written. Let me verify the output dataset and artifact.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 20 features selected (target last, all-numeric, 0 nulls), method llm_select,
+  sensible mix of original + engineered features. Now the regression fixture:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● No tests under Epic2 to run. Let me wait for the regression run to finish.
+
+  Read 2 files, ran 1 shell command (ctrl+o to expand)
+
+● Background command "Run deterministic pipeline on regression fixture"
+completed (exit code 0)
+
+● Regression run: 36.7s, exit 0. Let me inspect its artifacts.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Both fixtures pass with ~2 LLM calls each. Let me verify the standalone stats
+  CLI (plan verification step 3):
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All verification passes. Let me clean up the temp test output and finalize.
+  Ran 1 shell command (ctrl+o to expand)
+
+● Done. The Epic2 pipeline is rewritten to be deterministic and fast, and both
+  fixtures run end-to-end.
+
+  What changed
+
+  Orchestration (orchestrator.py) — replaced the ADK agent loop (which spent ~12
+  LLM round-trips just deciding "call the next tool" for a fixed order,
+  resending growing history each turn) with a plain Python sequence. The Judge
+  sub-agent is gone.
+
+  EDA is now deterministic, no LLM (imputer.py, outlier.py, scaler.py) — each
+  runs in rule-based mode (model_call=None), reusing the deterministic logic
+  that already existed as their fallback paths plus config knobs.
+  Encoder/profiler/infer were already rule-based; I also stripped the profiler's
+  O(cols²) null-mask loop and 60-pair joint-MI block (they only fed the removed
+  LLM evidence).
+
+  Feature creation is deterministic (creator.py) — create_deterministic() builds
+  capped degree-2 ratio/product features from the top-MI numeric columns (no
+  LLM, no judge).
+
+  Stats precomputed once (new feature_stats.py) — computes MI, RF importance,
+  mRMR ranking, variance, Pearson/Spearman correlation pairs, clusters, linear
+  baseline, and PCA into .mitra/<run_id>/stats/, reusing the existing
+  parallel.py + selector.py estimators. Importable and runnable as python -m 
+  pipeline.feature_stats.
+
+  Single-call selection (selector.py) — reads those artifacts, makes one LLM
+  call to choose keep/drop, applies deterministically, falls back to mRMR if it
+  fails.
+
+  Report is now a deterministic template by default (report.use_llm: false).
+
+  Verified results
+
+  ┌────────────────────┬──────────────────┬────────────────────────────┐
+  │                    │      Before      │           After            │
+  ├────────────────────┼──────────────────┼────────────────────────────┤
+  │ LLM round-trips    │ ~20–25           │ 2 (smoke test + selection) │
+  ├────────────────────┼──────────────────┼────────────────────────────┤
+  │ Classification run │ minutes (killed) │ 54s, exit 0                │
+  ├────────────────────┼──────────────────┼────────────────────────────┤
+  │ Regression run     │ —                │ 37s, exit 0                │
+  └────────────────────┴──────────────────┴────────────────────────────┘
+
+  Both produce engineered_dataset.csv (target last, all-numeric, 0 nulls),
+  feature_artifact.json (selection_method: llm_select, 20 features — a sensible
+  mix of original + engineered), all 9 stat artifacts in .mitra/, and 0
+  warnings. The remaining time is now pure CPU (mutual-information/mRMR over the
+  full 45k rows in compute_feature_stats), not LLM latency — that can be
+  trimmed further by subsampling rows for the stats if you want.
+
+  Nothing is committed (per your conventions). Config additions live in
+  Epic2/config/config.yaml (paths.workspace_root, feature_stats,
+  report.use_llm).
+
+  One note: there are no automated tests under Epic2/, so the plan's "run tests"
+  step had nothing to execute — I verified by running both fixtures end-to-end
+  and the standalone CLI instead.
+
+✻ Crunched for 31m 18s

@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "session_id",
+    "problem_type",
+    "target_col",
+    "target_col_type",
+    "input_cols",
+    "cols_to_drop",
+    "statistics"
+  ],
+  "properties": {
+    "session_id": { "type": "string" },
+    "problem_type": {
+      "type": "string",
+      "enum": ["supervised", "unsupervised"]
+    },
+    "problem_subtype": {
+      "type": ["string", "null"],
+      "enum": ["classification", "regression", null]
+    },
+    "target_col": { "type": ["string", "null"] },
+    "target_col_type": {
+      "type": ["string", "null"],
+      "enum": ["categorical", "numeric", null]
+    },
+    "input_cols": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "col_type"],
+        "properties": {
+          "name": { "type": "string" },
+          "col_type": {
+            "type": "string",
+            "enum": ["categorical", "numeric"]
+          }
+        }
+      }
+    },
+    "cols_to_drop": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "important_cols": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "statistics": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "description": { "type": ["string", "null"] },
+          "count": { "type": "number" },
+          "mean": { "type": ["number", "null"] },
+          "std": { "type": ["number", "null"] },
+          "min": { "type": ["number", "null"] },
+          "25%": { "type": ["number", "null"] },
+          "50%": { "type": ["number", "null"] },
+          "75%": { "type": ["number", "null"] },
+          "max": { "type": ["number", "null"] },
+          "top": { "type": ["string", "null"] },
+          "freq": { "type": ["number", "null"] }
+        }
+      }
+    }
+  }
+}

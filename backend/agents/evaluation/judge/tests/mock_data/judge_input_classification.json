@@ -1,0 +1,201 @@
+{
+  "dataset_id": "iris_extended_v1",
+  "candidates": [
+    {
+      "model_name": "LogisticRegression",
+      "task_type": "classification",
+      "metrics": {
+        "accuracy": 0.88,
+        "f1_macro": 0.87,
+        "f1_weighted": 0.88,
+        "precision_macro": 0.88,
+        "recall_macro": 0.87
+      },
+      "overfitting": {
+        "is_overfitted": false,
+        "gap": 0.03,
+        "train_vs_cv_gap": 0.02
+      },
+      "complexity": {
+        "n_params": 90,
+        "depth": 1,
+        "family_rank": 1
+      },
+      "shap_summary": {
+        "top_features": ["petal_length", "petal_width", "sepal_length"],
+        "mean_abs_shap": {"petal_length": 0.42, "petal_width": 0.35, "sepal_length": 0.12, "sepal_width": 0.08},
+        "feature_concentration": 0.77
+      },
+      "hyperparam_sensitivity": {
+        "C": {"low": 0.82, "default": 0.88, "high": 0.89},
+        "sensitivity_score": 0.07
+      }
+    },
+    {
+      "model_name": "RandomForestClassifier",
+      "task_type": "classification",
+      "metrics": {
+        "accuracy": 0.89,
+        "f1_macro": 0.88,
+        "f1_weighted": 0.89,
+        "precision_macro": 0.89,
+        "recall_macro": 0.88
+      },
+      "overfitting": {
+        "is_overfitted": false,
+        "gap": 0.07,
+        "train_vs_cv_gap": 0.06
+      },
+      "complexity": {
+        "n_params": 50000,
+        "depth": 15,
+        "family_rank": 6
+      },
+      "shap_summary": {
+        "top_features": ["petal_length", "petal_width", "sepal_length"],
+        "mean_abs_shap": {"petal_length": 0.51, "petal_width": 0.29, "sepal_length": 0.11, "sepal_width": 0.09},
+        "feature_concentration": 0.80
+      },
+      "hyperparam_sensitivity": {
+        "n_estimators": {"low": 0.84, "default": 0.89, "high": 0.90},
+        "max_depth": {"low": 0.87, "default": 0.89, "high": 0.88},
+        "sensitivity_score": 0.06
+      }
+    },
+    {
+      "model_name": "GradientBoostingClassifier",
+      "task_type": "classification",
+      "metrics": {
+        "accuracy": 0.91,
+        "f1_macro": 0.90,
+        "f1_weighted": 0.91,
+        "precision_macro": 0.91,
+        "recall_macro": 0.90
+      },
+      "overfitting": {
+        "is_overfitted": true,
+        "gap": 0.18,
+        "train_vs_cv_gap": 0.16
+      },
+      "complexity": {
+        "n_params": 200000,
+        "depth": 5,
+        "family_rank": 8
+      },
+      "shap_summary": {
+        "top_features": ["petal_length", "petal_width"],
+        "mean_abs_shap": {"petal_length": 0.60, "petal_width": 0.25, "sepal_length": 0.09, "sepal_width": 0.06},
+        "feature_concentration": 0.85
+      },
+      "hyperparam_sensitivity": {
+        "learning_rate": {"low": 0.85, "default": 0.91, "high": 0.88},
+        "n_estimators": {"low": 0.87, "default": 0.91, "high": 0.91},
+        "sensitivity_score": 0.06
+      }
+    },
+    {
+      "model_name": "DecisionTreeClassifier",
+      "task_type": "classification",
+      "metrics": {
+        "accuracy": 0.82,
+        "f1_macro": 0.81,
+        "f1_weighted": 0.82,
+        "precision_macro": 0.83,
+        "recall_macro": 0.81
+      },
+      "overfitting": {
+        "is_overfitted": true,
+        "gap": 0.22,
+        "train_vs_cv_gap": 0.20
+      },
+      "complexity": {
+        "n_params": 500,
+        "depth": 12,
+        "family_rank": 4
+      },
+      "shap_summary": {
+        "top_features": ["petal_length"],
+        "mean_abs_shap": {"petal_length": 0.70, "petal_width": 0.15, "sepal_length": 0.10, "sepal_width": 0.05},
+        "feature_concentration": 0.70
+      },
+      "hyperparam_sensitivity": {
+        "max_depth": {"low": 0.75, "default": 0.82, "high": 0.82},
+        "sensitivity_score": 0.07
+      }
+    },
+    {
+      "model_name": "KNeighborsClassifier",
+      "task_type": "classification",
+      "metrics": {
+        "accuracy": 0.45,
+        "f1_macro": 0.43,
+        "f1_weighted": 0.45,
+        "precision_macro": 0.46,
+        "recall_macro": 0.43
+      },
+      "overfitting": {
+        "is_overfitted": false,
+        "gap": 0.05,
+        "train_vs_cv_gap": 0.04
+      },
+      "complexity": {
+        "n_params": 0,
+        "depth": 0,
+        "family_rank": 3
+      },
+      "shap_summary": {
+        "top_features": ["sepal_length", "sepal_width"],
+        "mean_abs_shap": {"petal_length": 0.20, "petal_width": 0.20, "sepal_length": 0.30, "sepal_width": 0.30},
+        "feature_concentration": 0.60
+      },
+      "hyperparam_sensitivity": {
+        "n_neighbors": {"low": 0.40, "default": 0.45, "high": 0.50},
+        "sensitivity_score": 0.10
+      }
+    },
+    {
+      "model_name": "XGBClassifier",
+      "task_type": "classification",
+      "metrics": {
+        "accuracy": 0.90,
+        "f1_macro": 0.89,
+        "f1_weighted": 0.90,
+        "precision_macro": 0.90,
+        "recall_macro": 0.89
+      },
+      "overfitting": {
+        "is_overfitted": false,
+        "gap": 0.09,
+        "train_vs_cv_gap": 0.08
+      },
+      "complexity": {
+        "n_params": 300000,
+        "depth": 6,
+        "family_rank": 9
+      },
+      "shap_summary": {
+        "top_features": ["petal_length", "petal_width"],
+        "mean_abs_shap": {"petal_length": 0.55, "petal_width": 0.28, "sepal_length": 0.10, "sepal_width": 0.07},
+        "feature_concentration": 0.83
+      },
+      "hyperparam_sensitivity": {
+        "learning_rate": {"low": 0.87, "default": 0.90, "high": 0.90},
+        "max_depth": {"low": 0.89, "default": 0.90, "high": 0.89},
+        "sensitivity_score": 0.03
+      }
+    }
+  ],
+  "minidata": {
+    "petal_length": {"count": 150, "mean": 3.76, "std": 1.77, "min": 1.0, "25%": 1.6, "50%": 4.35, "75%": 5.1, "max": 6.9},
+    "petal_width":  {"count": 150, "mean": 1.20, "std": 0.76, "min": 0.1, "25%": 0.3, "50%": 1.30, "75%": 1.8, "max": 2.5},
+    "sepal_length": {"count": 150, "mean": 5.84, "std": 0.83, "min": 4.3, "25%": 5.1, "50%": 5.80, "75%": 6.4, "max": 7.9},
+    "sepal_width":  {"count": 150, "mean": 3.06, "std": 0.44, "min": 2.0, "25%": 2.8, "50%": 3.00, "75%": 3.3, "max": 4.4}
+  },
+  "metadata": {
+    "user_id": "user_42",
+    "dataset_name": "iris_extended",
+    "num_classes": 3,
+    "class_balance": {"setosa": 0.33, "versicolor": 0.33, "virginica": 0.34},
+    "submitted_at": "2026-06-13T10:00:00Z"
+  }
+}

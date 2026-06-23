@@ -1,0 +1,39 @@
+overfitting:
+  k_folds: 5
+  shuffle: true
+  random_state: 42
+  # cv_data_source controls which data is used for K-fold splits
+  # Options: train_test_concat | train_only | test_only
+  cv_data_source: train_test_concat
+  gap_threshold: 0.1
+  # Skip K-fold entirely when the test primary metric is below this value.
+  # A model already below random-guess baseline is not worth the CV compute.
+  # Classification: accuracy < 0.5 (worse than random), Regression: r2 < 0.0
+  kfold_skip_threshold_classification: 0.5
+  kfold_skip_threshold_regression: 0.5
+  # Small value guarding the relative RMSE denominator
+  epsilon: 1.0e-9
+
+  classification:
+    stratified: true
+    scoring_metric: accuracy
+    primary_metric: accuracy
+
+  regression:
+    stratified: false
+    scoring_metric: r2
+    primary_metric: r2
+
+  # Direction map drives gap calculation without if-else ladders.
+  # higher_is_better: gap = train - test  (positive => train beat test)
+  # lower_is_better:  gap = test - train  (positive => test worse than train)
+  metric_direction_map:
+    accuracy: higher_is_better
+    f1_macro: higher_is_better
+    f1_weighted: higher_is_better
+    precision_macro: higher_is_better
+    recall_macro: higher_is_better
+    r2: higher_is_better
+    mse: lower_is_better
+    rmse: lower_is_better
+    mae: lower_is_better

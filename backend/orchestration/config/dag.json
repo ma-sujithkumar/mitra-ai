@@ -1,0 +1,56 @@
+{
+  "stages": [
+    {
+      "name": "metadata",
+      "label": "Metadata Generation",
+      "module": "backend.agents.metadata_gen_agent",
+      "class": "MetadataAgentRunner"
+    },
+    {
+      "name": "pipeline_prep",
+      "label": "Feature Engineering + Model Selection",
+      "module": "backend.services.pipeline_prep",
+      "class": "PipelinePrep"
+    },
+    {
+      "name": "training",
+      "label": "Model Training",
+      "module": "backend.agents.training_orchestrator",
+      "class": "TrainingOrchestrator"
+    },
+    {
+      "name": "eval",
+      "label": "Parallel Evaluation (SHAP / Overfitting / HPT)",
+      "module": "backend.orchestration.eval_runner",
+      "class": "EvalRunner",
+      "parallel_branches": ["shap", "overfitting", "hpt"]
+    },
+    {
+      "name": "judge",
+      "label": "Judge + Feedback Loop",
+      "module": "backend.orchestration.judge_loop",
+      "class": "JudgeLoop"
+    }
+  ],
+  "dag_edges": [
+    {"from": "metadata",      "to": "pipeline_prep"},
+    {"from": "pipeline_prep", "to": "training"},
+    {"from": "training",      "to": "eval"},
+    {"from": "eval",          "to": "judge"},
+    {"from": "judge",         "to": null}
+  ],
+  "eval_branches": {
+    "shap": {
+      "module": "backend.agents.evaluation.shap.runner",
+      "class": "SHAPRunner"
+    },
+    "overfitting": {
+      "module": "backend.orchestration.eval_runner",
+      "class": "OverfittingRunner"
+    },
+    "hpt": {
+      "module": "backend.orchestration.eval_runner",
+      "class": "HPTRunner"
+    }
+  }
+}

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Data (downloaded by test runners)
+data/
+
+# Model artifacts
+*.pkl
+*.pt
+*.pth
+
+# Docs (except README.md and docs/schema.md which are tracked)
+docs/*.md.bak
+
+# Claude-generated scripts
+claude_scripts/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

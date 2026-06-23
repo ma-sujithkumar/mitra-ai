@@ -1,0 +1,13 @@
+*Epic-1*
+Metadata Gen Agent, Page 1 UI, Prechecks (LLM checks), .env, Config (Train/Test, max number of ml models, number of trials, etc..)
+Assignees: vidhi, sebin
+
+
+ReactJS application
+python for backend application
+Basic UI for the entire application
+
+User can upload metadata.csv and/or describe medata data in description column. Combined bouth inputs and a "prompt" 
+to give more context on what needs to be acheived and call the LLM/Agent to get the metadata.json
+
+

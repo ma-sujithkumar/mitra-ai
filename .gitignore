@@ -1,0 +1,20 @@
+meeting_transcripts/original
+
+# CLAUDE.md conventions: intermediate scripts are not tracked
+claude_scripts/
+# track module specs/cards/chats in docs/<module>/ but ignore session-generated files
+docs/session_*
+
+# Python/runtime artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+.mitra/
+.env
+.claude
+
+# Frontend/runtime artifacts
+frontend/node_modules/
+frontend/dist/
+.env.example
+auth.db

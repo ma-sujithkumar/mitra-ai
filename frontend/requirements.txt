@@ -1,0 +1,26 @@
+Read the code from deeplearning-repo\frontend
+
+We need to add Auth page before we open the dashboard or existing UI in frontend
+
+So create a folder specific to auth page and add all the codes inside that.
+Needed :
+
+1. Two text fields - username, password
+2. two buttons - login, signup
+3. by default -  login mode
+4. In signup mode - input required: name, username, password - do validation checks for email and password 
+5. login mode - name and password
+6. Once logged in, move to dashboard or already existing UI
+7. if user name is already there, then say user id already exists
+8. Create mitra/ <user_id> - if it doesn't exist once logged in
+9. Forgot password - need one popup, "forget password feature is not implemented if you forgot your id and password,
+   contact deeplearning1227@gmail.com or create a new id
+
+Now in backend:
+
+Needed :
+
+1. authdb - postgressql to store username and password
+2. keep this in code directory only
+
+Dont change anything in backend
