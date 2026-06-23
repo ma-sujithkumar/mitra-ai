@@ -26,6 +26,8 @@ EXPECTED_MODELS = [
     "HistGradientBoostingRegressor", "MLPRegressor", "BaggingRegressor",
     "XGBRegressor", "PyTorchFCNNRegressor", "PyTorchCNNRegressor",
     "DummyRegressor", "HuberRegressor", "TheilSenRegressor",
+    # Clustering
+    "KMeans", "MiniBatchKMeans",
 ]
 
 

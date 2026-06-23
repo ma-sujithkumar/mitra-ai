@@ -529,7 +529,7 @@ function FeatureEngineeringPage({ activeSessionId, startRun }) {
       const startPayload = {
         sessionId,
         targetColumn: summary.target_column || null,
-        problemType: summary.task || null,
+        problemType: summary.task === 'clustering' ? 'unsupervised' : (summary.task || null),
         executionMode: 'ray',
         // Hard-fail: FE must have produced model_config.json; never fall back.
         allowFallbackArtifacts: false,

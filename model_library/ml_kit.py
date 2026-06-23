@@ -77,6 +77,7 @@ from models.regressors.sklearn_regressors import (
     TheilSenRegressorWrapper,
 )
 from models.regressors.xgboost_regressors import XGBRegressorWrapper
+from models.clustering.sklearn_clusterers import KMeansWrapper, MiniBatchKMeansWrapper
 
 
 logger = logging.getLogger(__name__)
@@ -147,6 +148,9 @@ MODEL_REGISTRY: dict = {
     "DummyRegressor": DummyRegressorWrapper,
     "HuberRegressor": HuberRegressorWrapper,
     "TheilSenRegressor": TheilSenRegressorWrapper,
+    # Clustering
+    "KMeans": KMeansWrapper,
+    "MiniBatchKMeans": MiniBatchKMeansWrapper,
 }
 
 TRAINING_MODE_FULL_TRAIN = "full_train"

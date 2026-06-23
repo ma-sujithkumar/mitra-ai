@@ -784,6 +784,13 @@ class TrainingService:
             if cancel_event.is_set():
                 return
 
+            # Clustering CSVs carry a synthetic dummy column; pass it explicitly
+            # so _resolve_target never accidentally picks a real user column.
+            effective_target_column = (
+                "__cluster_target__"
+                if request.problem_type == "unsupervised"
+                else request.target_column
+            )
             common_arguments: dict[str, Any] = {
                 "session_id": request.session_id,
                 "metadata_path": paths.metadata_path,
@@ -791,14 +798,14 @@ class TrainingService:
                 "train_path": paths.train_path,
                 "test_path": paths.test_path,
                 "session_dir": paths.session_output_dir,
-                "target_column": request.target_column,
+                "target_column": effective_target_column,
                 "manifest_path": paths.manifest_path,
                 "summary_path": paths.summary_path,
             }
             if execution_mode == "ray":
                 raw_executor = self.executor_factory(
                     self.config_loader.training_api.model_library_root,
-                    request.target_column,
+                    effective_target_column,
                 )
                 executor = CancellationAwareExecutor(raw_executor, cancel_event)
                 with self.lock:

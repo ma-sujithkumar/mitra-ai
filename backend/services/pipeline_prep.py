@@ -146,12 +146,14 @@ class PipelinePrep:
         self._adapt_feature_selection(feature_artifact_path, feature_selection_path)
         logger.info("=> feature_selection.json written: %s", feature_selection_path)
 
-        # Unsupervised runs have no target, so train/test split and supervised
-        # model selection do not apply. Feature engineering is complete here; stop
-        # and return the feature artifact (no model_config.json is produced).
-        if resolved_task == "unsupervised" or target_column is None:
-            logger.info("=> unsupervised run: feature engineering complete, skipping split + model selection")
-            return feature_artifact_path
+        # Clustering runs have no target. Produce train/test split with a dummy
+        # target column and a fixed model_config.json, then stop.
+        if resolved_task == "clustering" or target_column is None:
+            model_config_path = self.reports_dir / "model_config.json"
+            self._split_dataset_unsupervised(engineered_csv)
+            self._write_clustering_model_config(model_config_path)
+            logger.info("=> clustering run: split + model config complete, returning %s", model_config_path)
+            return model_config_path
 
         # Step 3: train / test split on the engineered dataset
         self._split_dataset(
@@ -204,7 +206,7 @@ class PipelinePrep:
         orchestrator = FeatureEngineerOrchestrator(
             data_path=raw_data_path,
             target_column=target_column,
-            task="unsupervised" if target_column is None else None,
+            task="clustering" if target_column is None else None,
             model_string=self.llm_settings.model,
             output_dir=fe_output_dir,
             llm_settings=self.llm_settings,
@@ -340,6 +342,59 @@ class PipelinePrep:
         output_path.write_text(
             selection.model_dump_json(indent=2), encoding="utf-8"
         )
+
+    def _split_dataset_unsupervised(self, engineered_csv: Path) -> None:
+        """Produce train/test split for clustering runs.
+
+        All feature columns are kept and a dummy ``__cluster_target__`` column
+        (zeros) is appended as the last column so the training data_loader's
+        fallback target resolution works without any modification.
+        """
+        split_ratio = self.config_loader.pipeline.train_test_split
+        dataframe = pd.read_csv(engineered_csv)
+        # Append dummy target as last column so data_loader can resolve it
+        dataframe["__cluster_target__"] = 0
+        cutoff_index = int(len(dataframe) * split_ratio)
+        train_df = dataframe.iloc[:cutoff_index]
+        test_df = dataframe.iloc[cutoff_index:]
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        train_df.to_csv(self.data_dir / "train.csv", index=False)
+        test_df.to_csv(self.data_dir / "test.csv", index=False)
+        logger.debug(
+            "=> clustering split: total=%d train=%d test=%d",
+            len(dataframe),
+            len(train_df),
+            len(test_df),
+        )
+
+    def _write_clustering_model_config(self, model_config_path: Path) -> None:
+        """Write a fixed model_config.json with KMeans and MiniBatchKMeans."""
+        clustering_models = [
+            {
+                "name": "KMeans",
+                "model_name": "KMeans",
+                "task_type": "unsupervised",
+                "priority": 1,
+                "rationale": "Standard k-means clustering; good general-purpose baseline.",
+                "selection_score": 1.0,
+                "default_hyperparameters": {"n_clusters": 8, "random_state": 42},
+                "hp_space": {},
+                "source": "model_library/ml_kit.py::MODEL_REGISTRY",
+            },
+            {
+                "name": "MiniBatchKMeans",
+                "model_name": "MiniBatchKMeans",
+                "task_type": "unsupervised",
+                "priority": 2,
+                "rationale": "Mini-batch k-means; faster on large datasets.",
+                "selection_score": 0.9,
+                "default_hyperparameters": {"n_clusters": 8, "random_state": 42},
+                "hp_space": {},
+                "source": "model_library/ml_kit.py::MODEL_REGISTRY",
+            },
+        ]
+        model_config_path.write_text(json.dumps(clustering_models, indent=2), encoding="utf-8")
+        logger.info("=> clustering model_config.json written: %s", model_config_path)
 
     def _split_dataset(
         self,

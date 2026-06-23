@@ -138,4 +138,6 @@ class ModelRouter:
             return "image_classification"
         if descriptor.task_type == "classification":
             return "tabular_classification"
+        if descriptor.task_type == "unsupervised":
+            return "tabular_clustering"
         return "tabular_regression"

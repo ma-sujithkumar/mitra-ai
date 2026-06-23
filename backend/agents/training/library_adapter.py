@@ -10,6 +10,7 @@ from threading import Lock
 from typing import Any
 
 import numpy as np
+from sklearn.metrics import silhouette_score
 
 from backend.agents.model_selection.catalog import ModelLibraryCatalogAgent
 from backend.agents.training_orchestrator.contracts import TrainingJob
@@ -72,6 +73,7 @@ class MLKitTrainingAdapter:
             common=common,
             hyperparameters=dict(job.parameters),
         )
+        destination = Path(model_path).expanduser().resolve()
 
         try:
             kit = runtime.MLKit(
@@ -82,19 +84,6 @@ class MLKitTrainingAdapter:
             kit.train()
             train_predictions = np.asarray(kit.model.predict(data.X_train))
             validation_predictions = np.asarray(kit.test())
-            train_metrics = runtime.compute_metrics(
-                data.y_train,
-                train_predictions,
-                job.task_type,
-                job.model_name,
-            )
-            validation_metrics = runtime.compute_metrics(
-                data.y_test,
-                validation_predictions,
-                job.task_type,
-                job.model_name,
-            )
-            destination = Path(model_path).expanduser().resolve()
             kit.save(str(destination))
         except Exception as exc:  # MLKit exposes several third-party exception types.
             raise ModelLibraryExecutionError(
@@ -106,6 +95,34 @@ class MLKitTrainingAdapter:
                 f"MLKit did not create the model artifact: {destination}"
             )
 
+        # Clustering: compute silhouette score from X (no y_true ground truth).
+        if job.task_type == "unsupervised":
+            train_score = _silhouette_safe(data.X_train, train_predictions)
+            val_score = _silhouette_safe(data.X_test, validation_predictions)
+            return TrainedModelArtifacts(
+                metrics={
+                    "task_type": "unsupervised",
+                    "primary_metric": "silhouette_score",
+                    "train_score": train_score,
+                    "validation_score": val_score,
+                    "train": {"silhouette_score": train_score},
+                    "validation": {"silhouette_score": val_score},
+                },
+                model_path=destination,
+            )
+
+        train_metrics = runtime.compute_metrics(
+            data.y_train,
+            train_predictions,
+            job.task_type,
+            job.model_name,
+        )
+        validation_metrics = runtime.compute_metrics(
+            data.y_test,
+            validation_predictions,
+            job.task_type,
+            job.model_name,
+        )
         return TrainedModelArtifacts(
             metrics=build_metrics_payload(
                 task_type=job.task_type,
@@ -146,3 +163,14 @@ class MLKitTrainingAdapter:
             compute_metrics = staticmethod(evaluators.compute_metrics)
 
         return Runtime
+
+
+def _silhouette_safe(X: np.ndarray, labels: np.ndarray) -> float:
+    """Compute silhouette score safely, returning 0.0 on degenerate inputs."""
+    unique_labels = np.unique(labels)
+    if len(unique_labels) < 2 or len(unique_labels) >= len(X):
+        return 0.0
+    try:
+        return float(silhouette_score(X, labels))
+    except Exception:
+        return 0.0

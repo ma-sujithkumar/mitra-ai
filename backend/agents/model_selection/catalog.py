@@ -171,6 +171,8 @@ class ModelLibraryCatalogAgent:
             return "classification"
         if ".regressors." in module:
             return "regression"
+        if ".clustering." in module:
+            return "unsupervised"
         raise ModelLibraryCatalogError(
             f"Cannot infer task type for '{model_name}' from wrapper import '{module}'"
         )

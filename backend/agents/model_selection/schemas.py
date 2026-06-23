@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-TaskType = Literal["classification", "regression"]
+TaskType = Literal["classification", "regression", "unsupervised"]
 DataFormat = Literal["tabular", "image"]
 
 
