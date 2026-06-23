@@ -151,6 +151,10 @@ export async function fetchFeatureEngineering(sessionId) {
   return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/feature-engineering`);
 }
 
+export async function fetchFeatureLeaderboard(sessionId) {
+  return requestJson(`/api/runs/${encodeURIComponent(sessionId)}/feature-engineering/leaderboard`);
+}
+
 export async function startFeatureEngineering(payload) {
   return requestJson('/api/feature-engineering', {
     method: 'POST',

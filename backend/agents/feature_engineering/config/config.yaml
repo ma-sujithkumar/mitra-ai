@@ -33,6 +33,9 @@ feature_selection:
   top_k_features: 20
   cluster_cut_threshold: 0.30
   linear_baseline_k: 10
+  # Columns where (nunique / n_rows) >= this threshold are treated as identifiers
+  # and dropped before encoding and feature-selection stats are computed.
+  id_uniqueness_threshold: 0.95
 
 scaling:
   power_transformer_method: yeo-johnson

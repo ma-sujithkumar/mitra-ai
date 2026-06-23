@@ -311,6 +311,111 @@ class EvaluationArtifactReader:
         status_reader = FeatureEngineeringStatusReader(self.session_dir)
         return status_reader.read()
 
+    def feature_leaderboard(self) -> dict[str, Any]:
+        """Return multi-algorithm feature rankings with a combined normalized score.
+
+        Reads all stat artifacts (MI, IG, Laplacian, mRMR, variance) from stats_dir,
+        normalizes each to [0,1], and returns a combined_score (mean across available
+        algorithms) alongside per-algorithm scores for visualization.
+        """
+        fe_dir = self.session_dir / "reports" / "feature_engineering"
+        artifact = self._read_json_or_none(fe_dir / "feature_artifact.json")
+        if artifact is None:
+            return {"status": "pending", "features": [], "total_selected": 0, "total_dropped": 0}
+
+        selected_set = set(artifact.get("selected_columns", []))
+        dropped_set = set(artifact.get("dropped_columns", []))
+        all_columns = list(selected_set) + list(dropped_set)
+
+        stats_dir_str = artifact.get("stats_dir", "")
+        stats_dir = Path(stats_dir_str) if stats_dir_str else None
+
+        def read_stat(filename: str) -> dict[str, Any]:
+            if stats_dir is None:
+                return {}
+            return self._read_json_or_none(stats_dir / filename) or {}
+
+        mi_raw: dict[str, float] = read_stat("mutual_info.json").get("scores", {})
+        ig_raw: dict[str, float] = read_stat("information_gain.json").get("scores", {})
+        laplacian_raw: dict[str, float] = read_stat("laplacian_score.json").get("scores", {})
+        mrmr_ranked: list[str] = read_stat("mrmr_ranking.json").get("ranked", [])
+        variance_raw: dict[str, float] = read_stat("variance.json").get("scores", {})
+
+        # mRMR: convert rank position to [0,1] — top-ranked column gets 1.0.
+        mrmr_count = len(mrmr_ranked)
+        mrmr_score_map: dict[str, float] = {
+            col: (mrmr_count - idx) / mrmr_count
+            for idx, col in enumerate(mrmr_ranked)
+        } if mrmr_count > 0 else {}
+
+        # Normalize each algorithm's scores to [0,1]; Laplacian is inverted (lower = better).
+        algo_sources: dict[str, dict[str, float]] = {
+            "mi": self._normalize_higher_better(mi_raw),
+            "ig": self._normalize_higher_better(ig_raw),
+            "laplacian": self._normalize_lower_better(laplacian_raw),
+            "mrmr": mrmr_score_map,
+            "variance": self._normalize_higher_better(variance_raw),
+        }
+
+        ranked_features: list[dict[str, Any]] = []
+        for col in all_columns:
+            algo_scores: dict[str, float] = {
+                algo_name: round(float(score_map[col]), 4)
+                for algo_name, score_map in algo_sources.items()
+                if col in score_map
+            }
+            combined_score = round(sum(algo_scores.values()) / len(algo_scores), 4) if algo_scores else 0.0
+            ranked_features.append({
+                "feature": col,
+                "combined_score": combined_score,
+                "algo_scores": algo_scores,
+                "status": "selected" if col in selected_set else "dropped",
+            })
+
+        ranked_features.sort(key=lambda item: item["combined_score"], reverse=True)
+
+        return {
+            "status": "complete",
+            "features": ranked_features,
+            "selection_method": artifact.get("selection_method", ""),
+            "total_selected": len(selected_set),
+            "total_dropped": len(dropped_set),
+        }
+
+    @staticmethod
+    def _normalize_higher_better(scores: dict[str, float]) -> dict[str, float]:
+        """Normalize scores to [0,1]: higher original value => higher result."""
+        finite_vals = [v for v in scores.values() if v == v and v not in (float("inf"), float("-inf"))]
+        if not finite_vals:
+            return {}
+        max_val = max(finite_vals)
+        if max_val <= 0:
+            return {col: 0.0 for col in scores}
+        result: dict[str, float] = {}
+        for col, score_val in scores.items():
+            if score_val != score_val or score_val in (float("inf"), float("-inf")):
+                result[col] = 0.0
+            else:
+                result[col] = min(1.0, score_val / max_val)
+        return result
+
+    @staticmethod
+    def _normalize_lower_better(scores: dict[str, float]) -> dict[str, float]:
+        """Normalize scores to [0,1] then invert: lower original => higher result (e.g. Laplacian)."""
+        finite_vals = [v for v in scores.values() if v == v and v not in (float("inf"), float("-inf"))]
+        if not finite_vals:
+            return {}
+        max_val = max(finite_vals)
+        result: dict[str, float] = {}
+        for col, score_val in scores.items():
+            if score_val != score_val or score_val == float("inf"):
+                result[col] = 0.0
+            elif max_val <= 0:
+                result[col] = 1.0
+            else:
+                result[col] = 1.0 - min(1.0, score_val / max_val)
+        return result
+
     def d2v_prior(self) -> dict[str, Any]:
         """Return Dataset2Vec warm-start prior if available."""
         prior = self._read_json_or_none(self.reports_dir / DATASET_PRIOR_FILENAME)
@@ -673,6 +778,16 @@ def get_plot(
     reader = _build_reader(session_id=session_id, session_manager=session_manager)
     resolved_plot = reader.resolve_plot(plot_relative_path=plot_path)
     return FileResponse(path=resolved_plot)
+
+
+@router.get("/{session_id}/feature-engineering/leaderboard")
+def get_feature_leaderboard(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Return MI-ranked feature leaderboard (selected vs dropped) for the FE page."""
+    reader = _build_reader(session_id=session_id, session_manager=session_manager)
+    return {"session_id": session_id, **reader.feature_leaderboard()}
 
 
 @router.get("/{session_id}/feature-engineering")

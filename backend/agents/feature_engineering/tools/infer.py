@@ -1,10 +1,12 @@
 """SemanticTypeInfer — heuristic type assignment, no LLM call.
 
 Per-column algorithm:
-  1. nunique == 2                        → binary
-  2. pd.to_numeric succeeds (≥90% rows)  → numeric
-  3. pd.to_datetime succeeds (≥90% rows) → datetime  (decomposed to year/month/day/quarter)
-  4. fallthrough                          → categorical
+  1. nunique / n_rows >= id_uniqueness_threshold  → identifier (dropped immediately)
+  2. sorted unique values are a contiguous int range with step 1 → identifier (dropped)
+  3. nunique == 2                                 → binary
+  4. pd.to_numeric succeeds (>=90% rows)          → numeric
+  5. pd.to_datetime succeeds (>=90% rows)         → datetime (decomposed to year/month/day/quarter)
+  6. fallthrough                                  → categorical
 """
 from __future__ import annotations
 
@@ -15,6 +17,34 @@ from backend.agents.feature_engineering.parallel import compute_mini_profile
 from backend.agents.feature_engineering.state import PipelineState
 
 _CONVERT_THRESHOLD = 0.90  # fraction of non-null values that must convert
+
+
+def _is_identifier_column(series: pd.Series, uniqueness_threshold: float) -> bool:
+    """Return True if the column looks like an identifier that carries no predictive signal.
+
+    Two order-independent signals:
+    1. Uniqueness ratio >= threshold: nearly every value is unique (ID, UUID, hash, email).
+    2. Contiguous integer sequence: sorted unique values step by exactly 1 (auto-increment PK / row index).
+    """
+    n_total = len(series)
+    if n_total == 0:
+        return False
+
+    uniqueness_ratio = series.nunique(dropna=False) / n_total
+    if uniqueness_ratio >= uniqueness_threshold:
+        return True
+
+    # Contiguous integer sequence check — sort first so shuffled data is handled correctly.
+    numeric_values = pd.to_numeric(series, errors="coerce")
+    if numeric_values.notna().all() and n_total > 1:
+        all_integer = (numeric_values % 1 == 0).all()
+        if all_integer:
+            sorted_values = numeric_values.sort_values().reset_index(drop=True)
+            diffs = sorted_values.diff().dropna()
+            if len(diffs) > 0 and (diffs == 1).all():
+                return True
+
+    return False
 
 
 def _decompose_datetime(df: pd.DataFrame, col: str) -> list[str]:
@@ -64,6 +94,22 @@ class SemanticTypeInfer(BaseTool):
 
     def run(self, state: PipelineState) -> None:
         df = state.df
+        uniqueness_threshold = state.config.feature_selection.id_uniqueness_threshold
+
+        # Drop identifier columns before type assignment so they never reach
+        # encoding, feature creation, stats computation, or the LLM selector.
+        identifier_columns = [
+            col for col in df.columns
+            if col != state.target_column and _is_identifier_column(df[col], uniqueness_threshold)
+        ]
+        if identifier_columns:
+            df.drop(columns=identifier_columns, inplace=True)
+            state.dropped_columns.extend(identifier_columns)
+            for col in identifier_columns:
+                state.warnings.append(
+                    f"Dropped identifier column '{col}' "
+                    f"(uniqueness_ratio >= {uniqueness_threshold} or contiguous integer sequence)"
+                )
 
         column_types: dict[str, str] = {}
         for col in df.columns:

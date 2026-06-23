@@ -6,6 +6,7 @@ import {
   fetchD2VPrior,
   fetchFeatureEngineering,
   fetchFeatureEngineeringJobStatus,
+  fetchFeatureLeaderboard,
 } from '../api/client.js';
 import { fetchTrainingStatus, resetTraining, startTraining } from '../api/training.js';
 import { AGENTS } from '../data.js';
@@ -273,9 +274,110 @@ function D2VPanel({ d2vData }) {
   );
 }
 
+const FE_ALGO_META = [
+  { key: 'mi',        label: 'Mutual Info',  color: '#6366f1' },
+  { key: 'ig',        label: 'Info Gain',    color: '#22c55e' },
+  { key: 'mrmr',      label: 'mRMR',         color: '#f59e0b' },
+  { key: 'laplacian', label: 'Laplacian',    color: '#06b6d4' },
+  { key: 'variance',  label: 'Variance',     color: '#a855f7' },
+];
+
+function FeatureLeaderboard({ leaderboardData }) {
+  if (!leaderboardData || !leaderboardData.features || leaderboardData.features.length === 0) {
+    return null;
+  }
+
+  const features = leaderboardData.features;
+
+  return (
+    <section className="card panel-section">
+      <div className="section-head">
+        <div>
+          <p className="section-kicker">Explainability</p>
+          <h2>Feature Leaderboard</h2>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <span className="pill pill-done">{leaderboardData.total_selected} selected</span>
+          <span className="pill pill-err">{leaderboardData.total_dropped} dropped</span>
+        </div>
+      </div>
+      <p className="muted" style={{ marginTop: 4, marginBottom: 10, fontSize: '0.82rem' }}>
+        Combined score is the mean of normalized MI, IG, mRMR, Laplacian, and Variance. Green = selected; red = dropped.
+      </p>
+
+      {/* Algorithm legend */}
+      <div style={{ display: 'flex', gap: 14, marginBottom: 14, flexWrap: 'wrap' }}>
+        {FE_ALGO_META.map((algo) => (
+          <span key={algo.key} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', color: 'var(--ink-muted)' }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: algo.color, display: 'inline-block', flexShrink: 0 }} />
+            {algo.label}
+          </span>
+        ))}
+      </div>
+
+      <div className="hbars">
+        {features.map((item, index) => {
+          const isSelected = item.status === 'selected';
+          const barColor = isSelected ? 'var(--ok)' : 'var(--error)';
+          const barWidth = (item.combined_score || 0) * 100;
+          return (
+            <div className="hbar-row" key={item.feature} style={{ marginBottom: 6 }}>
+              <div className="hbar-labels">
+                <span className="mono" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{
+                    width: 7, height: 7, borderRadius: '50%',
+                    background: barColor, flexShrink: 0, display: 'inline-block',
+                  }} />
+                  {item.feature}
+                </span>
+                <span className="mono">{(item.combined_score || 0).toFixed(3)}</span>
+              </div>
+              {/* Combined score bar */}
+              <div className="bar">
+                <i style={{
+                  '--bar-color': barColor,
+                  '--bar-delay': `${index * 0.04}s`,
+                  width: `${barWidth}%`,
+                }} />
+              </div>
+              {/* Per-algorithm mini bars */}
+              {item.algo_scores && Object.keys(item.algo_scores).length > 0 ? (
+                <div style={{ display: 'flex', gap: 4, marginTop: 3 }}>
+                  {FE_ALGO_META.map((algo) => {
+                    const score = item.algo_scores[algo.key];
+                    if (score === undefined) return null;
+                    return (
+                      <div key={algo.key} title={`${algo.label}: ${score.toFixed(3)}`}
+                        style={{ flex: 1, height: 4, background: 'var(--surface-2)', borderRadius: 2, overflow: 'hidden' }}>
+                        <div style={{ width: `${score * 100}%`, height: '100%', background: algo.color, borderRadius: 2 }} />
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: 'flex', gap: 16, marginTop: 14, fontSize: '0.78rem', color: 'var(--ink-muted)' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--ok)', display: 'inline-block' }} />
+          Selected by pipeline
+        </span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--error)', display: 'inline-block' }} />
+          Dropped
+        </span>
+      </div>
+    </section>
+  );
+}
+
 function FeatureEngineeringPage({ activeSessionId, startRun }) {
   const [feData, setFeData] = useState(null);
   const [d2vData, setD2vData] = useState(null);
+  const [leaderboardData, setLeaderboardData] = useState(null);
   // jobStatus is the lifecycle source of truth (running/done/error/idle), read
   // from the FE job registry; feData is the detailed 11-step view from files.
   const [jobStatus, setJobStatus] = useState('idle');
@@ -293,6 +395,7 @@ function FeatureEngineeringPage({ activeSessionId, startRun }) {
     if (!activeSessionId) {
       setFeData(null);
       setJobStatus('idle');
+      setLeaderboardData(null);
       return undefined;
     }
 
@@ -326,6 +429,9 @@ function FeatureEngineeringPage({ activeSessionId, startRun }) {
           setPolling(false);
           fetchD2VPrior(activeSessionId)
             .then((prior) => { if (!cancelled) setD2vData(prior); })
+            .catch(() => {});
+          fetchFeatureLeaderboard(activeSessionId)
+            .then((data) => { if (!cancelled) setLeaderboardData(data); })
             .catch(() => {});
           return;
         }
@@ -508,6 +614,9 @@ function FeatureEngineeringPage({ activeSessionId, startRun }) {
           <D2VPanel d2vData={d2vData} />
         </div>
       </div>
+
+      {/* Feature leaderboard: ranked by MI score, colored by selection status */}
+      {isDone ? <FeatureLeaderboard leaderboardData={leaderboardData} /> : null}
 
     </div>
   );

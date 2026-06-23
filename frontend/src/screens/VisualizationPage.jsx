@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 import StatusPill from '../components/StatusPill.jsx';
 import Toast from '../components/Toast.jsx';
-import { fetchPlots, plotUrl, generatePlots, fetchFEVisuals, feVisualUrl } from '../api/client.js';
+import { fetchPlots, plotUrl, generatePlots, fetchFEVisuals, feVisualUrl, fetchFeatureLeaderboard } from '../api/client.js';
 import { Icons } from '../icons.jsx';
 
 
@@ -177,6 +177,98 @@ function FEVisualsGallery({ sessionId, visuals, dashboardAvailable }) {
   );
 }
 
+// ---- Feature Engineering multi-metric comparison chart ----
+
+const VIZ_FE_ALGO_META = [
+  { key: 'mi',        label: 'Mutual Info',  color: '#6366f1' },
+  { key: 'ig',        label: 'Info Gain',    color: '#22c55e' },
+  { key: 'mrmr',      label: 'mRMR',         color: '#f59e0b' },
+  { key: 'laplacian', label: 'Laplacian',    color: '#06b6d4' },
+  { key: 'variance',  label: 'Variance',     color: '#a855f7' },
+];
+
+// Cap at top-25 features to keep the chart readable.
+const FE_MULTI_METRIC_MAX_FEATURES = 25;
+
+function FEMultiMetricChart({ leaderboardFeatures }) {
+  if (!leaderboardFeatures || leaderboardFeatures.length === 0) return null;
+
+  const topFeatures = leaderboardFeatures.slice(0, FE_MULTI_METRIC_MAX_FEATURES);
+
+  return (
+    <section className="card panel-section" style={{ marginTop: 16 }}>
+      <div className="section-head">
+        <div>
+          <p className="section-kicker">Multi-Algorithm</p>
+          <h2>Feature Score Comparison</h2>
+        </div>
+        <span className="pill pill-queued">{topFeatures.length} features</span>
+      </div>
+      <p className="muted" style={{ marginTop: 4, marginBottom: 12, fontSize: '0.82rem' }}>
+        Normalized scores (0-1) per algorithm for each feature. Hover a mini bar for the exact score. Top {FE_MULTI_METRIC_MAX_FEATURES} by combined score shown.
+      </p>
+
+      {/* Legend */}
+      <div style={{ display: 'flex', gap: 14, marginBottom: 16, flexWrap: 'wrap' }}>
+        {VIZ_FE_ALGO_META.map((algo) => (
+          <span key={algo.key} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', color: 'var(--ink-muted)' }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: algo.color, display: 'inline-block', flexShrink: 0 }} />
+            {algo.label}
+          </span>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {topFeatures.map((feature) => {
+          const isSelected = feature.status === 'selected';
+          return (
+            <div key={feature.feature} style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 10, alignItems: 'center' }}>
+              <span className="mono" style={{
+                fontSize: '0.78rem', overflow: 'hidden', textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 6,
+              }}>
+                <span style={{
+                  width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                  background: isSelected ? 'var(--ok)' : 'var(--error)', display: 'inline-block',
+                }} />
+                {feature.feature}
+              </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                {VIZ_FE_ALGO_META.map((algo) => {
+                  const score = feature.algo_scores?.[algo.key];
+                  if (score === undefined) return null;
+                  return (
+                    <div key={algo.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{ flex: 1, height: 7, background: 'var(--surface-2)', borderRadius: 3, overflow: 'hidden' }}
+                        title={`${algo.label}: ${score.toFixed(3)}`}>
+                        <div style={{ width: `${score * 100}%`, height: '100%', background: algo.color, borderRadius: 3 }} />
+                      </div>
+                      <span className="mono" style={{ fontSize: '0.68rem', color: 'var(--ink-muted)', minWidth: 30, textAlign: 'right' }}>
+                        {score.toFixed(2)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: 'flex', gap: 16, marginTop: 14, fontSize: '0.78rem', color: 'var(--ink-muted)' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ok)', display: 'inline-block' }} />
+          Selected by pipeline
+        </span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--error)', display: 'inline-block' }} />
+          Dropped
+        </span>
+      </div>
+    </section>
+  );
+}
+
 // ---- Main page ----
 
 function VisualizationPage({ activeSessionId }) {
@@ -196,6 +288,7 @@ function VisualizationPage({ activeSessionId }) {
   const [feVisualsLoaded, setFeVisualsLoaded] = useState(false);
   const [feVisualsLoading, setFeVisualsLoading] = useState(false);
   const [feVisualsError, setFeVisualsError] = useState(null);
+  const [feLeaderboardFeatures, setFeLeaderboardFeatures] = useState([]);
 
   // Reset per-type state when the session changes.
   useEffect(() => {
@@ -206,6 +299,7 @@ function VisualizationPage({ activeSessionId }) {
     setFeDashboardAvailable(false);
     setFeVisualsLoaded(false);
     setFeVisualsError(null);
+    setFeLeaderboardFeatures([]);
     setGenerationMessage(null);
     setGenerationError(null);
   }, [activeSessionId]);
@@ -239,6 +333,7 @@ function VisualizationPage({ activeSessionId }) {
       setFeDashboardAvailable(false);
       setFeVisualsLoaded(false);
       setFeVisualsError(null);
+      setFeLeaderboardFeatures([]);
     }
     setGenerationMessage(null);
     setGenerationError(null);
@@ -265,10 +360,15 @@ function VisualizationPage({ activeSessionId }) {
     setGenerationError(null);
     setFeVisualsLoading(true);
     try {
-      const result = await fetchFEVisuals(activeSessionId);
+      // Fetch visuals and leaderboard data in parallel.
+      const [result, leaderboardResult] = await Promise.all([
+        fetchFEVisuals(activeSessionId),
+        fetchFeatureLeaderboard(activeSessionId).catch(() => null),
+      ]);
       setFeVisuals(result?.visuals || []);
       setFeDashboardAvailable(result?.dashboard_available || false);
       setFeVisualsLoaded(true);
+      setFeLeaderboardFeatures(leaderboardResult?.features || []);
       if (!result?.visuals?.length) {
         setFeVisualsError('No feature engineering visuals found. Run the Feature Engineering pipeline first.');
       }
@@ -366,11 +466,14 @@ function VisualizationPage({ activeSessionId }) {
 
       {/* Feature Engineering visuals — grouped sections */}
       {isFeTab && !feVisualsLoading && feVisualsLoaded && (
-        <FEVisualsGallery
-          dashboardAvailable={feDashboardAvailable}
-          sessionId={activeSessionId}
-          visuals={feVisuals}
-        />
+        <>
+          <FEMultiMetricChart leaderboardFeatures={feLeaderboardFeatures} />
+          <FEVisualsGallery
+            dashboardAvailable={feDashboardAvailable}
+            sessionId={activeSessionId}
+            visuals={feVisuals}
+          />
+        </>
       )}
 
       {isFeTab && !feVisualsLoaded && !feVisualsLoading && !feVisualsError && (

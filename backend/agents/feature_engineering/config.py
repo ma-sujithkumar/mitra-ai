@@ -42,6 +42,7 @@ class FeatureSelectionConfig(BaseModel):
     top_k_features: int = Field(gt=0)
     cluster_cut_threshold: float = Field(gt=0, lt=1)
     linear_baseline_k: int = Field(gt=0)
+    id_uniqueness_threshold: float = Field(ge=0.0, le=1.0, default=0.95)
 
 
 class ScalingConfig(BaseModel):

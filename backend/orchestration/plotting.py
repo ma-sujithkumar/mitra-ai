@@ -735,16 +735,12 @@ class PipelinePlotGenerator:
         stage_dir = self._ensure_stage_dir("judge")
         written: list[str] = []
 
-        plot_jobs: list[tuple[str, Callable[[], Optional[str]]]] = [
-            ("judge/ranked_models",
-             lambda: self._plot_judge_ranking(judge_decision, stage_dir)),
-            ("judge/dimension_scorecard",
-             lambda: self._plot_judge_dimension_scorecard(judge_decision, stage_dir)),
-        ]
-        for plot_label, plot_callable in plot_jobs:
-            result_path = self._guarded(plot_callable, plot_label)
-            if result_path is not None:
-                written.append(result_path)
+        result_path = self._guarded(
+            lambda: self._plot_judge_dimension_scorecard(judge_decision, stage_dir),
+            "judge/dimension_scorecard",
+        )
+        if result_path is not None:
+            written.append(result_path)
         return written
 
     def _plot_judge_ranking(
