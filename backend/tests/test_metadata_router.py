@@ -191,6 +191,45 @@ def test_metadata_starts_after_passing_validation(
     assert metadata["session_id"] == session_id
 
 
+def test_metadata_resolves_llm_settings_from_env_when_request_omits_credentials(
+    test_config_loader: ConfigLoader,
+) -> None:
+    (test_config_loader.repo_root / ".env").write_text(
+        "LLM_TYPE=anthropic\n"
+        "LLM_MODEL=anthropic/env-model\n"
+        "LLM_API_KEY=env-secret-key\n"
+        "LLM_GATEWAY_URL=https://env.example.test\n",
+        encoding="utf-8",
+    )
+    app = create_app(config_loader=test_config_loader)
+    fake_runner = SuccessfulMetadataRunner(
+        workspace_root=test_config_loader.paths.workspace_root
+    )
+    app.state.metadata_agent_runner = fake_runner
+    client = TestClient(app)
+    session_id = upload_and_validate(client=client)
+
+    response = client.post(
+        "/api/metadata",
+        json={
+            "session_id": session_id,
+            "description": "Predict the target class.",
+            "target_col": "target",
+            "problem_type": "classification",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    llm_settings = fake_runner.requests[0].llm_settings
+    assert llm_settings.provider == "anthropic"
+    assert llm_settings.model == "anthropic/env-model"
+    assert llm_settings.api_key == "env-secret-key"
+    assert llm_settings.gateway_url == "https://env.example.test"
+    assert llm_settings.source == "env"
+    assert "env-secret-key" not in response.text
+
+
 def test_metadata_missing_credentials_returns_503(
     test_config_loader: ConfigLoader,
 ) -> None:
