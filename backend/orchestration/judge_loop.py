@@ -687,18 +687,33 @@ class JudgeLoop:
         logger.debug("=> judge decision written: %s", canonical_path)
         self._persist_prompt_transcript(decision, reports_dir, turn)
 
-    @staticmethod
-    def _persist_prompt_transcript(decision: JudgeDecision, reports_dir: Path, turn: int) -> None:
+    # Delimiter JudgeAgent uses to join the rendered system + user jinja prompts
+    # into decision_trace.transcript. Splitting on it lets us dump each rendered
+    # template separately for inspection.
+    _PROMPT_PARTS_DELIMITER = "\n\n---\n\n"
+
+    @classmethod
+    def _persist_prompt_transcript(cls, decision: JudgeDecision, reports_dir: Path, turn: int) -> None:
         # The rendered judge prompt is already stored in decision_trace.transcript
-        # (the full audit trail); also dump it as a standalone text file in the
-        # session dir so it's directly inspectable without parsing JSON.
+        # (the full audit trail); also dump it as standalone text files in the
+        # session dir so each rendered jinja prompt is directly inspectable
+        # without parsing JSON.
         transcript = decision.decision_trace.transcript
         if not transcript:
             return
-        canonical_prompt_path = reports_dir / "judge_prompt.txt"
-        canonical_prompt_path.write_text(transcript, encoding="utf-8")
-        turn_prompt_path = reports_dir / f"judge_prompt_turn_{turn}.txt"
-        turn_prompt_path.write_text(transcript, encoding="utf-8")
+        # Combined prompt (system + user), canonical + per-turn archive.
+        (reports_dir / "judge_prompt.txt").write_text(transcript, encoding="utf-8")
+        (reports_dir / f"judge_prompt_turn_{turn}.txt").write_text(transcript, encoding="utf-8")
+
+        # Also split the two rendered jinja templates into their own files when
+        # the delimiter is present (system rubric/schema vs per-turn data).
+        prompt_parts = transcript.split(cls._PROMPT_PARTS_DELIMITER, 1)
+        if len(prompt_parts) == 2:
+            system_prompt_text, user_prompt_text = prompt_parts
+            (reports_dir / "judge_prompt_system.txt").write_text(system_prompt_text, encoding="utf-8")
+            (reports_dir / "judge_prompt_user.txt").write_text(user_prompt_text, encoding="utf-8")
+            (reports_dir / f"judge_prompt_system_turn_{turn}.txt").write_text(system_prompt_text, encoding="utf-8")
+            (reports_dir / f"judge_prompt_user_turn_{turn}.txt").write_text(user_prompt_text, encoding="utf-8")
 
     def _write_judge_status(
         self,

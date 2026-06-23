@@ -58,14 +58,18 @@ governance_flag_penalty: 0.5
 # LLM settings. Credentials are resolved via LlmSettingsResolver (reads .env:
 # LLM_TYPE, LLM_MODEL, LLM_API_KEY, LLM_GATEWAY_URL) - same as every other agent.
 use_llm: true
-prompt_template: judge_prompt.jinja2
+# Split prompt templates: system = static rubric + output schema; user = per-turn
+# data (metadata, statistics, domain reasoning, every survivor's eval details
+# inlined). Inlining removed the old get_model_evaluation_details_bulk tool call,
+# which was a full extra LLM round-trip per turn.
+prompt_system_template: judge_system.jinja2
+prompt_user_template: judge_user.jinja2
 # Retries for the LLM ranking call (timeout/parse/validation failures only,
 # never auth errors) before falling back to rule-only order.
 llm_judge_max_retries: 2
-# Per-attempt timeout for the LLM ranking call. Raised from 30s -- the
-# get_model_evaluation_details_bulk tool call plus the final ranking
-# response routinely needs longer than 30s for larger candidate sets,
-# which was causing real timeouts on multi-class datasets like matches.csv.
+# Per-attempt timeout for the LLM ranking call. With data inlined the turn is a
+# single inference (no tool round-trip), but keep generous headroom for large
+# multi-class candidate sets like matches.csv.
 llm_judge_timeout_sec: 90.0
 # When true, sets LITELLM_LOG=DEBUG around the judge LLM call so the raw litellm
 # request/response is printed in the backend logs (same wire-level debug the

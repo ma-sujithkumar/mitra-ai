@@ -239,7 +239,14 @@ class TrainingOrchestrator:
         summary = self.aggregator.build(manifest=manifest, results=results)
         self.aggregator.write(summary, summary_destination)
         self._emit_summary_event(summary)
-        self._close_event_stream(manifest.session_id)
+        # Do NOT close the event stream here: the judge feedback loop calls
+        # execute_local/execute_ray again (once per turn) to train new
+        # candidates on the same session_id. Closing after the first call
+        # made the bus silently drop every later event (see
+        # TrainingEventBus.emit's closed-session guard), freezing the SSE
+        # stream while training/eval kept making real progress underneath.
+        # The pipeline owner (TrainingService) closes the session exactly
+        # once, after the whole judge loop finishes.
         return summary
 
     def execute_ray(
@@ -391,7 +398,8 @@ class TrainingOrchestrator:
         summary = self.aggregator.build(manifest=manifest, results=results)
         self.aggregator.write(summary, summary_destination)
         self._emit_summary_event(summary)
-        self._close_event_stream(manifest.session_id)
+        # See execute_local: do NOT close the event stream here, the judge
+        # feedback loop re-invokes this for the same session per turn.
         return summary
 
     def prepare_and_execute_local(
@@ -598,12 +606,6 @@ class TrainingOrchestrator:
                 reset(session_id, clear_history=True)
             except Exception:
                 pass
-
-    def _close_event_stream(self, session_id: str) -> None:
-        try:
-            self.event_sink.close_session(session_id)
-        except Exception:
-            pass
 
     @staticmethod
     def _execute_one(worker: TrainingWorker, job: TrainingJob) -> TrainingResult:

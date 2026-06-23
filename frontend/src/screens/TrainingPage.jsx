@@ -298,27 +298,28 @@ function formatTime(timestamp) {
 
 function EvaluationLogs({ logs, polledLogs = [] }) {
   const logRef = useRef(null);
-  const sseEvalLogs = logs.filter(
-    (entry) =>
-      entry.stage === 'evaluation' ||
-      entry.stage === 'judge' ||
-      entry.stage === 'shap' ||
-      entry.stage === 'overfitting'
-  );
 
-  // Combine SSE logs and polled logs, deduplicating by message + stage + status
-  const combinedLogs = [...sseEvalLogs];
-  polledLogs.forEach((polled) => {
-    const isDuplicate = sseEvalLogs.some(
-      (sse) => sse.stage === polled.stage && sse.message === polled.message
+  // Memoized so the merge/dedup/sort only recomputes when the inputs change,
+  // not on every render. Dedup uses a Set keyed by stage+message (O(n+m))
+  // instead of a nested scan (O(n*m)) that got slower as logs accumulated.
+  const combinedLogs = useMemo(() => {
+    const sseEvalLogs = logs.filter(
+      (entry) =>
+        entry.stage === 'evaluation' ||
+        entry.stage === 'judge' ||
+        entry.stage === 'shap' ||
+        entry.stage === 'overfitting'
     );
-    if (!isDuplicate) {
-      combinedLogs.push(polled);
-    }
-  });
-
-  // Sort by timestamp or sequence to keep them chronological
-  combinedLogs.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+    const seenKeys = new Set(sseEvalLogs.map((sse) => `${sse.stage}|${sse.message}`));
+    const merged = [...sseEvalLogs];
+    polledLogs.forEach((polled) => {
+      if (!seenKeys.has(`${polled.stage}|${polled.message}`)) {
+        merged.push(polled);
+      }
+    });
+    merged.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+    return merged;
+  }, [logs, polledLogs]);
 
   useEffect(() => {
     if (logRef.current) {
@@ -663,12 +664,16 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
   // judge stuck on "awaiting" and the evaluation event stream empty even though
   // the artifacts were already on disk. Instead each poll runs until its own
   // stage reaches a terminal state (stopWhen) and is bounded on errors.
+  // 4s (vs 2s) for the three eval-status polls: they run concurrently with the
+  // SSE stream + status + verdict polls for the entire (long) judge stage, so a
+  // wider interval cuts request/render churn without affecting terminal-state
+  // detection (stopWhen still ends them as soon as the stage finishes).
   useBoundedPoll(pollShapStatus, {
     enabled:
       Boolean(connectedSessionId) &&
       verdictData?.status !== 'complete' &&
       !['complete', 'failed'].includes(stageStatuses.shap.status),
-    intervalMs: 2000,
+    intervalMs: 4000,
     maxErrorAttempts: 6,
     stopWhen: (data) => EVAL_TERMINAL_STATUSES.includes(data?.status),
     resetKey: `${connectedSessionId}-${runToken}`,
@@ -679,7 +684,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
       Boolean(connectedSessionId) &&
       verdictData?.status !== 'complete' &&
       !['complete', 'failed'].includes(stageStatuses.overfitting.status),
-    intervalMs: 2000,
+    intervalMs: 4000,
     maxErrorAttempts: 6,
     stopWhen: (data) => EVAL_TERMINAL_STATUSES.includes(data?.status),
     resetKey: `${connectedSessionId}-${runToken}`,
@@ -690,7 +695,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
       Boolean(connectedSessionId) &&
       verdictData?.status !== 'complete' &&
       !['complete', 'failed'].includes(stageStatuses.judge.status),
-    intervalMs: 2000,
+    intervalMs: 4000,
     maxErrorAttempts: 6,
     stopWhen: (data) => EVAL_TERMINAL_STATUSES.includes(data?.status),
     resetKey: `${connectedSessionId}-${runToken}`,
@@ -760,7 +765,10 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
         });
       }
 
-      return changed ? updated : prev;
+      if (!changed) return prev;
+      // Cap retained polled logs (mirrors the SSE log cap in trainingState.js)
+      // so a long judge run cannot grow this array without bound.
+      return updated.length > 500 ? updated.slice(-500) : updated;
     });
   }, [
     stageStatuses.shap.message,

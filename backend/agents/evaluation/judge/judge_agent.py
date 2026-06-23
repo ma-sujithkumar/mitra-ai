@@ -22,7 +22,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from google.adk.agents import LlmAgent
@@ -34,44 +34,55 @@ from backend.agents.metadata_gen_agent import LlmSettingsResolver
 from backend.config_loader import ConfigLoader
 from .config_loader import load_judge_config
 from .rule_engine import RuleEngine
-from .schemas import CandidateModel, JudgeDecision, JudgeInput, RankedModel
+from .schemas import JudgeDecision, JudgeInput, RankedModel
 
 logger = logging.getLogger(__name__)
 
 
-def _build_candidates_detail(candidates: List[CandidateModel]) -> Dict[str, Any]:
-    """Build a model_name => candidate dict for the jinja2 template."""
-    return {candidate.model_name: candidate for candidate in candidates}
-
-
-def _render_prompt(
+def _render_prompts(
     judge_input: JudgeInput,
     decision: JudgeDecision,
     prompts_dir: str,
-    template_name: str,
+    system_template_name: str,
+    user_template_name: str,
     max_accuracy_drop_pct: float,
-) -> str:
-    """Render the jinja2 judge prompt with the rule-based decision and context inputs."""
+) -> Tuple[str, str]:
+    """Render the (system, user) judge prompts.
+
+    The system prompt is the static rubric + output schema (constant across
+    turns/models within a run, so it is marked cacheable by the caller). The
+    user prompt carries the per-turn data -- dataset metadata, statistics,
+    domain reasoning, and EVERY survivor's full evaluation details inlined.
+    Inlining the details removes the old tool round-trip (the model previously
+    had to call get_model_evaluation_details_bulk to fetch this same data),
+    which was a full extra LLM inference per turn.
+    """
     env = Environment(
         loader=FileSystemLoader(prompts_dir),
         autoescape=select_autoescape(disabled_extensions=("jinja2",)),
     )
     env.policies["json.dumps_kwargs"] = {"indent": 2}
-    template = env.get_template(template_name)
 
-    candidates_detail = _build_candidates_detail(judge_input.candidates)
-    return template.render(
+    # Only the survivors (verdict == "select") are ranked by the LLM; build the
+    # inline detail payload for exactly those, reusing JudgeTools so the inlined
+    # shape stays identical to what the old bulk tool returned.
+    tools = JudgeTools(judge_input)
+    survivor_names = [rm.model_name for rm in decision.ranked_models if rm.verdict == "select"]
+    candidate_details = {name: tools._evaluation_details_for(name) for name in survivor_names}
+    rule_scores = {rm.model_name: rm.score for rm in decision.ranked_models if rm.verdict == "select"}
+
+    system_text = env.get_template(system_template_name).render(
+        max_accuracy_drop_pct=max_accuracy_drop_pct,
+    )
+    user_text = env.get_template(user_template_name).render(
         dataset_id=judge_input.dataset_id,
         minidata=judge_input.minidata,
         metadata=judge_input.metadata,
-        # Injected directly into the prompt text (not a tool call) -- it's
-        # already available server-side, so fetching it via a round-trip tool
-        # call only adds LLM latency for no benefit.
         domain_reasoning=judge_input.domain_reasoning,
-        ranked_models=decision.ranked_models,
-        candidates_detail=candidates_detail,
-        max_accuracy_drop_pct=max_accuracy_drop_pct,
+        candidate_details=candidate_details,
+        rule_scores=rule_scores,
     )
+    return system_text, user_text
 
 
 class JudgeTools:
@@ -139,37 +150,24 @@ class JudgeTools:
 
 
 async def _invoke_llm_agent(
-    prompt_text: str,
+    system_text: str,
+    user_text: str,
     llm_settings: LlmSettings,
-    tools_instance: JudgeTools,
-    tool_call_callback: Optional[Callable[[str, dict[str, Any]], None]] = None,
 ) -> Optional[str]:
-    """Run the ADK LlmAgent via the shared LiteLlm factory, using connected tools to fetch data on demand."""
+    """Run the ADK LlmAgent via the shared LiteLlm factory.
+
+    No tools are registered: every input the judge needs (dataset metadata,
+    statistics, and each survivor's full evaluation details) is inlined into
+    ``user_text`` by the caller. The model previously fetched this same data
+    through get_model_evaluation_details_bulk / get_dataset_metadata /
+    get_dataset_statistics, but each tool call is a full extra LLM round-trip;
+    inlining collapses the whole turn into a single inference.
+    """
     llm_model = build_llm_model(llm_settings)
     agent = LlmAgent(
         name="judge_llm",
         model=llm_model,
-        instruction=(
-            "You are an expert ML model selection judge. The candidates have already "
-            "passed a deterministic hard floor and bias/leakage gate -- that filtering "
-            "is fixed. Your job is to RANK the survivors by judgment, grounded in their "
-            "metrics, overfitting behavior, complexity, and SHAP feature importance "
-            "correlated against the domain reasoning already given to you in this "
-            "prompt (it is not a tool -- it is inline text below). You do NOT decide "
-            "which models are selected -- a separate deterministic step picks the top "
-            "percentage of your ranking. To construct your response, you MUST call the "
-            "tools to retrieve dataset metadata, statistics, and model evaluation "
-            "details. For model evaluation details, call "
-            "get_model_evaluation_details_bulk EXACTLY ONCE with the full list of "
-            "candidate model names -- do not call it once per model, that is much "
-            "slower. Do not assume or guess. Respond only with the requested JSON "
-            "ranking schema."
-        ),
-        tools=[
-            tools_instance.get_dataset_metadata,
-            tools_instance.get_dataset_statistics,
-            tools_instance.get_model_evaluation_details_bulk,
-        ],
+        instruction=system_text,
     )
     runner = InMemoryRunner(agent=agent, app_name="judge_agent")
     session_service = runner.session_service
@@ -180,18 +178,13 @@ async def _invoke_llm_agent(
     # ADK's run_async expects a types.Content (with .role), not a plain dict.
     new_message = genai_types.Content(
         role="user",
-        parts=[genai_types.Part(text=prompt_text)],
+        parts=[genai_types.Part(text=user_text)],
     )
     async for event in runner.run_async(
         user_id=session.user_id,
         session_id=session.id,
         new_message=new_message,
     ):
-        function_calls = event.get_function_calls() if hasattr(event, "get_function_calls") else []
-        for call in function_calls:
-            if tool_call_callback:
-                tool_call_callback(call.name, call.args)
-
         if event.is_final_response() and event.content:
             for part in event.content.parts or []:
                 if hasattr(part, "text") and part.text:
@@ -318,7 +311,9 @@ class JudgeAgent:
         agent_root = os.path.dirname(__file__)
         prompts_subdir = self._config.get("prompts_dir", "prompts")
         self._prompts_dir = os.path.join(agent_root, prompts_subdir)
-        self._prompt_template = self._config.get("prompt_template", "judge_prompt.jinja2")
+        # Split prompt: static rubric/schema (system, reusable) + per-turn data (user).
+        self._system_template = self._config.get("prompt_system_template", "judge_system.jinja2")
+        self._user_template = self._config.get("prompt_user_template", "judge_user.jinja2")
 
     def judge(
         self,
@@ -405,41 +400,31 @@ class JudgeAgent:
                 len(judge_input.candidates),
             )
 
-            prompt_text = _render_prompt(
+            system_text, user_text = _render_prompts(
                 judge_input=judge_input,
                 decision=decision,
                 prompts_dir=self._prompts_dir,
-                template_name=self._prompt_template,
+                system_template_name=self._system_template,
+                user_template_name=self._user_template,
                 max_accuracy_drop_pct=float(self._config["llm_ranking_max_accuracy_drop"]) * 100,
             )
+            prompt_text = f"{system_text}\n\n---\n\n{user_text}"
             logger.info(
                 "=> [JUDGE LLM] rendered prompt (%d chars):\n%s",
                 len(prompt_text),
                 prompt_text,
             )
 
-            # Store the prompt text as the audit transcript inside decision_trace.
+            # Store the full prompt text as the audit transcript inside decision_trace.
             updated_trace = decision.decision_trace.model_copy(
                 update={"transcript": prompt_text}
             )
             decision = decision.model_copy(update={"decision_trace": updated_trace})
 
-            tools_instance = JudgeTools(judge_input)
-            active_calls: List[Dict[str, Any]] = []
-
-            def tool_call_callback(name: str, args: dict[str, Any]) -> None:
-                call_info = {
-                    "name": name,
-                    "args": args,
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                }
-                active_calls.append(call_info)
-                logger.info("=> [JUDGE LLM] tool call: %s with args %s", name, args)
-                if status_callback:
-                    status_callback(
-                        f"Agent calling tool '{name}'...",
-                        {"tool_calls": active_calls}
-                    )
+            # No tools are called any more (data is inlined), but keep the live
+            # status ping so the UI shows the judge is actively evaluating.
+            if status_callback:
+                status_callback("Agent evaluating candidates with LLM...", None)
 
             max_attempts = int(self._config.get("llm_judge_max_retries", 2)) + 1
             timeout_sec = float(self._config.get("llm_judge_timeout_sec", 90.0))
@@ -450,10 +435,9 @@ class JudgeAgent:
                     raw_response = asyncio.run(
                         asyncio.wait_for(
                             _invoke_llm_agent(
-                                prompt_text=prompt_text,
+                                system_text=system_text,
+                                user_text=user_text,
                                 llm_settings=judge_llm_settings,
-                                tools_instance=tools_instance,
-                                tool_call_callback=tool_call_callback,
                             ),
                             timeout=timeout_sec,
                         )
