@@ -20,6 +20,12 @@ const POLL_INTERVAL_MS = 2000;
 // polling after this many idle attempts and show an "absent" message rather
 // than spinning forever.
 const MAX_POLL_ATTEMPTS = 15;
+// dataset_prior.json is written by a D2V query step that runs *after*
+// feature_run.json already reports "done" (see pipeline_prep.py: _run_d2v_query
+// fires after _write_feature_run_status), so a single fetch right when the FE
+// job flips to done can still race the file and return status="pending"
+// forever. Keep retrying on its own short loop until it resolves.
+const D2V_MAX_POLL_ATTEMPTS = 30;
 
 function agentStateFromId(agentId, agentsArray) {
   const found = (agentsArray || []).find((agent) => agent.id === agentId);
@@ -427,9 +433,6 @@ function FeatureEngineeringPage({ activeSessionId, startRun }) {
         }
         if (isDone) {
           setPolling(false);
-          fetchD2VPrior(activeSessionId)
-            .then((prior) => { if (!cancelled) setD2vData(prior); })
-            .catch(() => {});
           fetchFeatureLeaderboard(activeSessionId)
             .then((data) => { if (!cancelled) setLeaderboardData(data); })
             .catch(() => {});
@@ -458,6 +461,44 @@ function FeatureEngineeringPage({ activeSessionId, startRun }) {
     return () => {
       cancelled = true;
       setPolling(false);
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [activeSessionId]);
+
+  // Dataset2Vec prior poll: independent of the main FE poll above because
+  // dataset_prior.json can still be mid-write when feature_run.json already
+  // reports "done" (backend writes the D2V prior after the status file).
+  // Keeps retrying until the endpoint reports a non-pending status.
+  useEffect(() => {
+    if (!activeSessionId) {
+      setD2vData(null);
+      return undefined;
+    }
+
+    let timeoutId = null;
+    let cancelled = false;
+    let attempts = 0;
+
+    async function pollD2vOnce() {
+      const prior = await fetchD2VPrior(activeSessionId).catch(() => null);
+      if (cancelled) return;
+
+      if (prior) setD2vData(prior);
+
+      if (prior && prior.status !== 'pending') {
+        return;
+      }
+      attempts += 1;
+      if (attempts >= D2V_MAX_POLL_ATTEMPTS) {
+        return;
+      }
+      timeoutId = setTimeout(pollD2vOnce, POLL_INTERVAL_MS);
+    }
+
+    pollD2vOnce();
+
+    return () => {
+      cancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
     };
   }, [activeSessionId]);

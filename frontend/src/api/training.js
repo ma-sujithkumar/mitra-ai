@@ -34,3 +34,9 @@ export async function resetTraining(sessionId) {
   });
 }
 
+export async function restartJudgeTurn(sessionId) {
+  return requestJson(`/api/training/${encodeURIComponent(sessionId)}/judge/restart-turn`, {
+    method: 'POST',
+  });
+}
+

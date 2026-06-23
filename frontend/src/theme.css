@@ -1517,6 +1517,13 @@ h2 {
   color: #c9ced9;
 }
 
+/* Evaluation stream has an extra stage-name column (training, judge, hpt, ...)
+   between the timestamp and status badge, so it needs its own wider template
+   instead of squeezing a 4th cell into terminal-line's 3-column grid. */
+.terminal-line.evaluation-log-line {
+  grid-template-columns: 58px 76px 90px minmax(0, 1fr);
+}
+
 .terminal-line span,
 .terminal-empty {
   color: #697080;
@@ -1597,14 +1604,15 @@ h2 {
   border-bottom: 1px solid var(--line);
   color: var(--ink-faint);
   padding: 10px 0;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 800;
   text-transform: uppercase;
 }
 
 .leaderboard-row {
   border-bottom: 1px solid var(--line-soft);
-  padding: 13px 0;
+  padding: 16px 0;
+  font-size: 16px;
 }
 
 .leaderboard-row.winner {
@@ -1614,11 +1622,12 @@ h2 {
 .rank {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--radius);
   background: var(--panel-3);
   font-weight: 800;
+  font-size: 15px;
 }
 
 .leaderboard-row.winner .rank {
@@ -1634,12 +1643,12 @@ h2 {
 .leaderboard-row small {
   color: var(--ink-muted);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .metric-bar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 46px;
+  grid-template-columns: minmax(0, 1fr) 50px;
   gap: 8px;
   align-items: center;
 }
@@ -1647,6 +1656,7 @@ h2 {
 .metric-bar em {
   font-style: normal;
   font-weight: 800;
+  font-size: 15px;
   text-align: right;
 }
 
@@ -2205,6 +2215,40 @@ h2 {
   word-break: break-all;
 }
 
+/* gate_outcomes / scores rule rows: a model-keyed dict instead of a scalar
+   value, so the name column stacks above a per-model sub-list. */
+.rule-row-stacked {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.rule-sublist {
+  display: grid;
+  gap: 4px;
+}
+
+.rule-subrow {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 1.6fr);
+  gap: 12px;
+  padding: 4px 0 4px 12px;
+  border-left: 2px solid var(--line);
+}
+
+.rule-submodel {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.rule-subreason {
+  color: var(--ink-muted);
+}
+
+.rule-subscore {
+  color: var(--ink-muted);
+  text-align: right;
+}
+
 /* ------------------------------------------------------------------ */
 /* Leaderboard enhancements: scrollable wide table                     */
 /* ------------------------------------------------------------------ */
@@ -2680,6 +2724,13 @@ h2 {
   align-items: start;
   gap: 18px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* Judge Reasoning is the only panel with a StatusPill alongside the title,
+   so on a 3-column grid with just 2 panels it wraps to two lines instead of
+   widening into the empty third column -- span it explicitly. */
+.leaderboard-bottom-grid .reasoning-panel {
+  grid-column: span 2;
 }
 
 @media (max-width: 1100px) {

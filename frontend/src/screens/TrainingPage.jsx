@@ -11,7 +11,7 @@ import TrainingProgress from '../components/training/TrainingProgress.jsx';
 import TrainingSummary from '../components/training/TrainingSummary.jsx';
 import { fetchDomainReasoning, fetchHpt, fetchModelConfig, fetchPlots, fetchShap, fetchVerdict, plotUrl, fetchFeatureEngineering, fetchShapStatus, fetchOverfittingStatus, fetchJudgeStatus } from '../api/client.js';
 import { streamTrainingEvents } from '../api/events.js';
-import { cancelTraining, fetchTrainingStatus, startTraining, resetTraining } from '../api/training.js';
+import { cancelTraining, fetchTrainingStatus, startTraining, resetTraining, restartJudgeTurn } from '../api/training.js';
 import { useBoundedPoll } from '../hooks/useBoundedPoll.js';
 import { AGENTS } from '../data.js';
 import { Icons } from '../icons.jsx';
@@ -44,6 +44,17 @@ function createStageStatuses() {
 function getEvalStepStatus(stepKey, stageStatuses) {
   const stage = stageStatuses?.[stepKey];
   if (!stage) return 'queued';
+  // The backend keeps the judge stage's status="running" for the entire multi-turn
+  // judge loop (selection/retrain/re-eval bookkeeping included), not just the LLM
+  // call itself, so the top-level "Judge Multi-turn Loop" pipeline card stays lit
+  // across turns. That same raw status feeds this 3-step SHAP/Overfitting/Judge
+  // stepper, where "running" must mean the LLM call specifically. SHAP/overfitting
+  // genuinely running rules that out, so force the Judge step back to 'queued'
+  // here -- this keeps the two widgets independently correct without changing
+  // what the backend emits.
+  if (stepKey === 'judge' && (stageStatuses?.shap?.status === 'running' || stageStatuses?.overfitting?.status === 'running')) {
+    return 'queued';
+  }
   if (stage.status === 'complete') return 'done';
   if (stage.status === 'running') return 'active';
   if (stage.status === 'failed') return 'error';
@@ -100,6 +111,7 @@ function EvaluationProgressSteps({ stageStatuses }) {
 // the Continue button.
 function TrainingAnalyticsSection({ sessionId }) {
   const [shapData, setShapData] = useState(null);
+  const [shapModelName, setShapModelName] = useState(null);
   const [modelConfigData, setModelConfigData] = useState(null);
   const [plots, setPlots] = useState([]);
   const [analyticsError, setAnalyticsError] = useState(null);
@@ -124,6 +136,7 @@ function TrainingAnalyticsSection({ sessionId }) {
         value: item.importance,
       }));
       setShapData(shapFeatures.length ? shapFeatures : null);
+      setShapModelName(shap?.model_name || null);
       setModelConfigData(config?.status === 'complete' ? config : null);
       setPlots(plotsResp?.plots || []);
       setDomainReasoningData(
@@ -234,10 +247,12 @@ function TrainingAnalyticsSection({ sessionId }) {
           {shapData ? (
             <section className="card panel-section">
               <div className="agent-reasoning-header">
-                {featureAgent ? <AgentAvatar agent={featureAgent} size={28} state="done" /> : null}
+                {featureAgent ? (
+                  <AgentAvatar agent={featureAgent} size={30} state={shapData ? 'done' : 'idle'} />
+                ) : null}
                 <div>
                   <p className="section-kicker">Explainability</p>
-                  <h2>SHAP Feature Importance</h2>
+                  <h2>SHAP Feature Importance {shapModelName ? `(${shapModelName})` : ''}</h2>
                 </div>
               </div>
               <HBars data={shapData} />
@@ -360,25 +375,21 @@ function EvaluationLogs({ logs, polledLogs = [] }) {
               }}
             >
               <span>{formatTime(entry.ts)}</span>
-              {entry.stage ? (
-                <span
-                  className="mono"
-                  style={{
-                    textTransform: 'uppercase',
-                    fontSize: '0.68rem',
-                    color: 'var(--ink-muted)',
-                    margin: '0 8px',
-                    letterSpacing: '0.04em',
-                  }}
-                >
-                  {entry.stage}
-                </span>
-              ) : null}
+              <span
+                className="mono"
+                style={{
+                  textTransform: 'uppercase',
+                  fontSize: '0.68rem',
+                  color: 'var(--ink-muted)',
+                  letterSpacing: '0.04em',
+                }}
+              >
+                {entry.stage || ''}
+              </span>
               <strong
                 className={`level-${entry.level}`}
                 style={{
                   color: entry.level === 'error' ? 'var(--error)' : entry.level === 'warn' ? 'var(--warning)' : 'var(--accent)',
-                  marginRight: 8,
                 }}
               >
                 {entry.status}
@@ -409,7 +420,9 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
   const [verdictData, setVerdictData] = useState(null);
   const [isRestarting, setIsRestarting] = useState(false);
   const [restartError, setRestartError] = useState(null);
-  const [pendingConfirm, setPendingConfirm] = useState(null); // 'cancel' | 'restart' | null
+  const [isRestartingTurn, setIsRestartingTurn] = useState(false);
+  const [turnRestartMessage, setTurnRestartMessage] = useState('');
+  const [pendingConfirm, setPendingConfirm] = useState(null); // 'cancel' | 'restart' | 'restartTurn' | null
   const [sessionInputError, setSessionInputError] = useState(null);
   const [stageStatuses, setStageStatuses] = useState(createStageStatuses);
   const [runToken, setRunToken] = useState(0);
@@ -456,6 +469,7 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     setBackendStatus(null);
     setVerdictData(null);
     setJudgeStatusData(null);
+    setTurnRestartMessage('');
     setPolledEvalLogs([]);
     setConnectionMessage('Connecting to the training event stream…');
     setRunState('running');
@@ -868,6 +882,21 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     }
   }
 
+  async function handleRestartTurn() {
+    if (!connectedSessionId || isRestartingTurn) {
+      return;
+    }
+    setIsRestartingTurn(true);
+    try {
+      await restartJudgeTurn(connectedSessionId);
+      setTurnRestartMessage('Restart requested: current judge turn will redo from scratch.');
+    } catch (restartTurnError) {
+      setTurnRestartMessage(restartTurnError.message || 'Failed to restart judge turn.');
+    } finally {
+      setIsRestartingTurn(false);
+    }
+  }
+
   // Confirmation gating for destructive actions (cancel a run / wipe + re-run).
   const CONFIRM_DETAILS = {
     cancel: {
@@ -883,6 +912,13 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
       confirmLabel: 'Reset and re-run',
       tone: 'danger',
       run: handleRestartTraining,
+    },
+    restartTurn: {
+      title: 'Restart this judge turn?',
+      body: 'Any running SHAP/overfitting evaluation for the current turn will be stopped and that turn will redo from scratch. Previously completed turns are kept.',
+      confirmLabel: 'Restart turn',
+      tone: 'danger',
+      run: handleRestartTurn,
     },
   };
   const activeConfirm = pendingConfirm ? CONFIRM_DETAILS[pendingConfirm] : null;
@@ -945,6 +981,10 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
     state.complete ||
     ['completed', 'partial_failure', 'failed', 'cancelled'].includes(backendStatus?.status);
   const canCancel = Boolean(connectedSessionId) && !runIsTerminal;
+  // Restart-turn only makes sense while the judge is actively evaluating a turn
+  // (SHAP/overfitting subprocesses running) -- after convergence there is no
+  // in-flight turn left to redo.
+  const canRestartTurn = Boolean(connectedSessionId) && !runIsTerminal && judgeStatus === 'running';
   // Offer a manual reconnect when the live stream dropped and the run is not
   // yet finished (instead of an indefinite silent "reconnecting" state).
   const showReconnect =
@@ -1023,7 +1063,22 @@ function TrainingPage({ activeSessionId, go, runState, setRunState, setActiveSes
               {isCancelling ? 'Cancelling...' : 'Cancel training'}
             </button>
           ) : null}
+          {canRestartTurn ? (
+            <button
+              className="btn btn-secondary"
+              disabled={isRestartingTurn}
+              onClick={() => setPendingConfirm('restartTurn')}
+              type="button"
+              title={judgeStatusData?.turn ? `Restart turn ${judgeStatusData.turn}` : 'Restart current judge turn'}
+            >
+              <Icons.refreshCw size={16} />
+              {isRestartingTurn ? 'Restarting turn...' : 'Restart this turn'}
+            </button>
+          ) : null}
         </div>
+        {turnRestartMessage ? (
+          <p className="muted" style={{ marginTop: 8, fontSize: '0.85rem' }}>{turnRestartMessage}</p>
+        ) : null}
       </section>
 
       {/* "Session ID" is an internal identifier, not something users should

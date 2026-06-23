@@ -190,6 +190,7 @@ function formatTime(timestamp) {
 function LeaderboardScreen({ activeSessionId, go, startRun }) {
   const [leaderboardData, setLeaderboardData] = useState(null);
   const [shapData, setShapData] = useState(null);
+  const [shapModelName, setShapModelName] = useState(null);
   const [verdictData, setVerdictData] = useState(null);
   const [tokenData, setTokenData] = useState(null);
   const [loadState, setLoadState] = useState('idle');
@@ -230,6 +231,7 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
       value: item.importance,
     }));
     setShapData(features.length ? features : null);
+    setShapModelName(shap?.model_name || null);
     setVerdictData(verdict?.status && verdict.status !== 'pending' ? verdict : null);
     setTokenData(tokens?.status === 'complete' ? tokens : null);
 
@@ -241,7 +243,7 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
     }
 
     setLoadState('done');
-    return leaderboard;
+    return { leaderboard, shap, verdict, tokens };
   }, [activeSessionId]);
 
   const { pollState: leaderboardPollState, restart: restartLeaderboardPoll } = useBoundedPoll(
@@ -251,7 +253,13 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
       intervalMs: LEADERBOARD_POLL_MS,
       maxAttempts: LEADERBOARD_MAX_POLLS,
       maxErrorAttempts: 6,
-      stopWhen: (leaderboard) => leaderboard?.status === 'complete',
+      stopWhen: (res) => {
+        const lbDone = res?.leaderboard?.status === 'complete';
+        const shapDone = !res?.shap || res.shap.status === 'complete';
+        const verdictDone = !res?.verdict || res.verdict.status === 'complete' || res.verdict.status === 'failed';
+        const tokensDone = !res?.tokens || res.tokens.status === 'complete' || res.tokens.status === 'failed';
+        return lbDone && shapDone && verdictDone && tokensDone;
+      },
       resetKey: activeSessionId,
     },
   );
@@ -915,7 +923,7 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
             {featureAgent ? <AgentAvatar agent={featureAgent} size={30} state={shapData ? 'done' : 'idle'} /> : null}
             <div>
               <p className="section-kicker">Explainability</p>
-              <h2>SHAP Feature Importance</h2>
+              <h2>SHAP Feature Importance {shapModelName ? `(${shapModelName})` : ''}</h2>
             </div>
           </div>
           <HBars data={shapData || SHAP} />
@@ -974,17 +982,57 @@ function LeaderboardScreen({ activeSessionId, go, startRun }) {
             </div>
           ) : null}
 
-          {/* Rule outcomes table */}
+          {/* Rule outcomes table -- gate_outcomes (model -> rejection reason) and
+              scores (model -> composite score) are dicts, not scalars, so they
+              get a per-model sub-list instead of a raw JSON.stringify dump. */}
           {decisionTrace?.rule_outcomes && Object.keys(decisionTrace.rule_outcomes).length > 0 ? (
             <div style={{ marginTop: 14 }}>
               <p className="section-kicker" style={{ marginBottom: 6 }}>Rule Outcomes</p>
               <div className="rule-outcomes-table">
-                {Object.entries(decisionTrace.rule_outcomes).map(([ruleName, outcome]) => (
-                  <div className="rule-row" key={ruleName}>
-                    <span className="rule-name mono">{ruleName}</span>
-                    <span className="rule-value">{JSON.stringify(outcome)}</span>
-                  </div>
-                ))}
+                {Object.entries(decisionTrace.rule_outcomes).map(([ruleName, outcome]) => {
+                  if (ruleName === 'gate_outcomes' && outcome && typeof outcome === 'object') {
+                    const entries = Object.entries(outcome);
+                    if (entries.length === 0) return null;
+                    return (
+                      <div className="rule-row rule-row-stacked" key={ruleName}>
+                        <span className="rule-name mono">Gate Outcomes</span>
+                        <div className="rule-sublist">
+                          {entries.map(([modelName, reason]) => (
+                            <div className="rule-subrow" key={modelName}>
+                              <span className="rule-submodel mono">{modelName}</span>
+                              <span className="rule-subreason">{reason}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+                  if (ruleName === 'scores' && outcome && typeof outcome === 'object') {
+                    const entries = Object.entries(outcome).sort(
+                      ([, scoreA], [, scoreB]) => (Number(scoreB) || 0) - (Number(scoreA) || 0)
+                    );
+                    if (entries.length === 0) return null;
+                    return (
+                      <div className="rule-row rule-row-stacked" key={ruleName}>
+                        <span className="rule-name mono">Scores</span>
+                        <div className="rule-sublist">
+                          {entries.map(([modelName, score]) => (
+                            <div className="rule-subrow" key={modelName}>
+                              <span className="rule-submodel mono">{modelName}</span>
+                              <span className="rule-subscore mono">{Number(score).toFixed(4)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="rule-row" key={ruleName}>
+                      <span className="rule-name mono">{ruleName}</span>
+                      <span className="rule-value">{JSON.stringify(outcome)}</span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ) : null}
