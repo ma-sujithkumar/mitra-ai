@@ -24,15 +24,21 @@ def test_start_falls_back_from_external_to_local(model_library_root, ray_setting
     assert ray.shutdown_calls == 1
 
 
-def test_existing_runtime_is_not_shutdown(model_library_root, ray_settings) -> None:
+def test_stale_runtime_is_shutdown_and_restarted(model_library_root, ray_settings) -> None:
+    # A leftover Ray cluster (from a prior training turn) should be shut down at
+    # start() so stale IDLE workers don't accumulate and exhaust RAM across turns.
     ray = FakeRay(initialized=True)
     executor = RayExecutor(model_library_root, ray_module=ray, settings=ray_settings)
 
-    assert executor.start().mode == "external"
-    executor.close()
+    health = executor.start()
+    # After the stale cluster is shut down, start() re-inits (external address
+    # succeeds in FakeRay when fail_external=False), so mode is external again.
+    assert health.ready is True
 
-    assert ray.shutdown_calls == 0
-    assert ray.initialized is True
+    executor.close()
+    # shutdown called once during start() (stale cleanup) + once during close()
+    assert ray.shutdown_calls == 2
+    assert ray.initialized is False
 
 
 def test_submit_all_uses_priority_and_resource_options(

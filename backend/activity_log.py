@@ -94,13 +94,23 @@ def configure_file_logging(
     max_bytes: int,
     backup_count: int,
 ) -> None:
-    """Attach a rotating file handler to the ``mitra`` logger so all backend
-    activity is persisted to ``log_file`` (in addition to the console)."""
+    """Attach a rotating file handler to the root logger so all backend
+    activity is persisted to ``log_file`` (in addition to the console).
+
+    The handler is attached to the root logger (not just the ``mitra``
+    namespace) because every backend module logs via
+    ``logging.getLogger(__name__)`` (e.g. ``backend.orchestration.judge_loop``,
+    ``backend.services.training_service``), which propagates to root, not to
+    ``mitra``. Attaching only to ``mitra`` silently dropped every INFO log
+    from the training/judge/evaluation pipeline (root's default level is
+    WARNING), making it impossible to measure per-turn timing after the
+    initial feature-engineering stage.
+    """
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    mitra_logger = logging.getLogger("mitra")
+    root_logger = logging.getLogger()
     has_file_handler = any(
         isinstance(handler, RotatingFileHandler)
-        for handler in mitra_logger.handlers
+        for handler in root_logger.handlers
     )
     if not has_file_handler:
         file_handler = RotatingFileHandler(
@@ -110,8 +120,8 @@ def configure_file_logging(
             encoding="utf-8",
         )
         file_handler.setFormatter(logging.Formatter(LOG_LINE_FORMAT))
-        mitra_logger.addHandler(file_handler)
+        root_logger.addHandler(file_handler)
     resolved_level = logging.getLevelName(level.upper())
-    mitra_logger.setLevel(
+    root_logger.setLevel(
         resolved_level if isinstance(resolved_level, int) else logging.INFO
     )

@@ -95,6 +95,30 @@ def cancel_training(
     )
 
 
+@router.post("/{session_id}/judge/restart-turn")
+def restart_judge_turn(
+    session_id: str,
+    training_service: TrainingService = Depends(get_training_service),
+) -> dict[str, str]:
+    """Kill the currently running SHAP/overfitting subprocesses for this judge
+    turn and redo that same turn from scratch, leaving completed turns intact.
+    """
+    try:
+        training_service.request_turn_restart(session_id)
+    except TrainingRunNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "TRAINING_NOT_FOUND", "message": str(exc)},
+        ) from exc
+    except TrainingCancellationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "TURN_RESTART_NOT_AVAILABLE", "message": str(exc)},
+        ) from exc
+
+    return {"session_id": session_id, "status": "restart_requested"}
+
+
 @router.post("/reset/{session_id}")
 def reset_training(
     session_id: str,

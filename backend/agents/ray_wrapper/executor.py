@@ -8,10 +8,13 @@ updates and ``training_summary.json`` generation.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from time import monotonic
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 import ray
 
@@ -55,14 +58,22 @@ class RayExecutor:
         self.last_error: str | None = None
 
     def start(self) -> RayHealth:
-        """Connect to a running cluster, otherwise start a local Ray runtime."""
+        """Start a fresh local Ray runtime for this training run.
 
+        Any previously running Ray instance (from a prior training turn or a
+        background `ray start`) is shut down first so stale IDLE workers do not
+        accumulate and exhaust RAM across judge feedback turns.  The cluster is
+        always owned by this executor and is stopped in close().
+        """
+        # Shut down any leftover Ray cluster so we start completely clean.
+        # Stale IDLE workers each hold a Python interpreter + loaded dataset in
+        # memory; without this, 2-3 judge turns exhaust all available RAM.
         if bool(self.ray.is_initialized()):
-            self.mode = "external"
-            self.owns_runtime = False
-            self._ensure_remote_worker()
-            self.last_error = None
-            return self.health()
+            logger.info("=> RayExecutor.start: stale Ray instance detected, shutting it down before reinit")
+            try:
+                self.ray.shutdown()
+            except Exception as shutdown_exc:
+                logger.debug("=> RayExecutor.start: shutdown of stale instance failed (non-fatal): %s", shutdown_exc)
 
         external_error: Exception | None = None
         if self.settings.address is not None:
@@ -84,7 +95,7 @@ class RayExecutor:
             self.ray.init(
                 num_cpus=self.settings.resolved_local_num_cpus(),
                 namespace=self.settings.namespace,
-                ignore_reinit_error=True,
+                ignore_reinit_error=False,
                 include_dashboard=self.settings.include_dashboard,
             )
             self.mode = "local"
@@ -332,11 +343,20 @@ class RayExecutor:
         return cancelled_count
 
     def close(self) -> None:
-        """Cancel active jobs and stop only a runtime created by this executor."""
+        """Cancel active jobs and shut down Ray unconditionally.
 
+        Ray is always shut down (not just when owns_runtime=True) so IDLE worker
+        processes are freed after every training turn.  Stale workers each consume
+        hundreds of MB; without cleanup they accumulate across judge feedback turns
+        and exhaust available RAM (swap included) within 2-3 turns.
+        """
         self.cancel_all(force=True)
-        if self.owns_runtime and bool(self.ray.is_initialized()):
-            self.ray.shutdown()
+        if bool(self.ray.is_initialized()):
+            logger.info("=> RayExecutor.close: shutting down Ray (mode=%s)", self.mode)
+            try:
+                self.ray.shutdown()
+            except Exception as shutdown_exc:
+                logger.debug("=> RayExecutor.close: ray.shutdown() raised (non-fatal): %s", shutdown_exc)
         self.mode = "uninitialized"
         self.owns_runtime = False
         self.remote_worker = None

@@ -32,6 +32,8 @@ models:
     kernel: rbf
     gamma: scale
     probability: true
+    # Same Platt-scaling risk as NuSVC; cap the SMO iterations.
+    max_iter: 5000
     random_state: 42
 
   LinearSVC:
@@ -44,6 +46,9 @@ models:
     kernel: rbf
     gamma: scale
     probability: true
+    # max_iter caps the SMO optimizer; without this NuSVC with probability=True
+    # (Platt scaling adds 5x inner CV) can run indefinitely on poorly-scaled data.
+    max_iter: 5000
     random_state: 42
 
   DecisionTreeClassifier:

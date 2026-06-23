@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
 import time
 import tempfile
@@ -26,6 +27,7 @@ from backend.agents.ray_wrapper import RayExecutor
 from backend.agents.training_orchestrator import TrainingOrchestrator
 from backend.agents.training_orchestrator.contracts import TrainingSummary, TrainingSummaryItem
 from backend.orchestration.eval_runner import EvalRunner
+from backend.orchestration.eval_runner import EvaluationRestartRequested
 from backend.orchestration.judge_loop import EvalArtifacts, JudgeLoop
 from backend.orchestration.plotting import PipelinePlotGenerator
 from backend.services.training_fallback import FallbackTrainingArtifactBuilder
@@ -183,6 +185,14 @@ class TrainingService:
     }
     terminal_model_statuses = {"completed", "failed", "timed_out", "cancelled"}
 
+    # Feature-engineering-phase stages: pipeline_prep.py runs these once,
+    # before training starts, and training never re-emits them. Their event-bus
+    # history must survive a training (re)start the same way model_config.json
+    # -- their file artifact -- already does (see reset_run()), or the Live
+    # Training page's Dataset2Vec/Model Selection cards stay stuck on "pending"
+    # forever once a clear_history reset drops their only events.
+    _prep_phase_stages = {"d2v", "model_selection"}
+
     def __init__(
         self,
         *,
@@ -207,8 +217,32 @@ class TrainingService:
         self.futures: dict[str, Future[None]] = {}
         self.executors: dict[str, ParallelExecutor] = {}
         self.cancel_events: dict[str, Event] = {}
+        # Manager().Event() (not a raw multiprocessing.Event): the overfitting
+        # branch is dispatched via ProcessPoolExecutor.submit() to an already-
+        # running pool worker, so the restart signal must be picklable through
+        # that call queue. A raw multiprocessing.Event only supports being
+        # inherited by a process at fork/spawn time, not pickled to an
+        # existing worker -- doing so raises "Condition objects should only be
+        # shared between processes through inheritance". A Manager-backed
+        # proxy is built for exactly this cross-process, post-fork use case.
+        self._turn_restart_manager = multiprocessing.Manager()
+        self.turn_restart_events: dict[str, Any] = {}
         self.status_paths: dict[str, Path] = {}
         self.lock = RLock()
+
+    def _reset_session_preserving_prep_stages(self, session_id: str) -> None:
+        """Reset the event bus, but carry forward d2v/model_selection events.
+
+        Those FE-phase stages only ever run once, so a full clear_history wipe
+        permanently loses their only events -- nothing downstream re-emits them.
+        """
+        preserved_events = [
+            event for event in self.event_bus.history(session_id)
+            if event.stage in self._prep_phase_stages
+        ]
+        self.event_bus.reset_session(session_id, clear_history=True)
+        for event in preserved_events:
+            self.event_bus.emit(event)
 
     def start(self, request: TrainingStartRequest) -> TrainingStatusResponse:
         paths = self.resolve_paths(request)
@@ -234,8 +268,9 @@ class TrainingService:
             )
             self.runs[request.session_id] = state
             self.cancel_events[request.session_id] = Event()
+            self.turn_restart_events[request.session_id] = self._turn_restart_manager.Event()
             self.status_paths[request.session_id] = paths.status_path
-            self.event_bus.reset_session(request.session_id, clear_history=True)
+            self._reset_session_preserving_prep_stages(request.session_id)
             self._persist_state(state, paths.status_path)
             future = self.worker_pool.submit(
                 self._run_training,
@@ -337,6 +372,30 @@ class TrainingService:
         self._emit_cancelled_session(session_id, cancelled_jobs)
         return cancelled_state.model_copy(deep=True)
 
+    def request_turn_restart(self, session_id: str) -> TrainingStatusResponse:
+        """Signal a mid-turn restart: kill the current turn's running SHAP/overfitting
+        subprocesses and redo that SAME judge turn from scratch, leaving previously
+        completed turns and the rest of the run untouched (unlike cancel(), which
+        aborts the whole run).
+        """
+        with self.lock:
+            state = self.runs.get(session_id)
+            if state is None:
+                raise TrainingRunNotFoundError(
+                    f"Training run not found for session: {session_id}"
+                )
+            if state.status in self.terminal_statuses:
+                raise TrainingCancellationError(
+                    f"Training run is already terminal: {state.status}"
+                )
+            restart_event = self.turn_restart_events.get(session_id)
+            if restart_event is None:
+                raise TrainingCancellationError(
+                    f"No active judge turn to restart for session: {session_id}"
+                )
+            restart_event.set()
+            return state.model_copy(deep=True)
+
     def reset_run(self, session_id: str) -> None:
         """Clear out any existing training runs from memory and disk so it can be re-run."""
         with self.lock:
@@ -344,6 +403,7 @@ class TrainingService:
             self.futures.pop(session_id, None)
             self.executors.pop(session_id, None)
             self.cancel_events.pop(session_id, None)
+            self.turn_restart_events.pop(session_id, None)
             status_path = self.status_paths.pop(session_id, None)
             
             session_path = self.session_manager.get_session_path(session_id=session_id)
@@ -383,7 +443,7 @@ class TrainingService:
                 except Exception:
                     pass
             
-            self.event_bus.reset_session(session_id, clear_history=True)
+            self._reset_session_preserving_prep_stages(session_id)
 
     def shutdown(self) -> None:
         """Cancel active Ray work and stop accepting background jobs."""
@@ -399,6 +459,7 @@ class TrainingService:
             except Exception:
                 pass
         self.worker_pool.shutdown(wait=True, cancel_futures=True)
+        self._turn_restart_manager.shutdown()
 
     def resolve_paths(self, request: TrainingStartRequest) -> ResolvedTrainingPaths:
         try:
@@ -954,6 +1015,7 @@ class TrainingService:
             if not engineered_csv.exists():
                 engineered_csv = paths.train_path
 
+            turn_restart_event = self.turn_restart_events.get(request.session_id)
             eval_runner = EvalRunner(
                 session_id=request.session_id,
                 session_dir=session_dir,
@@ -963,6 +1025,7 @@ class TrainingService:
                 shap_timeout_sec=self.config_loader.pipeline.shap_timeout_sec,
                 overfitting_timeout_sec=self.config_loader.pipeline.overfitting_timeout_sec,
                 shap_skip_model_classes=self.config_loader.pipeline.shap_skip_model_classes,
+                restart_event=turn_restart_event,
             )
             self.event_bus.emit(
                 TrainingEvent(
@@ -975,12 +1038,34 @@ class TrainingService:
                 )
             )
             
-            # Run overfitting and SHAP, excluding HPT from post-training evaluation per user instructions
-            eval_output = eval_runner.run(
-                training_summary=summary,
-                engineered_dataset_path=engineered_csv,
-                run_hpt=False,
-            )
+            # Run overfitting and SHAP, excluding HPT from post-training evaluation per user instructions.
+            # A user-requested restart (turn_restart_event set while this is running) kills the
+            # in-flight SHAP/overfitting subprocesses and raises EvaluationRestartRequested; redo
+            # this same (pre-turn-1) evaluation from scratch rather than failing the whole run.
+            while True:
+                try:
+                    eval_output = eval_runner.run(
+                        training_summary=summary,
+                        engineered_dataset_path=engineered_csv,
+                        run_hpt=False,
+                    )
+                    break
+                except EvaluationRestartRequested:
+                    if turn_restart_event is not None:
+                        turn_restart_event.clear()
+                    logger.info(
+                        "=> post-training eval: restart requested by user, redoing initial evaluation."
+                    )
+                    self.event_bus.emit(
+                        TrainingEvent(
+                            session_id=request.session_id,
+                            stage="evaluation",
+                            level="info",
+                            status="running",
+                            msg="[POST-TRAINING EVAL] Restart requested by user. Re-running evaluation from scratch...",
+                            pct=20,
+                        )
+                    )
 
             self.event_bus.emit(
                 TrainingEvent(
@@ -1120,6 +1205,7 @@ class TrainingService:
                 )
 
                 # Train only the truly new models (model_config.json was filtered above).
+                retrain_started = time.monotonic()
                 if execution_mode == "ray":
                     # Pass executor=None so orchestrator creates a fresh Ray executor
                     # for this feedback turn. The original executor was closed in
@@ -1138,6 +1224,12 @@ class TrainingService:
                     new_summary = orchestrator.prepare_and_execute_local(
                         **common_arguments,
                     )
+                logger.info(
+                    "=> training_callback: retraining %d new candidate(s) (mode=%s) took %.1fs",
+                    len(new_only_configs),
+                    execution_mode,
+                    time.monotonic() - retrain_started,
+                )
 
                 self.event_bus.emit(
                     TrainingEvent(
@@ -1162,10 +1254,16 @@ class TrainingService:
                 )
 
                 # Re-run evaluation without HPT for the new candidates only.
+                eval_started = time.monotonic()
                 new_eval_output = eval_runner.run(
                     training_summary=new_summary,
                     engineered_dataset_path=engineered_csv,
                     run_hpt=False,
+                )
+                logger.info(
+                    "=> training_callback: SHAP + overfitting re-eval for %d new candidate(s) took %.1fs",
+                    len(new_only_configs),
+                    time.monotonic() - eval_started,
                 )
 
                 # Validate renumbered IDs match what the orchestrator emitted via SSE.
@@ -1273,6 +1371,7 @@ class TrainingService:
                 max_models=10,
                 dataset_id=request.session_id,
                 metadata=metadata,
+                turn_restart_event=turn_restart_event,
             )
             logger.info(
                 "=> post-training eval complete: session=%s selected=%s",
@@ -1896,7 +1995,35 @@ class TrainingService:
             )
 
             # Restrict to the top-N Judge-ranked models; run num_trials Optuna trials each.
-            hpt_agent.model_config = [m for m in hpt_agent.model_config if m.get("name") in top_model_names]
+            #
+            # model_config.json is overwritten on every judge-loop turn with only that
+            # turn's small re-selection batch (judge_loop.py::_reselect_models), so by the
+            # time HPT runs it may no longer contain models the Judge ranked highly in an
+            # earlier turn. Without this fallback, filtering by top_model_names silently
+            # produces an empty list and HPT reports "completed for 0 model(s)" while still
+            # naming the (un-tuned) Judge picks. Synthesize a minimal entry -- carrying the
+            # built-in default hp_space -- for any Judge-ranked model missing from the file.
+            existing_by_name = {m.get("name"): m for m in hpt_agent.model_config}
+            restricted_model_config = []
+            for model_name in top_model_names:
+                model_entry = existing_by_name.get(model_name)
+                if model_entry is None:
+                    model_entry = {
+                        "name": model_name,
+                        "model_name": model_name,
+                        "family": "unknown",
+                        "priority": 999,
+                        "default_hyperparameters": {},
+                        "hp_space": hpt_agent._default_hp_spaces.get(model_name, {}),
+                    }
+                    logger.warning(
+                        "=> HPT: %s ranked by Judge but absent from model_config.json; "
+                        "using synthesized entry with default hp_space.",
+                        model_name,
+                    )
+                restricted_model_config.append(model_entry)
+
+            hpt_agent.model_config = restricted_model_config
             hpt_agent.model_config_sorted = sorted(hpt_agent.model_config, key=lambda x: x.get('priority', 999))
 
             hpt_agent.hpt_config['MAX_HPT_TRIALS'] = num_trials

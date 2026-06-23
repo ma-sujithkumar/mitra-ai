@@ -34,20 +34,24 @@ from backend.orchestration.events import TrainingEventBus
 
 
 def _configure_mitra_logging(logging_config: LoggingConfig) -> None:
-    # Ensure the application's own loggers emit to the console at INFO, since
-    # uvicorn only attaches handlers to its own logger namespaces. A rotating
-    # file handler is added so all backend activity is also persisted to disk.
-    mitra_logger = logging.getLogger("mitra")
-    mitra_logger.setLevel(logging.INFO)
+    # Ensure every backend logger emits to the console at INFO, since uvicorn
+    # only attaches handlers to its own logger namespaces. The handler is
+    # attached to the ROOT logger (not "mitra") because all backend modules
+    # log via logging.getLogger(__name__) (e.g. backend.orchestration.judge_loop,
+    # backend.services.training_service), which propagates to root, not to
+    # "mitra" -- attaching only to "mitra" silently dropped every INFO log
+    # from the training/judge/evaluation pipeline. A rotating file handler is
+    # added so all backend activity is also persisted to disk.
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
     if not any(
-        isinstance(handler, logging.StreamHandler) for handler in mitra_logger.handlers
+        isinstance(handler, logging.StreamHandler) for handler in root_logger.handlers
     ):
         handler = logging.StreamHandler()
         handler.setFormatter(
             logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
         )
-        mitra_logger.addHandler(handler)
-        mitra_logger.propagate = False
+        root_logger.addHandler(handler)
     configure_file_logging(
         log_file=logging_config.log_file,
         level=logging_config.log_level,
