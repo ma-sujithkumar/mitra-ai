@@ -6,6 +6,11 @@ overfitting:
   # Options: train_test_concat | train_only | test_only
   cv_data_source: train_test_concat
   gap_threshold: 0.1
+  # Skip K-fold entirely when the test primary metric is below this value.
+  # A model already below random-guess baseline is not worth the CV compute.
+  # Classification: accuracy < 0.5 (worse than random), Regression: r2 < 0.0
+  kfold_skip_threshold_classification: 0.5
+  kfold_skip_threshold_regression: 0.5
   # Small value guarding the relative RMSE denominator
   epsilon: 1.0e-9
 

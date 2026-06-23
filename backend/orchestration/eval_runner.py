@@ -12,7 +12,7 @@ import multiprocessing
 import os
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from queue import Empty
 from typing import Any, Optional
@@ -20,6 +20,15 @@ from typing import Any, Optional
 from backend.orchestration.events import TrainingEvent, TrainingEventBus
 
 logger = logging.getLogger(__name__)
+
+
+class EvaluationRestartRequested(Exception):
+    """Raised when a user requests a mid-turn restart via the judge-loop
+    restart-turn endpoint. Distinguishes a deliberate user-initiated abort
+    of the current evaluation (SHAP/overfitting) from a real failure, so
+    JudgeLoop can retry the same turn instead of advancing or aborting.
+    """
+
 
 # Top-level functions needed so ProcessPoolExecutor can pickle them.
 
@@ -61,6 +70,14 @@ def _run_shap_for_model_mp(
     terminate a hung worker via Process.terminate()/kill() -- a stuck
     KernelExplainer otherwise blocks the pool's shutdown(wait=True) forever.
     """
+    # Force single-threaded sklearn/numpy inside the subprocess. Without this,
+    # models with n_jobs=-1 (RandomForest, ExtraTrees, XGB, etc.) spawn one
+    # joblib/loky worker per CPU core during SHAP background dataset fitting.
+    # Multiple concurrent SHAP subprocesses each spawning N workers exhausts RAM.
+    os.environ["LOKY_MAX_CPU_COUNT"] = "1"
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
     try:
         result_dir = _run_shap_for_model(model_name=model_name, **kwargs)
         result_queue.put((model_name, "ok", result_dir))
@@ -88,6 +105,34 @@ def _run_overfitting_for_model(
     return json.dumps(result)
 
 
+def _run_overfitting_for_model_mp(
+    result_queue: "multiprocessing.Queue",
+    model_name: str,
+    **kwargs: Any,
+) -> None:
+    """Process target: runs _run_overfitting_for_model and posts the outcome
+    to the queue. Used (instead of ProcessPoolExecutor) so the parent can
+    forcibly terminate a hung worker via Process.terminate()/kill() -- a
+    ProcessPoolExecutor future that exceeds timeout_sec only stops being
+    awaited; the underlying worker process (e.g. a slow XGBoost/Gradient
+    Boosting k-fold CV) keeps running in the background and competing for
+    CPU with everything after it, including the judge LLM turn.
+    """
+    # Force single-threaded sklearn/numpy inside the subprocess. Without this,
+    # models with n_jobs=-1 (RandomForest, ExtraTrees, XGB, etc.) spawn one
+    # joblib/loky worker per CPU core for each K-fold CV training pass. With
+    # max_concurrent=4 subprocesses each running 5 folds, that floods memory.
+    os.environ["LOKY_MAX_CPU_COUNT"] = "1"
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    try:
+        output_dir = _run_overfitting_for_model(**kwargs)
+        result_queue.put((model_name, "ok", output_dir))
+    except Exception as exc:
+        result_queue.put((model_name, "error", str(exc)))
+
+
 class OverfittingRunner:
     """Builds overfitting input JSONs from training results and runs OverfittingAnalyzer."""
 
@@ -112,11 +157,19 @@ class OverfittingRunner:
         target_column: Optional[str] = None,
         verbose: bool = False,
         timeout_sec: Optional[int] = None,
+        # Typed as Any: at runtime this is a multiprocessing.Manager().Event()
+        # proxy (not a raw multiprocessing.synchronize.Event), required so the
+        # signal can be pickled to an already-running ProcessPoolExecutor worker.
+        restart_event: Optional[Any] = None,
     ) -> dict[str, Optional[str]]:
         """Run overfitting analysis for all trained models.
 
         Returns:
             {model_name: output_dir_path or None}
+
+        Raises:
+            EvaluationRestartRequested: if restart_event is set while models
+            are still running. All running worker processes are killed first.
         """
         overfit_dir = session_dir / "evaluation" / "overfitting"
         overfit_dir.mkdir(parents=True, exist_ok=True)
@@ -142,74 +195,149 @@ class OverfittingRunner:
         status_path = session_dir / "evaluation" / "overfitting_status.json"
         self._write_status(status_path, completed_count, total_models, "running", "Starting overfitting analysis...")
 
-        pool = ProcessPoolExecutor()
-        try:
-            futures = {}
-            for model_result in models:
-                model_name = model_result.model_name
-                model_output_dir = str(overfit_dir / model_name)
-                os.makedirs(model_output_dir, exist_ok=True)
+        effective_timeout_sec = timeout_sec if timeout_sec is not None else 120
+        # Cap at 4 concurrent workers: each does k-fold CV with scikit-learn's own
+        # parallelism (n_jobs), so more than 4 simultaneous processes drives memory
+        # into swap territory on machines with <2GB free, OOM-killing workers.
+        max_concurrent = min(4, max(1, os.cpu_count() or 4))
 
-                # Build the input JSON expected by OverfittingAnalyzer.
-                input_payload: dict[str, Any] = {
-                    "model_type": task_type,
-                    "model_name": model_name,
-                    "dataset_path": primary_dataset_path,
-                }
-                if test_dataset_path:
-                    input_payload["test_dataset_path"] = test_dataset_path
-                if resolved_target:
-                    input_payload["target_column"] = resolved_target
-                if model_result.validation_score is not None:
-                    primary_metric = "accuracy" if task_type == "classification" else "r2"
-                    input_payload["test_metrics"] = {primary_metric: model_result.validation_score}
+        # Build per-model input JSONs upfront, queue work, and launch via raw
+        # multiprocessing.Process (not ProcessPoolExecutor) so a model whose
+        # k-fold CV exceeds effective_timeout_sec can be forcibly killed with
+        # Process.terminate()/kill(). ProcessPoolExecutor.cancel() is a no-op
+        # once a worker has started, so the old approach left slow models
+        # (e.g. XGBoost/GradientBoosting k-fold) running indefinitely in the
+        # background after the "timed out" log line, eating CPU that the
+        # judge LLM turn and any concurrent training then had to compete for.
+        queued_models: list[tuple[str, str]] = []
+        for model_result in models:
+            model_name = model_result.model_name
+            model_output_dir = str(overfit_dir / model_name)
+            os.makedirs(model_output_dir, exist_ok=True)
 
-                input_json_path = os.path.join(model_output_dir, "overfitting_input.json")
-                with open(input_json_path, "w", encoding="utf-8") as input_file:
-                    json.dump(input_payload, input_file, indent=2)
+            input_payload: dict[str, Any] = {
+                "model_type": task_type,
+                "model_name": model_name,
+                "dataset_path": primary_dataset_path,
+            }
+            if test_dataset_path:
+                input_payload["test_dataset_path"] = test_dataset_path
+            if resolved_target:
+                input_payload["target_column"] = resolved_target
+            # Pass full train + test metrics so OverfittingAnalyzer can skip
+            # retraining the model entirely (precomputed path in compute_holdout_metrics).
+            # Retraining is expensive for slow models like NuSVC/MLPClassifier.
+            raw_metrics = model_result.metrics or {}
+            if raw_metrics.get("train"):
+                input_payload["train_metrics"] = raw_metrics["train"]
+            if raw_metrics.get("validation"):
+                input_payload["test_metrics"] = raw_metrics["validation"]
+            elif model_result.validation_score is not None:
+                primary_metric = "accuracy" if task_type == "classification" else "r2"
+                input_payload["test_metrics"] = {primary_metric: model_result.validation_score}
 
-                future = pool.submit(
-                    _run_overfitting_for_model,
+            input_json_path = os.path.join(model_output_dir, "overfitting_input.json")
+            with open(input_json_path, "w", encoding="utf-8") as input_file:
+                json.dump(input_payload, input_file, indent=2)
+
+            queued_models.append((model_name, input_json_path, model_output_dir))
+
+        result_queue: "multiprocessing.Queue" = multiprocessing.Queue()
+        running_processes: dict[str, multiprocessing.Process] = {}
+        start_times: dict[str, float] = {}
+
+        def _launch(queued_model: tuple[str, str, str]) -> None:
+            queued_model_name, input_json_path, model_output_dir = queued_model
+            process = multiprocessing.Process(
+                target=_run_overfitting_for_model_mp,
+                kwargs=dict(
+                    result_queue=result_queue,
+                    model_name=queued_model_name,
                     input_json_path=input_json_path,
                     output_dir=model_output_dir,
                     verbose=verbose,
-                )
-                futures[future] = model_name
+                ),
+            )
+            process.start()
+            running_processes[queued_model_name] = process
+            start_times[queued_model_name] = time.monotonic()
 
-            # Monitor the running futures with a configurable timeout
-            futures_list = list(futures.keys())
+        while queued_models and len(running_processes) < max_concurrent:
+            _launch(queued_models.pop(0))
+
+        heartbeat_interval_sec = 10.0
+        while running_processes:
+            if restart_event is not None and restart_event.is_set():
+                logger.info("=> overfitting: restart requested, killing %d running process(es)", len(running_processes))
+                for process in running_processes.values():
+                    process.terminate()
+                for process in running_processes.values():
+                    process.join(timeout=5)
+                    if process.is_alive():
+                        process.kill()
+                        process.join()
+                raise EvaluationRestartRequested()
+
             try:
-                # We retrieve completed futures with the timeout limit
-                iterator = as_completed(futures_list, timeout=timeout_sec)
-                while True:
-                    try:
-                        completed_future = next(iterator)
-                        model_name = futures[completed_future]
-                        completed_count += 1
-                        try:
-                            completed_future.result()
-                            model_results[model_name] = str(overfit_dir / model_name)
-                            logger.info("=> overfitting done: model=%s", model_name)
-                            self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check done for {model_name}")
-                        except Exception as exc:
-                            logger.warning("=> overfitting failed for %s: %s", model_name, exc)
-                            model_results[model_name] = None
-                            self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check failed for {model_name}: {exc}")
-                        # Remove from the list of pending futures
-                        futures_list.remove(completed_future)
-                    except StopIteration:
-                        break
-            except TimeoutError:
-                # Handles when the next future doesn't complete within the remaining timeout
-                logger.warning("=> overfitting analysis timed out after %ss", timeout_sec)
-                for remaining_future in futures_list:
-                    m_name = futures[remaining_future]
-                    model_results[m_name] = None
-                    remaining_future.cancel()
-                    self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check timed out for {m_name}")
-        finally:
-            # Shutdown pool without blocking so we do not freeze the main loop
-            pool.shutdown(wait=False, cancel_futures=True)
+                model_name, outcome, _payload = result_queue.get(timeout=heartbeat_interval_sec)
+            except Empty:
+                model_name = None
+                outcome = None
+                # Detect processes that died without posting a result (OOM kill, SIGSEGV, etc.).
+                # Without this check the runner waits the full effective_timeout_sec (120s) per
+                # dead worker, causing 8-10 min hangs when memory is low and multiple workers die.
+                for dead_name in [
+                    name for name, proc in list(running_processes.items())
+                    if not proc.is_alive()
+                ]:
+                    dead_proc = running_processes.pop(dead_name, None)
+                    if dead_proc is not None:
+                        dead_proc.join(timeout=1)
+                    start_times.pop(dead_name, None)
+                    result_queue.put((dead_name, "error", f"Process died unexpectedly (exitcode={getattr(dead_proc, 'exitcode', '?')})"))
+                    logger.warning("=> overfitting: worker for %s died without result (exitcode=%s), treating as failure", dead_name, getattr(dead_proc, "exitcode", "?"))
+
+            now = time.monotonic()
+
+            if model_name is not None:
+                process = running_processes.pop(model_name, None)
+                if process is not None:
+                    process.join()
+                start_times.pop(model_name, None)
+                completed_count += 1
+                if outcome == "ok":
+                    model_results[model_name] = str(overfit_dir / model_name)
+                    logger.info("=> overfitting done: model=%s", model_name)
+                    self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check done for {model_name}")
+                else:
+                    model_results[model_name] = None
+                    logger.warning("=> overfitting failed for %s: %s", model_name, _payload)
+                    self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check failed for {model_name}: {_payload}")
+                if queued_models:
+                    _launch(queued_models.pop(0))
+
+            # Kill any model whose overfitting analysis has exceeded the hard timeout.
+            for timed_out_name in [
+                name for name, started_at in start_times.items()
+                if now - started_at > effective_timeout_sec
+            ]:
+                process = running_processes.pop(timed_out_name, None)
+                start_times.pop(timed_out_name, None)
+                if process is not None:
+                    process.terminate()
+                    process.join(timeout=5)
+                    if process.is_alive():
+                        process.kill()
+                        process.join()
+                completed_count += 1
+                model_results[timed_out_name] = None
+                logger.warning(
+                    "=> overfitting analysis timed out for %s after %ds, process killed",
+                    timed_out_name, effective_timeout_sec,
+                )
+                self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check timed out for {timed_out_name}")
+                if queued_models:
+                    _launch(queued_models.pop(0))
 
         self._write_status(status_path, completed_count, total_models, "completed", "Overfitting analysis completed successfully.")
         return model_results
@@ -277,6 +405,10 @@ class EvalRunner:
         shap_timeout_sec: int = 180,
         overfitting_timeout_sec: int = 120,
         shap_skip_model_classes: Optional[list[str]] = None,
+        # Typed as Any: at runtime this is a multiprocessing.Manager().Event()
+        # proxy (not a raw multiprocessing.synchronize.Event), required so the
+        # signal can be pickled to an already-running ProcessPoolExecutor worker.
+        restart_event: Optional[Any] = None,
     ) -> None:
         self.session_id = session_id
         self.session_dir = session_dir
@@ -289,6 +421,12 @@ class EvalRunner:
         self.overfitting_timeout_sec = overfitting_timeout_sec
         # Use a set for O(1) membership checks in the launch loop.
         self.shap_skip_model_classes: set[str] = set(shap_skip_model_classes or [])
+        # Manager().Event() proxy (not a raw multiprocessing.Event): the
+        # overfitting branch below is dispatched via ProcessPoolExecutor.submit()
+        # to an already-running worker, which requires pickling this through the
+        # pool's call queue -- a raw multiprocessing.Event only supports being
+        # inherited at process-start time, not pickled to an existing worker.
+        self.restart_event = restart_event
 
     def run(
         self,
@@ -408,7 +546,10 @@ class EvalRunner:
         total_models = len(queued_models)
         completed_count = 0
         heartbeat_interval_sec = 10.0
-        max_concurrent = max(1, os.cpu_count() or 4)
+        # Cap at 4 concurrent SHAP workers to avoid memory exhaustion; KernelExplainer
+        # in particular can be memory-heavy and OOM-kills cause silent hangs without the
+        # dead-process detection below.
+        max_concurrent = min(4, max(1, os.cpu_count() or 4))
 
         self._write_shap_status(completed_count, total_models or 1, "running", "Starting SHAP analysis...")
 
@@ -439,12 +580,36 @@ class EvalRunner:
 
         last_heartbeat = time.monotonic()
         while running_processes:
+            if self.restart_event is not None and self.restart_event.is_set():
+                logger.info("=> SHAP: restart requested, killing %d running process(es)", len(running_processes))
+                for process in running_processes.values():
+                    process.terminate()
+                for process in running_processes.values():
+                    process.join(timeout=5)
+                    if process.is_alive():
+                        process.kill()
+                        process.join()
+                raise EvaluationRestartRequested()
+
             try:
                 model_name, outcome, payload = result_queue.get(timeout=heartbeat_interval_sec)
             except Empty:
                 model_name = None
                 outcome = None
                 payload = None
+                # Detect processes that died without posting a result (OOM kill, SIGSEGV, etc.).
+                # Without this check the runner waits shap_timeout_sec (180s) per dead worker,
+                # causing multi-minute hangs when memory is low.
+                for dead_name in [
+                    name for name, proc in list(running_processes.items())
+                    if not proc.is_alive()
+                ]:
+                    dead_proc = running_processes.pop(dead_name, None)
+                    if dead_proc is not None:
+                        dead_proc.join(timeout=1)
+                    start_times.pop(dead_name, None)
+                    result_queue.put((dead_name, "error", f"Process died unexpectedly (exitcode={getattr(dead_proc, 'exitcode', '?')})"))
+                    logger.warning("=> SHAP: worker for %s died without result (exitcode=%s), treating as failure", dead_name, getattr(dead_proc, "exitcode", "?"))
 
             now = time.monotonic()
             progress_pct = 10 + int(80 * (completed_count / max(1, total_models)))
@@ -603,6 +768,7 @@ class EvalRunner:
                 target_column=self.target_column,
                 verbose=self.verbose,
                 timeout_sec=self.overfitting_timeout_sec,
+                restart_event=self.restart_event,
             )
             if run_hpt:
                 hpt_future = pool.submit(

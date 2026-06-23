@@ -557,16 +557,107 @@ class OverfittingAnalyzer:
             logger.warning("=> Failed to compute prediction diagnostics: %s", e)
             return None
 
+    def _kfold_skip_threshold(self) -> float:
+        """Return the configured skip threshold for this task type, or -1.0 if unset."""
+        threshold_key = f"kfold_skip_threshold_{self.model_type}"
+        return float(self.cfg.get(threshold_key, -1.0))
+
+    def _should_skip_kfold(self, test_result: Optional[MetricsResult]) -> Optional[str]:
+        """Return a skip reason string if K-fold should be bypassed, else None.
+
+        Models below the random-guess baseline have already failed on the holdout
+        set; running K-fold only wastes CPU (especially for slow models like
+        MLPClassifier / NuSVC that take 5x longer with probability=True).
+        The overfitting verdict is derived from the holdout gap instead.
+        """
+        if test_result is None:
+            return "No test metrics available; K-fold skipped."
+
+        skip_threshold = self._kfold_skip_threshold()
+        if skip_threshold < 0:
+            return None
+
+        primary_test_value = getattr(test_result, self.primary_metric, None)
+        if primary_test_value is None:
+            return None
+
+        if float(primary_test_value) < skip_threshold:
+            reason = (
+                f"Test {self.primary_metric}={float(primary_test_value):.4f} is below "
+                f"kfold_skip_threshold={skip_threshold:.2f}; K-fold skipped -- "
+                f"holdout gap is sufficient to assess overfitting for a low-accuracy model."
+            )
+            logger.info("=> K-fold skipped for %s: %s", self.model_name, reason)
+            return reason
+
+        return None
+
+    def _early_skip_from_precomputed(self) -> Optional[str]:
+        """Check the raw input_data test metrics BEFORE loading data or retraining.
+
+        When both train_metrics and test_metrics are precomputed (passed in the
+        input JSON), we can decide to skip K-fold immediately without even loading
+        the dataset, saving disk I/O and avoiding any model retraining.
+        """
+        skip_threshold = self._kfold_skip_threshold()
+        if skip_threshold < 0:
+            return None
+        precomputed_test = self.input_data.get("test_metrics") or {}
+        raw_value = precomputed_test.get(self.primary_metric)
+        if raw_value is None:
+            return None
+        if float(raw_value) < skip_threshold:
+            reason = (
+                f"Precomputed test {self.primary_metric}={float(raw_value):.4f} is below "
+                f"kfold_skip_threshold={skip_threshold:.2f}; K-fold skipped early."
+            )
+            logger.info("=> K-fold early skip for %s: %s", self.model_name, reason)
+            return reason
+        return None
+
     def run(self) -> dict:
         """Orchestrate the full analysis: load data, compute metrics, CV, verdict, write output."""
+        # Fast path: both precomputed train + test metrics are available AND the
+        # test primary metric is below the skip threshold. Skip dataset loading,
+        # retraining, K-fold, and diagnostics entirely -- just compute the gap
+        # from the scores the training run already produced.
+        early_skip_reason = self._early_skip_from_precomputed()
+        if early_skip_reason is not None and self.precomputed_train_metrics and self.precomputed_test_metrics:
+            train_result = self._metrics_result_from_dict(self.precomputed_train_metrics, "train")
+            test_result = self._metrics_result_from_dict(self.precomputed_test_metrics, "test")
+            gaps, rel_rmse_gap = self.compute_gaps(train_result, test_result)
+            is_overfitted = self.decide_verdict(gaps, kfold_result=None)
+            payload = {
+                "model_name": self.model_name,
+                "model_type": self.model_type,
+                "is_overfitted": is_overfitted,
+                "gap_threshold": self.gap_threshold,
+                "primary_metric": self.primary_metric,
+                "gaps": gaps,
+                "rel_rmse_gap": rel_rmse_gap,
+                "train_metrics": self._metrics_result_to_dict(train_result),
+                "test_metrics": self._metrics_result_to_dict(test_result),
+                "k_fold_cross_validation_results": None,
+                "cv_skipped_reason": early_skip_reason,
+                "diagnostics": None,
+            }
+            self.write_output(payload)
+            return payload
+
+        # Normal path: load dataset, compute holdout metrics (or reuse precomputed),
+        # optionally run K-fold if test metric is above the skip threshold.
         common = self.load_dataset(self.dataset_path)
         train_result, test_result, kit, test_predictions = self.compute_holdout_metrics(common)
-        kfold_result, cv_skipped_reason = self.run_kfold(common, train_result)
+
+        post_skip_reason = self._should_skip_kfold(test_result)
+        if post_skip_reason is not None:
+            kfold_result, cv_skipped_reason = None, post_skip_reason
+        else:
+            kfold_result, cv_skipped_reason = self.run_kfold(common, train_result)
 
         gaps, rel_rmse_gap = self.compute_gaps(train_result, test_result)
         is_overfitted = self.decide_verdict(gaps, kfold_result)
 
-        # Compute prediction distribution, baseline majority-class comparison, class-wise metrics, entropy
         diagnostics = None
         if kit is not None and test_predictions is not None:
             diagnostics = self._compute_prediction_diagnostics(common, kit, test_predictions)

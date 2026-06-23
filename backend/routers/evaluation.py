@@ -222,13 +222,17 @@ class EvaluationArtifactReader:
         """
         resolved_model = model_name or self._default_shap_model()
         if resolved_model is None:
-            return {"status": "pending", "model_name": None, "features": []}
+            # Report complete if the overall SHAP stage is finished, even if no model features exist.
+            status = "complete" if self.shap_status().get("status") in ("completed", "failed") else "pending"
+            return {"status": status, "model_name": None, "features": []}
 
         csv_path = (
             self.evaluation_dir / "shap" / resolved_model / "csv" / SHAP_IMPORTANCE_FILENAME
         )
         if not csv_path.is_file():
-            return {"status": "pending", "model_name": resolved_model, "features": []}
+            # Report complete if the overall SHAP stage is finished, even if this model lacks CSV.
+            status = "complete" if self.shap_status().get("status") in ("completed", "failed") else "pending"
+            return {"status": status, "model_name": resolved_model, "features": []}
 
         features = self._read_shap_csv(csv_path)
         return {
@@ -569,8 +573,49 @@ class EvaluationArtifactReader:
 
     def _default_shap_model(self) -> str | None:
         judge_decision = self.judge_decision()
-        if judge_decision and judge_decision.get("selected_model"):
-            return judge_decision["selected_model"]
+        if judge_decision:
+            # 1. Try the selected model first, but only if it has a SHAP CSV file.
+            selected_model = judge_decision.get("selected_model")
+            if selected_model:
+                csv_path = (
+                    self.evaluation_dir
+                    / "shap"
+                    / selected_model
+                    / "csv"
+                    / SHAP_IMPORTANCE_FILENAME
+                )
+                if csv_path.is_file():
+                    return selected_model
+
+            # 2. Try other selected models (top-N%).
+            selected_models = judge_decision.get("selected_models") or []
+            for model_name in selected_models:
+                csv_path = (
+                    self.evaluation_dir
+                    / "shap"
+                    / model_name
+                    / "csv"
+                    / SHAP_IMPORTANCE_FILENAME
+                )
+                if csv_path.is_file():
+                    return model_name
+
+            # 3. Try ranked models in order of rank (highest rank first).
+            ranked_models = judge_decision.get("ranked_models") or []
+            for ranked_model in ranked_models:
+                model_name = ranked_model.get("model_name")
+                if model_name:
+                    csv_path = (
+                        self.evaluation_dir
+                        / "shap"
+                        / model_name
+                        / "csv"
+                        / SHAP_IMPORTANCE_FILENAME
+                    )
+                    if csv_path.is_file():
+                        return model_name
+
+        # 4. Fall back to any model with a SHAP CSV on disk.
         shap_root = self.evaluation_dir / "shap"
         if not shap_root.is_dir():
             return None
