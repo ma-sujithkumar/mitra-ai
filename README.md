@@ -2,7 +2,7 @@
 
 <div align="center">
 
-# MITRA
+<img src="docs/mitra_banner.svg" alt="MITRA Banner" width="100%">
 
 ### An agent-driven, self-hosted AutoML platform
 
@@ -186,6 +186,18 @@ The codebase itself is never written to at runtime — only this directory.
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Built With
+
+<div align="center">
+  <img src="https://user-images.githubusercontent.com/74038190/212257454-16e3712e-945a-4ca2-b238-408ad0bf87e6.gif" width="50" title="Python" />
+  <img src="https://user-images.githubusercontent.com/74038190/212257468-1e9a91f1-b626-4baa-b15d-5c385dfa7ed2.gif" width="50" title="React" />
+  <img src="https://user-images.githubusercontent.com/74038190/212257463-4d082cb4-7483-4eaf-bc25-6dde2628aabd.gif" width="50" title="JavaScript" />
+  <img src="https://user-images.githubusercontent.com/74038190/212281763-e6ecd7ef-c4aa-45b6-a97c-f33f6bb592bd.gif" width="50" title="HTML5" />
+  <img src="https://user-images.githubusercontent.com/74038190/212281775-b468df30-4edc-4bf8-a4ee-f52e1aaddc86.gif" width="50" title="CSS3" />
+  <img src="https://user-images.githubusercontent.com/74038190/212257460-738ff738-247f-4445-a718-cdd0ca76e2db.gif" width="50" title="Git" />
+  <img src="https://user-images.githubusercontent.com/74038190/212281756-450d3ffa-9335-4b98-a965-db8a18fee927.gif" width="50" title="Markdown" />
+</div>
+
+<br />
 
 * [![FastAPI][fastapi-shield]][fastapi-url]
 * [![React][react-shield]][react-url]
