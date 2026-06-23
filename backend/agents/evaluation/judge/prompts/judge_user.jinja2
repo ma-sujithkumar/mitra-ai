@@ -1,0 +1,19 @@
+{% if dataset_id %}DATASET ID: {{ dataset_id }}{% endif %}
+
+DATASET METADATA (user-provided description / target column):
+{{ (metadata | tojson) if metadata else "{} (no metadata provided)" }}
+
+DATASET STATISTICS (validation-set descriptive summary):
+{{ (minidata | tojson) if minidata else "{} (no statistics provided)" }}
+
+DOMAIN REASONING CONTEXT:
+{{ (domain_reasoning | tojson) if domain_reasoning else "{} (domain reasoning was unavailable -- proceed on metrics/SHAP alone, do not invent column meanings)" }}
+
+CANDIDATES TO RANK ({{ candidate_details | length }} models). The order below is a
+provisional rule-engine score order -- yours may differ. Every model's metrics,
+overfitting checks, complexity, and SHAP features are given inline below; rank all
+of them and no others.
+{% for model_name, detail in candidate_details.items() %}
+- {{ model_name }} (rule-engine score={{ rule_scores[model_name] }}):
+{{ detail | tojson }}
+{% endfor %}
