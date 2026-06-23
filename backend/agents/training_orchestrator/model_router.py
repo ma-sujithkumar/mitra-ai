@@ -49,12 +49,8 @@ class ModelRouter:
         if len(priorities) != len(set(priorities)):
             raise InvalidModelConfigError("model_config.json contains duplicate priorities")
 
-        if metadata.problem_type == "unsupervised":
-            raise ModelRoutingError(
-                "The current model library exposes no unsupervised estimator; "
-                "training jobs cannot be created"
-            )
-        if not metadata.output_cols:
+        # output_cols are only required for supervised tasks; clustering has no target column.
+        if metadata.problem_type != "unsupervised" and not metadata.output_cols:
             raise ModelRoutingError(
                 f"{metadata.problem_type} metadata must declare at least one output column"
             )
