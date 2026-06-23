@@ -333,13 +333,30 @@ class JudgeLoop:
         domain_reasoning = self._load_domain_reasoning(session_dir=session_dir)
 
         for turn_number in range(1, self.max_turns + 1):
-            def status_callback(msg: str, details: Optional[Dict[str, Any]] = None) -> None:
+            # Capture turn_number by value so the closure uses the current turn,
+            # not the loop variable at call time.
+            def status_callback(
+                msg: str,
+                details: Optional[Dict[str, Any]] = None,
+                _turn: int = turn_number,
+            ) -> None:
                 self._write_judge_status(
                     session_dir=session_dir,
-                    turn=turn_number,
+                    turn=_turn,
                     max_turns=self.max_turns,
                     status="running",
                     message=msg,
+                    details=details,
+                )
+                # Also emit SSE so the judge stage card updates live during LLM inference
+                # (status_callback is called from inside judge_agent.judge() before the
+                # 30-90 second LLM call, so this gives the frontend a timely update).
+                self._emit_judge_event(
+                    turn_number=_turn,
+                    total_turns=self.max_turns,
+                    status="running",
+                    msg=f"[JUDGE] {msg}",
+                    pct=max(25, int((_turn - 0.5) / self.max_turns * 70)),
                     details=details,
                 )
 

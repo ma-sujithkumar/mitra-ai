@@ -1035,11 +1035,21 @@ class TrainingService:
                     all_model_configs = json.loads(model_config_path.read_text(encoding="utf-8"))
                     new_only_configs = [cfg for cfg in all_model_configs if cfg.get("model_name") not in already_trained_names]
                     if new_only_configs:
+                        # Re-number priorities so new candidates continue after
+                        # already-trained models instead of reusing priority 1, 2, ...
+                        # The model selection agent always starts from priority=1,
+                        # so without renumbering each feedback turn would emit SSE events
+                        # with the same priority values (e.g. #8, #9) as the previous
+                        # turn's new models, causing duplicate card numbers in the UI.
+                        priority_offset = len(accumulated_summary_items)
+                        for new_cfg_index, new_cfg in enumerate(new_only_configs):
+                            new_cfg["priority"] = priority_offset + new_cfg_index + 1
                         model_config_path.write_text(json.dumps(new_only_configs, indent=2), encoding="utf-8")
                         logger.info(
-                            "=> training_callback: %d new models to train (filtered %d already-trained from config)",
+                            "=> training_callback: %d new models to train (filtered %d already-trained from config, priorities offset by %d)",
                             len(new_only_configs),
                             len(all_model_configs) - len(new_only_configs),
+                            priority_offset,
                         )
                     else:
                         # All reselected models already trained — build merged summary from
@@ -1082,6 +1092,20 @@ class TrainingService:
                     "model_id_start": len(accumulated_summary_items) + 1,
                 }
 
+                # Notify the judge card that it is waiting for re-training before it can
+                # resume evaluation. Without this event the judge card appears frozen because
+                # no stage="judge" SSE events are emitted during the training_callback phase.
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=request.session_id,
+                        stage="judge",
+                        level="info",
+                        status="running",
+                        msg=f"[JUDGE] Rejected models excluded. Training {len(new_only_configs)} new candidate(s) before next evaluation turn...",
+                        pct=40,
+                    )
+                )
+
                 # Signal the frontend that a new training wave is beginning so the training
                 # stage card and model list update even though initial training is "done".
                 self.event_bus.emit(
@@ -1097,14 +1121,18 @@ class TrainingService:
 
                 # Train only the truly new models (model_config.json was filtered above).
                 if execution_mode == "ray":
+                    # Pass executor=None so orchestrator creates a fresh Ray executor
+                    # for this feedback turn. The original executor was closed in
+                    # _run_training's finally block before _run_post_training_evaluation
+                    # was called, so reusing it here would raise an already-closed error.
                     new_summary = orchestrator.prepare_and_execute_ray(
                         **common_arguments,
                         timeout_sec=(
                             request.timeout_sec
                             or self.config_loader.training_api.ray_timeout_sec
                         ),
-                        executor=executor,
-                        close_executor=False,
+                        executor=None,
+                        close_executor=True,
                     )
                 else:
                     new_summary = orchestrator.prepare_and_execute_local(
@@ -1119,6 +1147,17 @@ class TrainingService:
                         status="running",
                         msg="[JUDGE FEEDBACK] Next candidate models trained. Running SHAP and Overfitting check...",
                         pct=60,
+                    )
+                )
+                # Keep the judge card active while SHAP + overfitting analysis runs.
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=request.session_id,
+                        stage="judge",
+                        level="info",
+                        status="running",
+                        msg="[JUDGE] New candidates trained. Running SHAP + overfitting analysis before next judge turn...",
+                        pct=50,
                     )
                 )
 
@@ -1168,6 +1207,40 @@ class TrainingService:
                 )
 
                 self._write_training_summary_artifacts(paths, merged_summary)
+
+                # Correct the training summary count on the frontend.
+                # execute_local() emits an all_completed event with only the
+                # per-turn model count (e.g. 2 new models), but the leaderboard
+                # needs the merged totals across all judge turns (e.g. 7 models).
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=request.session_id,
+                        stage="training",
+                        level="info",
+                        status="all_completed",
+                        pct=100,
+                        msg=f"All model training jobs finished: {completed_count} completed, {failed_count} failed",
+                        details={
+                            "summary_status": merged_status,
+                            "total_models": total_count,
+                            "completed": completed_count,
+                            "failed": failed_count,
+                        },
+                    )
+                )
+
+                # Notify the judge card that re-training + re-evaluation are done and the
+                # Judge Agent is about to resume its next evaluation turn.
+                self.event_bus.emit(
+                    TrainingEvent(
+                        session_id=request.session_id,
+                        stage="judge",
+                        level="info",
+                        status="running",
+                        msg="[JUDGE] New candidates trained and evaluated. Judge Agent resuming next evaluation turn...",
+                        pct=60,
+                    )
+                )
 
                 merged_eval_output: dict[str, Any] = {
                     "shap_dirs": dict(accumulated_shap_dirs),

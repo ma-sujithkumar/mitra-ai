@@ -603,7 +603,15 @@ class TrainingOrchestrator:
         reset = getattr(self.event_sink, "reset_session", None)
         if callable(reset):
             try:
-                reset(session_id, clear_history=True)
+                # Do NOT clear history here. TrainingService already calls
+                # reset_session(clear_history=True) once before the very first
+                # training run. Clearing history inside prepare() resets the SSE
+                # sequence counter back to 1 on every judge-feedback retrain call,
+                # causing the frontend's lastSequence guard in trainingState.js to
+                # silently drop ALL new events (sequence 1, 2, ... <= lastSequence
+                # from prior turn), hiding new model cards, SHAP/overfitting updates,
+                # and judge SSE events for turns 2 and 3.
+                reset(session_id, clear_history=False)
             except Exception:
                 pass
 
