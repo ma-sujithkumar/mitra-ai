@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
@@ -15,6 +17,7 @@ from backend.dependencies import get_llm_smoke_tester
 
 
 router = APIRouter(prefix="/api", tags=["llm"])
+LLM_ENV_KEYS = ("LLM_TYPE", "LLM_MODEL", "LLM_API_KEY", "LLM_GATEWAY_URL")
 
 
 class LlmSmokeTestRequest(BaseModel):
@@ -34,7 +37,6 @@ def run_llm_smoke_test(
         smoke_test_request=smoke_test_request,
         config_loader=config_loader,
     )
-    print(llm_settings)
     _ensure_credentials(llm_settings=llm_settings)
 
     try:
@@ -47,6 +49,11 @@ def run_llm_smoke_test(
                 "message": str(exc),
             },
         ) from exc
+
+    _persist_llm_settings(
+        env_path=config_loader.repo_root / ".env",
+        llm_settings=llm_settings,
+    )
 
     return {
         "status": "ok",
@@ -90,3 +97,48 @@ def _ensure_credentials(llm_settings: LlmSettings) -> None:
             "message": "Provide an LLM API key or gateway URL.",
         },
     )
+
+
+def _persist_llm_settings(env_path: Path, llm_settings: LlmSettings) -> None:
+    env_updates = {
+        "LLM_TYPE": llm_settings.provider,
+        "LLM_MODEL": llm_settings.model,
+        "LLM_API_KEY": llm_settings.api_key or "",
+        "LLM_GATEWAY_URL": llm_settings.gateway_url or "",
+    }
+    existing_lines = (
+        env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    )
+    updated_keys: set[str] = set()
+    next_lines: list[str] = []
+
+    # Update only the LLM runtime keys so unrelated deployment/auth settings stay intact.
+    for existing_line in existing_lines:
+        env_key = _read_env_line_key(existing_line)
+        if env_key in env_updates:
+            next_lines.append(f"{env_key}={_format_env_value(env_updates[env_key])}")
+            updated_keys.add(env_key)
+            continue
+        next_lines.append(existing_line)
+
+    for env_key in LLM_ENV_KEYS:
+        if env_key not in updated_keys:
+            next_lines.append(f"{env_key}={_format_env_value(env_updates[env_key])}")
+
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_env_path = env_path.with_name(f".{env_path.name}.tmp")
+    temp_env_path.write_text("\n".join(next_lines) + "\n", encoding="utf-8")
+    temp_env_path.replace(env_path)
+
+
+def _read_env_line_key(env_line: str) -> str | None:
+    stripped_line = env_line.lstrip()
+    if not stripped_line or stripped_line.startswith("#") or "=" not in stripped_line:
+        return None
+    env_key = stripped_line.split("=", 1)[0].strip()
+    return env_key or None
+
+
+def _format_env_value(env_value: str) -> str:
+    escaped_value = env_value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped_value}"'
