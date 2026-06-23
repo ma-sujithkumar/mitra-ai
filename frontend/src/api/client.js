@@ -68,10 +68,6 @@ export async function startMetadata(payload) {
       description: payload.description || null,
       target_col: payload.targetCol || null,
       problem_type: payload.problemType || null,
-      provider: payload.provider || null,
-      model: payload.model || null,
-      api_key: payload.apiKey || null,
-      gateway_url: payload.gatewayUrl || null,
       // Skip the agent when metadata.json exists unless an explicit re-run.
       force: payload.force ?? false,
     }),
@@ -162,10 +158,6 @@ export async function startFeatureEngineering(payload) {
       session_id: payload.sessionId,
       target_col: payload.targetCol || null,
       problem_type: payload.problemType || null,
-      provider: payload.provider || null,
-      model: payload.model || null,
-      api_key: payload.apiKey || null,
-      gateway_url: payload.gatewayUrl || null,
       // Skip the pipeline when FE artifacts exist unless an explicit re-run.
       force: payload.force ?? false,
     }),
@@ -240,4 +232,3 @@ export async function fetchFEVisuals(sessionId) {
 export function feVisualUrl(sessionId, filename) {
   return `/api/runs/${encodeURIComponent(sessionId)}/feature-engineering/visuals/${encodeURIComponent(filename)}`;
 }
-

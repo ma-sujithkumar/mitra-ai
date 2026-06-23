@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "test": "node --test src/trainingState.test.js src/api/training.test.js src/api/events.test.js",
+    "test": "node --test src/trainingState.test.js src/api/training.test.js src/api/events.test.js src/api/client.test.js",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
