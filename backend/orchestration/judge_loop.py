@@ -113,7 +113,7 @@ class JudgeInputBuilder:
         domain_reasoning: Optional[Dict[str, Any]] = None,
     ) -> JudgeInput:
         """Build candidates directly from training_summary + overfitting JSONs."""
-        primary_metric = "accuracy" if self.task_type == "classification" else "r2"
+        primary_metric = "accuracy" if self.task_type == "classification" else ("silhouette_score" if self.task_type == "unsupervised" else "r2")
         models = getattr(training_summary, "models", []) or []
         candidate_raws: List[Dict[str, Any]] = []
 

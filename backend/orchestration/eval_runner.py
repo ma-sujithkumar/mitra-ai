@@ -233,7 +233,7 @@ class OverfittingRunner:
             if raw_metrics.get("validation"):
                 input_payload["test_metrics"] = raw_metrics["validation"]
             elif model_result.validation_score is not None:
-                primary_metric = "accuracy" if task_type == "classification" else "r2"
+                primary_metric = "accuracy" if task_type == "classification" else ("silhouette_score" if task_type == "unsupervised" else "r2")
                 input_payload["test_metrics"] = {primary_metric: model_result.validation_score}
 
             input_json_path = os.path.join(model_output_dir, "overfitting_input.json")
@@ -504,6 +504,9 @@ class EvalRunner:
         # killed and skipped instead of stalling everything after it.
         shap_dirs: dict[str, Optional[str]] = {}
         queued_models = []
+        # SHAP requires a supervised label column; unsupervised/clustering has none.
+        if self.task_type == "unsupervised":
+            models = []
         for model_result in models:
             if not model_result.model_path:
                 logger.warning("=> no model_path for %s, skipping SHAP", model_result.model_name)
@@ -758,30 +761,36 @@ class EvalRunner:
         overfit_runner = OverfittingRunner()
         hpt_runner = HPTRunner()
 
-        with ProcessPoolExecutor(max_workers=2) as pool:
-            overfit_future = pool.submit(
-                overfit_runner.run,
-                training_summary=training_summary,
-                session_dir=self.session_dir,
-                dataset_path=engineered_dataset_path,
-                task_type=self.task_type,
-                target_column=self.target_column,
-                verbose=self.verbose,
-                timeout_sec=self.overfitting_timeout_sec,
-                restart_event=self.restart_event,
-            )
-            if run_hpt:
-                hpt_future = pool.submit(
-                    hpt_runner.run,
-                    session_id=self.session_id,
+        # Overfitting analysis compares train vs. test metrics and requires a supervised
+        # task; skip entirely for unsupervised/clustering which has no target column.
+        if self.task_type == "unsupervised":
+            overfitting_dirs: dict[str, Optional[str]] = {}
+            hpt_results_path: Optional[str] = None
+        else:
+            with ProcessPoolExecutor(max_workers=2) as pool:
+                overfit_future = pool.submit(
+                    overfit_runner.run,
+                    training_summary=training_summary,
                     session_dir=self.session_dir,
+                    dataset_path=engineered_dataset_path,
+                    task_type=self.task_type,
+                    target_column=self.target_column,
                     verbose=self.verbose,
+                    timeout_sec=self.overfitting_timeout_sec,
+                    restart_event=self.restart_event,
                 )
-            else:
-                hpt_future = None
+                if run_hpt:
+                    hpt_future = pool.submit(
+                        hpt_runner.run,
+                        session_id=self.session_id,
+                        session_dir=self.session_dir,
+                        verbose=self.verbose,
+                    )
+                else:
+                    hpt_future = None
 
-            overfitting_dirs = overfit_future.result()
-            hpt_results_path = hpt_future.result() if hpt_future else None
+                overfitting_dirs = overfit_future.result()
+                hpt_results_path = hpt_future.result() if hpt_future else None
 
         if self.event_bus:
             self.event_bus.emit(
