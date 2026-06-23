@@ -731,7 +731,9 @@ class TrainingService:
         # Maps supervised/unsupervised (+ subtype) onto the Epic 3 enum. Returns
         # None when the payload already uses the legacy enum (nothing to do).
         problem_type = payload.get("problem_type")
-        if problem_type == "unsupervised":
+        if problem_type in {"unsupervised", "clustering"}:
+            # "clustering" is the FE orchestrator's internal name; the routing
+            # layer uses "unsupervised" (the OrchestratorMetadata Literal value).
             return "unsupervised"
         if problem_type == "supervised":
             subtype = payload.get("problem_subtype")

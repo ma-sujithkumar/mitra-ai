@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
@@ -15,6 +17,8 @@ from backend.services.training_service import TrainingRunConflictError
 from backend.services.training_service import TrainingRunNotFoundError
 from backend.services.training_service import TrainingService
 from backend.services.training_service import TrainingSessionNotFoundError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/training", tags=["training"])
 
@@ -44,6 +48,18 @@ def start_training(
         raise HTTPException(
             status_code=409,
             detail={"error": "TRAINING_ALREADY_EXISTS", "message": str(exc)},
+        ) from exc
+    except Exception as exc:
+        # Catch-all so the frontend always gets a readable message instead of
+        # the FastAPI default "Internal Server Error" (which has no detail.message
+        # field and surfaces as "Request failed" in the UI).
+        logger.exception(
+            "Unhandled error starting training for session %s",
+            training_request.session_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "TRAINING_START_FAILED", "message": str(exc)},
         ) from exc
 
     return TrainingStartResponse(
