@@ -111,6 +111,7 @@ class OverfittingRunner:
         task_type: str,
         target_column: Optional[str] = None,
         verbose: bool = False,
+        timeout_sec: Optional[int] = None,
     ) -> dict[str, Optional[str]]:
         """Run overfitting analysis for all trained models.
 
@@ -141,7 +142,8 @@ class OverfittingRunner:
         status_path = session_dir / "evaluation" / "overfitting_status.json"
         self._write_status(status_path, completed_count, total_models, "running", "Starting overfitting analysis...")
 
-        with ProcessPoolExecutor() as pool:
+        pool = ProcessPoolExecutor()
+        try:
             futures = {}
             for model_result in models:
                 model_name = model_result.model_name
@@ -174,18 +176,40 @@ class OverfittingRunner:
                 )
                 futures[future] = model_name
 
-            for future in as_completed(futures):
-                model_name = futures[future]
-                completed_count += 1
-                try:
-                    future.result()
-                    model_results[model_name] = str(overfit_dir / model_name)
-                    logger.info("=> overfitting done: model=%s", model_name)
-                    self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check done for {model_name}")
-                except Exception as exc:
-                    logger.warning("=> overfitting failed for %s: %s", model_name, exc)
-                    model_results[model_name] = None
-                    self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check failed for {model_name}: {exc}")
+            # Monitor the running futures with a configurable timeout
+            futures_list = list(futures.keys())
+            try:
+                # We retrieve completed futures with the timeout limit
+                iterator = as_completed(futures_list, timeout=timeout_sec)
+                while True:
+                    try:
+                        completed_future = next(iterator)
+                        model_name = futures[completed_future]
+                        completed_count += 1
+                        try:
+                            completed_future.result()
+                            model_results[model_name] = str(overfit_dir / model_name)
+                            logger.info("=> overfitting done: model=%s", model_name)
+                            self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check done for {model_name}")
+                        except Exception as exc:
+                            logger.warning("=> overfitting failed for %s: %s", model_name, exc)
+                            model_results[model_name] = None
+                            self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check failed for {model_name}: {exc}")
+                        # Remove from the list of pending futures
+                        futures_list.remove(completed_future)
+                    except StopIteration:
+                        break
+            except TimeoutError:
+                # Handles when the next future doesn't complete within the remaining timeout
+                logger.warning("=> overfitting analysis timed out after %ss", timeout_sec)
+                for remaining_future in futures_list:
+                    m_name = futures[remaining_future]
+                    model_results[m_name] = None
+                    remaining_future.cancel()
+                    self._write_status(status_path, completed_count, total_models, "running", f"Overfitting check timed out for {m_name}")
+        finally:
+            # Shutdown pool without blocking so we do not freeze the main loop
+            pool.shutdown(wait=False, cancel_futures=True)
 
         self._write_status(status_path, completed_count, total_models, "completed", "Overfitting analysis completed successfully.")
         return model_results
@@ -251,6 +275,7 @@ class EvalRunner:
         verbose: bool = False,
         event_bus: Optional[TrainingEventBus] = None,
         shap_timeout_sec: int = 180,
+        overfitting_timeout_sec: int = 120,
         shap_skip_model_classes: Optional[list[str]] = None,
     ) -> None:
         self.session_id = session_id
@@ -261,6 +286,7 @@ class EvalRunner:
         self.verbose = verbose
         self.event_bus = event_bus
         self.shap_timeout_sec = shap_timeout_sec
+        self.overfitting_timeout_sec = overfitting_timeout_sec
         # Use a set for O(1) membership checks in the launch loop.
         self.shap_skip_model_classes: set[str] = set(shap_skip_model_classes or [])
 
@@ -576,6 +602,7 @@ class EvalRunner:
                 task_type=self.task_type,
                 target_column=self.target_column,
                 verbose=self.verbose,
+                timeout_sec=self.overfitting_timeout_sec,
             )
             if run_hpt:
                 hpt_future = pool.submit(

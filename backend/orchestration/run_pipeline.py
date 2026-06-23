@@ -262,6 +262,7 @@ class PipelineRunner:
             target_column=target_column,
             verbose=self.verbose,
             shap_timeout_sec=self.config_loader.pipeline.shap_timeout_sec,
+            overfitting_timeout_sec=self.config_loader.pipeline.overfitting_timeout_sec,
             shap_skip_model_classes=self.config_loader.pipeline.shap_skip_model_classes,
         )
         # HPT is excluded from the pipeline: run_hpt=False so the Judge evaluates

@@ -262,8 +262,47 @@ class TrainingService:
             raise TrainingRunNotFoundError(
                 f"Training run not found for session: {session_id}"
             )
-        return TrainingStatusResponse.model_validate_json(
+        persisted_state = TrainingStatusResponse.model_validate_json(
             status_path.read_text(encoding="utf-8")
+        )
+        # No in-memory run AND a non-terminal status on disk means the worker
+        # thread that owned this run no longer exists (the server process was
+        # restarted mid-run, e.g. while the judge feedback loop was training
+        # or evaluating new candidates). Without this check the run looks
+        # "running" forever even though nothing is left to ever finish it --
+        # individual models can already show validation_score=completed while
+        # the top-level status is stuck on "running" indefinitely.
+        if persisted_state.status in self.terminal_statuses:
+            return persisted_state
+        orphaned_state = self._mark_orphaned_run(persisted_state)
+        self._persist_state(orphaned_state, status_path)
+        return orphaned_state
+
+    def _mark_orphaned_run(self, state: TrainingStatusResponse) -> TrainingStatusResponse:
+        """Convert a non-terminal run with no backing worker thread into a terminal failure."""
+        orphaned_message = (
+            "Training run was interrupted by a server restart and cannot resume. "
+            "Please re-run training."
+        )
+        orphaned_model_states = [
+            model_state
+            if model_state.status in self.terminal_model_statuses
+            else model_state.model_copy(
+                update={"status": "failed", "pct": 100, "error": orphaned_message}
+            )
+            for model_state in state.model_states
+        ]
+        status_counts = Counter(model_state.status for model_state in orphaned_model_states)
+        return state.model_copy(
+            update={
+                "status": "failed",
+                "finished_at": self._utc_now(),
+                "error": orphaned_message,
+                "completed_models": status_counts.get("completed", 0),
+                "failed_models": status_counts.get("failed", 0) + status_counts.get("timed_out", 0),
+                "job_status_counts": dict(sorted(status_counts.items())),
+                "model_states": orphaned_model_states,
+            }
         )
 
     def cancel(self, session_id: str) -> TrainingStatusResponse:
@@ -922,6 +961,7 @@ class TrainingService:
                 target_column=request.target_column,
                 event_bus=self.event_bus,
                 shap_timeout_sec=self.config_loader.pipeline.shap_timeout_sec,
+                overfitting_timeout_sec=self.config_loader.pipeline.overfitting_timeout_sec,
                 shap_skip_model_classes=self.config_loader.pipeline.shap_skip_model_classes,
             )
             self.event_bus.emit(
