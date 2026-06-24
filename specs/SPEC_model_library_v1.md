@@ -164,7 +164,7 @@ Ans: take a type argument as full_train, fine_tune, default it to fine_tune
 Ans: test() should run the inference and return y - that's it. Keep the metrics in metrics.py
   
   4. PyTorchCNNClassifier / PyTorchCNNRegressor \u2014 what input shape is expected?
-  CNNs expect spatial/image input. PyTorchCNNClassifier on MNIST (28×28) is reasonable. But PyTorchCNNRegressor is listed for house price prediction \u2014 tabular data has no spatial
+  CNNs expect spatial/image input. PyTorchCNNClassifier on MNIST (2828) is reasonable. But PyTorchCNNRegressor is listed for house price prediction \u2014 tabular data has no spatial
   structure. Should the CNN treat the 1D feature vector as a 1D signal (Conv1D)? Or is a CNN for regression intentionally included even if architecturally unusual?
 Ans: Take whether to use Conv2D, or 1D as an arg. All the model arguments must be well-documented in schema.md and linked in README.md
 
@@ -211,7 +211,7 @@ Ans: Add try-except and log the error properly in tests
 Ans: Add try-except and log the error properly in tests   
 
   4. TheilSenRegressor
-  Has O(n² ·  n_subsamples) complexity. On even a modest house price dataset, this can time out unless n_subsamples is capped in config.yaml.
+  Has O(n   n_subsamples) complexity. On even a modest house price dataset, this can time out unless n_subsamples is capped in config.yaml.
 Ans: Cap it. default it to very small size even in config.yaml
 
   5. Ray serialization of PyTorch models
